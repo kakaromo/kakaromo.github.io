@@ -17,20 +17,34 @@
   --sl-color-accent-high: #a8c7fa;
 }
 
+/* 전체 폰트 크기 축소 */
+:root {
+  --sl-text-base: 0.875rem;   /* 16px → 14px */
+  --sl-text-h1: 1.75rem;
+  --sl-text-h2: 1.375rem;
+  --sl-text-h3: 1.125rem;
+  --sl-text-h4: 1rem;
+}
+
 /* 한국어 본문 행간 */
 .sl-markdown-content {
-  line-height: 1.8;
+  line-height: 1.75;
   word-break: keep-all;
 }
 
 /* 코드 블록 폰트 크기 */
 .sl-markdown-content pre {
-  font-size: 0.875rem;
+  font-size: 0.8125rem;
 }
 
 /* 테이블 가독성 */
 .sl-markdown-content table {
-  font-size: 0.9rem;
+  font-size: 0.8125rem;
+}
+
+/* 사이드바 폰트 크기 */
+nav.sidebar {
+  font-size: 0.8125rem;
 }
 
 .sl-markdown-content th {
