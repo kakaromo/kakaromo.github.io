@@ -4,7 +4,6 @@ import starlight from '@astrojs/starlight';
 
 export default defineConfig({
   site: 'https://kakaromo.github.io',
-  base: '/esportal-docs',
   integrations: [
     starlight({
       title: 'Portal Docs',
