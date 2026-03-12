@@ -1,0 +1,32 @@
+---
+title: Portal Docs
+description: Samsung Portal 프로젝트 문서 사이트
+template: splash
+hero:
+  tagline: UFS 테스트 자동화 관리 시스템의 설계, 구현, 사용법을 체계적으로 문서화합니다.
+  actions:
+    - text: 시작하기
+      link: /getting-started/overview/
+      icon: right-arrow
+      variant: primary
+    - text: API 레퍼런스
+      link: /api/overview/
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+<CardGrid stagger>
+  <Card title="사용 가이드" icon="open-book">
+    대시보드, 테스트 관리, 슬롯 모니터링, 원격 접속 등 Portal의 모든 기능을 사용하는 방법을 안내합니다.
+  </Card>
+  <Card title="아키텍처" icon="setting">
+    시스템 구성, 기술 스택, 데이터베이스, Head TCP 프로토콜 등 내부 설계를 설명합니다.
+  </Card>
+  <Card title="API 레퍼런스" icon="document">
+    TestDB, Head, LogBrowser, MinIO 등 모든 REST API 엔드포인트를 정리합니다.
+  </Card>
+  <Card title="개발자 가이드" icon="laptop">
+    개발 환경 설정, 코딩 컨벤션, 새 파서 추가 방법 등 기여를 위한 가이드입니다.
+  </Card>
+</CardGrid>

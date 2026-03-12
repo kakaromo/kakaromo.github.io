@@ -1,5 +1,109 @@
 // @ts-check
 import { defineConfig } from 'astro/config';
+import starlight from '@astrojs/starlight';
 
-// https://astro.build/config
-export default defineConfig({});
+export default defineConfig({
+  site: 'https://kakaromo.github.io',
+  base: '/esportal-docs',
+  integrations: [
+    starlight({
+      title: 'Portal Docs',
+      defaultLocale: 'root',
+      locales: {
+        root: { label: '한국어', lang: 'ko-KR' },
+      },
+      customCss: ['./src/styles/custom.css'],
+      sidebar: [
+        {
+          label: '시작하기',
+          items: [
+            { label: '소개', slug: 'getting-started/overview' },
+            { label: '설치 및 실행', slug: 'getting-started/installation' },
+            { label: '프로젝트 구조', slug: 'getting-started/project-structure' },
+          ],
+        },
+        {
+          label: '사용 가이드',
+          items: [
+            { label: '대시보드', slug: 'guide/dashboard' },
+            {
+              label: '테스트 관리',
+              items: [
+                { label: '성능 테스트', slug: 'guide/performance-testing' },
+                { label: '호환성 테스트', slug: 'guide/compatibility-testing' },
+                { label: '성능 비교', slug: 'guide/performance-compare' },
+                { label: 'TC 그룹', slug: 'guide/tc-groups' },
+                { label: 'Excel 내보내기', slug: 'guide/excel-export' },
+              ],
+            },
+            {
+              label: '슬롯 & 모니터링',
+              items: [
+                { label: '실시간 슬롯 모니터링', slug: 'guide/slot-monitoring' },
+                { label: 'UFS 참조 데이터', slug: 'guide/ufs-info' },
+              ],
+            },
+            {
+              label: '원격 접속 & 로그',
+              items: [
+                { label: '원격 터미널 (SSH/RDP)', slug: 'guide/remote-terminal' },
+                { label: '로그 브라우저', slug: 'guide/log-browser' },
+                { label: '파일 스토리지', slug: 'guide/file-storage' },
+              ],
+            },
+            { label: 'Binary Struct Mapper', slug: 'guide/bin-mapper' },
+            { label: '관리자 대시보드', slug: 'guide/admin' },
+          ],
+        },
+        {
+          label: '아키텍처',
+          items: [
+            { label: '시스템 개요', slug: 'architecture/system-overview' },
+            { label: '기술 스택', slug: 'architecture/tech-stack' },
+            { label: '데이터베이스', slug: 'architecture/database' },
+            { label: '프론트엔드', slug: 'architecture/frontend' },
+            { label: '인증 (OAuth2)', slug: 'architecture/authentication' },
+            { label: 'Redis 캐시', slug: 'architecture/caching' },
+            { label: 'Head TCP 프로토콜', slug: 'architecture/head-protocol' },
+            { label: 'Guacamole 통합', slug: 'architecture/guacamole' },
+            { label: 'Excel Export 설계', slug: 'architecture/excel-export' },
+            { label: 'MinIO 스토리지', slug: 'architecture/minio' },
+            { label: 'BinMapper 엔진', slug: 'architecture/bin-mapper' },
+          ],
+        },
+        {
+          label: 'API 레퍼런스',
+          items: [
+            { label: '개요', slug: 'api/overview' },
+            { label: 'TestDB API', slug: 'api/testdb' },
+            { label: 'Head & Slots API', slug: 'api/head' },
+            { label: 'Log Browser API', slug: 'api/log-browser' },
+            { label: 'MinIO API', slug: 'api/minio' },
+            { label: 'BinMapper API', slug: 'api/binmapper' },
+            { label: 'Guacamole API', slug: 'api/guacamole' },
+            { label: 'UFSInfo API', slug: 'api/ufsinfo' },
+            { label: 'Auth & Admin API', slug: 'api/auth-admin' },
+          ],
+        },
+        {
+          label: '개발자 가이드',
+          items: [
+            { label: '개발 환경 설정', slug: 'developer/setup' },
+            { label: '코딩 컨벤션', slug: 'developer/conventions' },
+            { label: '컴포넌트 가이드', slug: 'developer/components' },
+            { label: '새 파서 추가하기', slug: 'developer/adding-parser' },
+            { label: 'UI 크기 조절', slug: 'developer/ui-sizing' },
+          ],
+        },
+        {
+          label: '레퍼런스',
+          items: [
+            { label: '용어집', slug: 'reference/glossary' },
+            { label: '인프라 구성', slug: 'reference/infrastructure' },
+            { label: '변경 이력', slug: 'reference/changelog' },
+          ],
+        },
+      ],
+    }),
+  ],
+});
