@@ -19,11 +19,11 @@
 
 /* 전체 폰트 크기 축소 */
 :root {
-  --sl-text-base: 0.875rem;   /* 16px → 14px */
-  --sl-text-h1: 1.75rem;
-  --sl-text-h2: 1.375rem;
-  --sl-text-h3: 1.125rem;
-  --sl-text-h4: 1rem;
+  --sl-text-base: 0.8125rem;  /* 13px */
+  --sl-text-h1: 1.5rem;
+  --sl-text-h2: 1.2rem;
+  --sl-text-h3: 1rem;
+  --sl-text-h4: 0.9rem;
 }
 
 /* 한국어 본문 행간 */
@@ -34,17 +34,17 @@
 
 /* 코드 블록 폰트 크기 */
 .sl-markdown-content pre {
-  font-size: 0.8125rem;
+  font-size: 0.75rem;
 }
 
 /* 테이블 가독성 */
 .sl-markdown-content table {
-  font-size: 0.8125rem;
+  font-size: 0.75rem;
 }
 
 /* 사이드바 폰트 크기 */
 nav.sidebar {
-  font-size: 0.8125rem;
+  font-size: 0.75rem;
 }
 
 .sl-markdown-content th {
