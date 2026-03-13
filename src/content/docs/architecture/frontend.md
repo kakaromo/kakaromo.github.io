@@ -39,6 +39,8 @@ frontend/
 │   │   ├── stores/
 │   │   │   ├── headSlotStore.svelte.ts # Head SSE 스토어 (Svelte 5 runes)
 │   │   │   └── auth.svelte.ts         # 인증 상태 스토어
+│   │   ├── config/
+│   │   │   └── slotState.ts           # 슬롯 상태 색상/아이콘 중앙 관리
 │   │   ├── utils/
 │   │   │   └── excel-export.ts        # Excel Export 유틸리티
 │   │   └── components/

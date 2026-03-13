@@ -189,16 +189,20 @@ ECharts 래퍼 컴포넌트입니다. "shine" 테마가 적용됩니다.
 
 ### 상태별 색상
 
-| 상태 | 색상 | 애니메이션 |
-|------|------|-----------|
-| idle | gray | - |
-| ready | blue | - |
-| running | amber | animated |
-| pass | emerald | - |
-| fail | red | - |
-| warning | orange | - |
-| initializing | cyan | animated |
-| stopped | purple | - |
+상태 → 색상 매핑은 `$lib/config/slotState.ts`에서 중앙 관리됩니다. 새 상태 추가 시 `EXACT_STATE_COLORS`에 한 줄만 추가하면 SlotCard, ResultCell, 대시보드 모두 자동 반영됩니다.
+
+| 상태 | 색상 토큰 | 아이콘 | 애니메이션 |
+|------|-----------|--------|-----------|
+| pass | emerald | circle-dot | - |
+| warning_pass | amber | triangle-exclamation | - |
+| warning | amber | triangle-exclamation | - |
+| fail | red | circle-xmark | - |
+| critical_fail | fuchsia | circle-xmark | - |
+| running | emerald | spinner | animated |
+| booting | cyan | spinner | animated |
+| stop | gray | stop | - |
+| disconnect | slate | hourglass | - |
+| provisioning 등 | violet | spinner | animated |
 
 ---
 
@@ -208,7 +212,7 @@ DataTable 컬럼에 사용하는 커스텀 셀 렌더러입니다.
 
 | 렌더러 | 용도 |
 |--------|------|
-| **ResultCell** | 테스트 결과를 색상 뱃지로 표시 (PASS=green, FAIL=red, RUNNING=blue 등 16종) |
+| **ResultCell** | 테스트 결과를 색상 뱃지로 표시. `slotState.ts`의 색상 토큰 사용 (16종) |
 | **DateCell** | 날짜를 `ko-KR` 로케일로 포맷팅 |
 | **LogBrowseCell** | 로그 브라우저 열기 버튼 |
 | **SelectCell** | 행 선택 체크박스 (`mode: 'all'` 전체, `mode: 'row'` 개별) |

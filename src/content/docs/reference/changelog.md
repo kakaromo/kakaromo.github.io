@@ -3,6 +3,21 @@ title: 변경 이력
 description: Samsung Portal의 주요 변경 사항 및 기능 추가 이력
 ---
 
+## 2026-03-14
+
+### 슬롯 상태 색상/아이콘 중앙 집중화
+
+SlotCard, ResultCell, 대시보드에 분산되어 있던 상태별 색상/아이콘 매핑을 `$lib/config/slotState.ts` 한 곳에서 관리하도록 통합했습니다.
+
+- `slotState.ts` 신규 — 상태 → 색상 토큰 매핑 + 용도별 CSS 클래스 생성 함수
+- `SlotCard.svelte` — 인라인 로직을 `resolveSlotIcon`, `resolveSlotGradient`로 대체
+- `ResultCell.svelte` — `resultConfig` 맵을 `getStateBadgeClass()`로 대체
+- 대시보드 — `slotBgClass`를 `getStateBorderClass()`로 대체
+- `WARNING_PASS` 상태를 warning(amber) 스타일로 표시하도록 변경
+- 새 상태 추가 시 `EXACT_STATE_COLORS`에 한 줄만 추가하면 전체 반영
+
+---
+
 ## 2026-03-12
 
 ### Head 연결 관리를 DB로 이관
