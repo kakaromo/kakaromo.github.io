@@ -93,6 +93,15 @@ public void onOpen(Session session, EndpointConfig config) {
 - 텍스트 전송 함수 (Broadcast용 `sendText()`, `sendEnter()`)
 - 연결 상태 추적
 
+### 클립보드 지원
+
+원격 터미널과 로컬 클립보드 간 복사/붙여넣기를 지원합니다.
+
+- **원격→로컬**: `onclipboard` 핸들러로 브라우저 클립보드에 자동 동기화
+- **로컬→원격**: paste 이벤트 및 focus 시 클립보드를 원격 세션에 전송
+- RDP에 `normalize-clipboard=windows` 추가로 줄바꿈 호환성 보장
+- `guacamole-common-js.d.ts`에 `StringReader`, `StringWriter`, `InputStream`, `OutputStream` 타입 추가
+
 ### TerminalDialog.svelte
 
 다중 터미널 탭 UI를 제공합니다.

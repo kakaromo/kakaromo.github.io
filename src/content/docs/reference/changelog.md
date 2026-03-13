@@ -5,20 +5,60 @@ description: Samsung Portal의 주요 변경 사항 및 기능 추가 이력
 
 ## 2026-03-14
 
+### 호환성/성능 히스토리 상세 검색 기능
+
+JPA Specification 기반 동적 검색 API와 프론트엔드 접이식 상세 검색 패널 구현. Result, Slot, FW, TC, 날짜 범위 등 다양한 조건 조합 검색 지원. 호환성은 Set Model, Test Type 필터 추가.
+
+### 대용량 차트 성능 최적화 및 글로벌 에러 처리
+
+PerfChart에 대용량 데이터 자동 최적화 주입 (10K+ large mode, 50K+ LTTB 다운샘플링). `GlobalExceptionHandler`(`@RestControllerAdvice`) 추가로 컨트롤러별 try-catch 정리.
+
+### admin, auth 패키지 구조 분리
+
+admin, auth 패키지를 `controller/entity/repository/service` 하위 패키지로 분리.
+
 ### 슬롯 상태 색상/아이콘 중앙 집중화
 
-SlotCard, ResultCell, 대시보드에 분산되어 있던 상태별 색상/아이콘 매핑을 `$lib/config/slotState.ts` 한 곳에서 관리하도록 통합했습니다.
+SlotCard, ResultCell, 대시보드에 분산되어 있던 상태별 색상/아이콘 매핑을 `$lib/config/slotState.ts` 한 곳에서 관리하도록 통합. `WARNING_PASS` 상태를 warning(amber) 스타일로 변경. 새 상태 추가 시 `EXACT_STATE_COLORS`에 한 줄만 추가하면 전체 반영.
 
-- `slotState.ts` 신규 — 상태 → 색상 토큰 매핑 + 용도별 CSS 클래스 생성 함수
-- `SlotCard.svelte` — 인라인 로직을 `resolveSlotIcon`, `resolveSlotGradient`로 대체
-- `ResultCell.svelte` — `resultConfig` 맵을 `getStateBadgeClass()`로 대체
-- 대시보드 — `slotBgClass`를 `getStateBorderClass()`로 대체
-- `WARNING_PASS` 상태를 warning(amber) 스타일로 표시하도록 변경
-- 새 상태 추가 시 `EXACT_STATE_COLORS`에 한 줄만 추가하면 전체 반영
+---
+
+## 2026-03-13
+
+### Guacamole 터미널 클립보드 지원
+
+원격 터미널과 로컬 클립보드 간 복사/붙여넣기 지원. 원격→로컬 자동 동기화, 로컬→원격 paste/focus 이벤트 전송. RDP `normalize-clipboard=windows` 추가.
+
+### Slots 페이지 Log Browser 연동
+
+슬롯 카드 우클릭 메뉴 및 Selection Sheet에 Log Browser 추가. 슬롯 위치 기반 자동 경로 추출.
+
+### Slots 페이지 DB 의존 제거
+
+슬롯 정보를 Head SSE 메시지에서만 가져오도록 변경. DB polling 제거로 DB/실제 상태 불일치 문제 해결.
+
+### Admin 메뉴 권한 수정
+
+admin 사용자는 메뉴 visibility와 무관하게 모든 메뉴 표시. `/admin` 경로를 visibility 필터링에서 분리.
+
+### 버그 수정
+
+- 로그 검색 결과 500개 제한 제거
+- `logPath` 디렉토리 경로 처리, LogBrowseCell logPath 기반 표시
+- TC 카테고리 구분, Set TR/TC 시트 전체 화면, SetTR 목록 20개 제한 수정
+- SlotCard 글자 크기 확대, DataTable OOM 해결
 
 ---
 
 ## 2026-03-12
+
+### MinIO 다운로드 진행률 표시
+
+`fetch` + `ReadableStream` 기반 다운로드 프로그레스 바, 취소 버튼, 다중 파일 큐 지원.
+
+### Slots 페이지 버그 수정
+
+`testTrName` 빈 값 NONE 처리, Running TC JSON 파일 경로 수정, JSON 파싱 에러 메시지 개선.
 
 ### Head 연결 관리를 DB로 이관
 
