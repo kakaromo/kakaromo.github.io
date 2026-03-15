@@ -16,7 +16,8 @@ description: SvelteKit 5 기반 SPA 프론트엔드의 기술 스택, 페이지 
 | ECharts | - | 성능 차트 |
 | ExcelJS | - | Excel Export (dynamic import) |
 | Lucide | - | 아이콘 |
-| guacamole-common-js | - | 원격 터미널 클라이언트 |
+| xterm.js | - | SSH 터미널 (XtermClient) |
+| guacamole-common-js | - | RDP 원격 접속 (GuacamoleClient) |
 
 :::tip
 Svelte 5 Runes(`$state`, `$derived`, `$effect`)를 사용하여 명시적 반응성으로 복잡한 상태 관리를 단순화합니다. SPA 모드로 빌드하여 SSR은 사용하지 않습니다.
@@ -105,7 +106,7 @@ SetInfomation (디바이스 Set) 데이터 관리.
 
 ### `/remote` -- 원격 접속
 
-Guacamole 통합 SSH/RDP 원격 접속. VM 선택, 프로토콜 선택, 다중 터미널 탭 + Broadcast 명령어.
+xterm.js SSH 터미널 기반 원격 접속. 다중 터미널 탭, Broadcast 명령어, 브라우저 네이티브 복사/붙여넣기 지원.
 
 ### `/storage` -- MinIO 파일 브라우저
 
@@ -196,6 +197,13 @@ const perfStore = createHeadSlotStore('performance');
 | 39 | WriteAndDelete | 단일 차트 + 테이블 |
 
 모든 컴포넌트는 `exportExcel()` 함수를 제공하여 차트 이미지 + 데이터를 Excel로 내보냅니다.
+
+### 공통 유틸리티
+
+| 파일 | 용도 |
+|------|------|
+| `perfStyles.ts` | 버튼 스타일 상수 (`btnBase`, `btnActive`, `btnInactive`, `groupClass`) |
+| `perfChartUtils.ts` | `baseChartOption()` 차트 공통 설정, `captureChartImage()` 이미지 캡처 |
 
 ---
 

@@ -20,10 +20,24 @@ portal/
 │   └── package.json
 ├── src/main/
 │   ├── java/com/samsung/portal/
-│   │   ├── config/                   # 설정 (Security, DataSource, Redis 등)
+│   │   ├── config/                   # 설정
+│   │   │   ├── datasource/          #   DataSource 3개 (portal, testdb, ufsinfo)
+│   │   │   └── websocket/           #   WebSocket 설정
 │   │   ├── auth/                     # 인증 + 엔티티
 │   │   ├── head/                     # Head TCP 클라이언트 + SSE
-│   │   ├── guacamole/               # Guacamole WebSocket 터널
+│   │   │   ├── config/              #   HeadConnectionProperties
+│   │   │   ├── entity/              #   HeadConnection, HeadSlotData
+│   │   │   ├── repository/          #   JPA 리포지토리
+│   │   │   ├── service/             #   연결, 파싱, 상태, 이미지 업로드
+│   │   │   ├── tcp/                 #   HeadTcpClient, HeadConnectionManager
+│   │   │   └── controller/          #   REST/SSE 컨트롤러
+│   │   ├── guacamole/               # Guacamole 원격 접속 (RDP)
+│   │   │   ├── config/              #   GuacamoleProperties
+│   │   │   ├── dto/                 #   VmInfo
+│   │   │   ├── endpoint/            #   WebSocket 엔드포인트
+│   │   │   ├── service/             #   서비스
+│   │   │   └── controller/          #   REST 컨트롤러
+│   │   ├── terminal/                # xterm.js SSH 터미널
 │   │   ├── testdb/                  # TestDB 도메인 (entity/repo/service/controller)
 │   │   ├── ufsinfo/                 # UFSInfo 도메인
 │   │   ├── logbrowser/              # 로그 브라우저 (SSH/Local)
@@ -43,18 +57,19 @@ portal/
 
 ## 백엔드 패키지
 
-| 패키지 | 역할 | 주요 클래스 |
+| 패키지 | 역할 | 하위 패키지 |
 |--------|------|------------|
-| `config` | 설정 | `SecurityConfig`, `RedisCacheConfig`, 3개 DataSource Config |
-| `auth` | 인증/사용자 | `AuthController`, `User`, `PortalServer`, `HeadConnection` |
-| `head` | Head TCP 통신 | `HeadTcpClient`, `HeadSlotStateStore`, `HeadSseController` |
-| `guacamole` | 원격 접속 | `GuacamoleTunnelEndpoint` |
-| `testdb` | 테스트 관리 | 엔티티 9개, 컨트롤러 5개, 서비스 5개 |
-| `ufsinfo` | 참조 데이터 | 7개 엔티티 (CellType, Controller 등) |
+| `config` | 설정 | `datasource/` (3개 DB), `websocket/`, Security, Redis |
+| `auth` | 인증/사용자 | `AuthController`, `PortalUser` |
+| `head` | Head TCP 통신 | `config/`, `entity/`, `repository/`, `service/`, `tcp/`, `controller/` |
+| `guacamole` | 원격 접속 (RDP) | `config/`, `dto/`, `endpoint/`, `service/`, `controller/` |
+| `terminal` | SSH 터미널 (xterm.js) | `SshTerminalEndpoint`, `SshConnectionService`, `SshConnectionInfo` |
+| `testdb` | 테스트 관리 | `entity/`, `repository/`, `service/`, `controller/`, `excel/` |
+| `ufsinfo` | 참조 데이터 | 7개 엔티티 × 4계층 (entity/repo/service/controller) |
 | `logbrowser` | 로그 탐색 | `SshLogBrowserService`, `LocalLogBrowserService` |
 | `binmapper` | 바이너리 매핑 | `CppStructLexer`, `CppStructParser`, `BinaryReaderService` |
 | `tcgroup` | TC 그룹 관리 | `TcGroupService`, `TcGroupController` |
-| `minio` | 파일 스토리지 | `MinioStorageService`, `MinioStorageController` |
+| `minio` | 파일 스토리지 | `MinioStorageService`, `MinioController` |
 
 ## 프론트엔드 라우트
 

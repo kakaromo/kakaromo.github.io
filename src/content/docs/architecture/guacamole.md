@@ -1,11 +1,31 @@
 ---
-title: Guacamole 원격 접속
-description: Apache Guacamole 통합을 통한 웹 기반 SSH/RDP 원격 접속 아키텍처, 백엔드/프론트엔드 구현, 보안 고려사항을 설명합니다.
+title: 원격 접속 아키텍처
+description: xterm.js SSH 터미널과 Guacamole RDP 원격 접속 아키텍처, 백엔드/프론트엔드 구현, 보안 고려사항을 설명합니다.
 ---
 
 ## 아키텍처
 
-Apache Guacamole은 클라이언트리스 원격 데스크톱 게이트웨이입니다. 웹 브라우저만으로 SSH, RDP 등의 원격 연결을 지원합니다.
+원격 접속은 두 가지 방식을 지원합니다:
+
+### SSH 터미널 (xterm.js) — 기본
+
+```
+Browser (XtermClient.svelte / xterm.js)
+    |
+    WebSocket (/api/terminal/ssh)
+    |
+Spring Boot (SshTerminalEndpoint)
+    |
+    JSch SSH session
+    |
+Tentacle Server (T1, T2, T3, T4, HEAD)
+```
+
+- 브라우저 네이티브 텍스트 선택 + Cmd+C/V 복사/붙여넣기
+- DOM 기반 렌더링으로 자연스러운 UX
+- `terminal` 패키지: `SshTerminalEndpoint`, `SshConnectionService`, `SshConnectionInfo`
+
+### RDP (Guacamole) — GUI 데스크톱
 
 ```
 Browser (GuacamoleClient.svelte)
@@ -18,24 +38,47 @@ Spring Boot (GuacamoleTunnelEndpoint)
     |
 guacd (4822)
     |
-    SSH / RDP
+    RDP
     |
-Tentacle Server (T1, T2, T3, T4, HEAD)
+Tentacle Server
 ```
 
 ### 구성 요소
 
 | 구성 요소 | 설명 |
 |-----------|------|
-| guacd (Guacamole Daemon) | 실제 원격 프로토콜(SSH, RDP)을 처리하는 데몬 (192.168.1.248:4822) |
-| Spring Boot WebSocket Endpoint | 브라우저와 guacd 간의 WebSocket 터널 역할 |
-| Guacamole JavaScript Client | 브라우저에서 실행. 화면 렌더링, 키보드/마우스 입력 처리 |
+| xterm.js | 브라우저 터미널 에뮬레이터. SSH 접속용 |
+| JSch | Java SSH 라이브러리. WebSocket ↔ SSH 브릿지 |
+| guacd (Guacamole Daemon) | RDP 프로토콜 처리 데몬 (192.168.1.248:4822) |
+| Guacamole JavaScript Client | RDP 화면 렌더링, 키보드/마우스 입력 처리 |
 
 ## 백엔드
 
-### GuacamoleTunnelEndpoint
+### SSH 터미널 (terminal 패키지)
 
-`@ServerEndpoint`로 WebSocket 엔드포인트를 구현합니다.
+```
+terminal/
+├── SshTerminalEndpoint.java    # WebSocket 엔드포인트
+├── SshConnectionService.java   # JSch SSH 연결 서비스
+└── SshConnectionInfo.java      # SSH 연결 정보 레코드
+```
+
+`SshTerminalEndpoint`는 WebSocket 메시지를 SSH 채널로 중계합니다. SSH 연결 로직은 `SshConnectionService`에 위임합니다.
+
+**resize 프로토콜**: 클라이언트에서 `{"type":"resize","cols":120,"rows":40}` JSON을 전송하면 PTY 크기를 변경합니다.
+
+### Guacamole RDP (guacamole 패키지)
+
+```
+guacamole/
+├── config/       GuacamoleProperties
+├── controller/   GuacamoleController
+├── dto/          VmInfo
+├── endpoint/     GuacamoleTunnelEndpoint, GuacamoleProxyEndpoint
+└── service/      GuacamoleService, GuacamoleApiService
+```
+
+`GuacamoleTunnelEndpoint`는 `@ServerEndpoint`로 WebSocket 엔드포인트를 구현합니다.
 
 ```java
 @ServerEndpoint(value = "/api/guacamole/tunnel",
@@ -82,33 +125,28 @@ public void onOpen(Session session, EndpointConfig config) {
 
 ## 프론트엔드
 
-### GuacamoleClient.svelte
+### XtermClient.svelte (SSH)
 
-`guacamole-common-js` 라이브러리를 사용하여 WebSocket 터널과 Guacamole 클라이언트를 생성합니다.
+xterm.js 기반 터미널 컴포넌트입니다. `@xterm/xterm`, `@xterm/addon-fit`, `@xterm/addon-web-links`를 사용합니다.
 
 **주요 기능:**
-- WebSocket URL 생성 (`ws://` 또는 `wss://`)
-- `Guacamole.WebSocketTunnel` + `Guacamole.Client` 초기화
-- 키보드 입력 설정 (각 터미널 독립)
-- 텍스트 전송 함수 (Broadcast용 `sendText()`, `sendEnter()`)
-- 연결 상태 추적
+- WebSocket `/api/terminal/ssh`에 연결
+- 브라우저 네이티브 텍스트 선택 + Cmd+C 복사
+- Cmd+V 붙여넣기 (클립보드 → WebSocket)
+- `FitAddon` + `ResizeObserver`로 자동 리사이즈
+- 텍스트 전송 함수: `sendText()`, `sendEnter()`, `close()`
 
-### 클립보드 지원
+### GuacamoleClient.svelte (RDP)
 
-원격 터미널과 로컬 클립보드 간 복사/붙여넣기를 지원합니다.
-
-- **원격→로컬**: `onclipboard` 핸들러로 브라우저 클립보드에 자동 동기화
-- **로컬→원격**: paste 이벤트 및 focus 시 클립보드를 원격 세션에 전송
-- RDP에 `normalize-clipboard=windows` 추가로 줄바꿈 호환성 보장
-- `guacamole-common-js.d.ts`에 `StringReader`, `StringWriter`, `InputStream`, `OutputStream` 타입 추가
+`guacamole-common-js` 라이브러리를 사용하여 WebSocket 터널과 Guacamole 클라이언트를 생성합니다. RDP 접속에 사용됩니다.
 
 ### TerminalDialog.svelte
 
-다중 터미널 탭 UI를 제공합니다.
-- VM 선택 (T1~T4, HEAD)
-- 프로토콜 선택 (SSH/RDP)
+다중 터미널 탭 UI를 제공합니다. 기본적으로 `XtermClient`를 사용합니다.
 - 탭별 독립 터미널 인스턴스
 - Broadcast 명령어: 모든 열린 터미널에 동시 입력
+- 전체화면 토글
+- 슬롯 우클릭 시 자동 ADB shell 접속 (usbId가 있는 경우)
 
 ## SSH 설정
 

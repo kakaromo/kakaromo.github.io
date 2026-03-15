@@ -9,9 +9,9 @@ Samsung Portal은 세 개의 MySQL 데이터베이스를 사용합니다. 각각
 
 | DB | 용도 | DataSource Config | 패키지 |
 |----|------|-------------------|--------|
-| **testdb** | UFS 테스트 관리 데이터 | `TestdbDataSourceConfig` (Primary) | `testdb.*` |
-| **UFSInfo** | UFS 참조 데이터 (코드 테이블) | `UfsInfoDataSourceConfig` | `ufsinfo.*` |
-| **binmapper** | BinMapper + TC Group + 사용자 관리 | `PortalDataSourceConfig` | `binmapper.*`, `tcgroup.*`, `auth` |
+| **testdb** | UFS 테스트 관리 데이터 | `config.datasource.TestdbDataSourceConfig` (Primary) | `testdb.*` |
+| **UFSInfo** | UFS 참조 데이터 (코드 테이블) | `config.datasource.UfsInfoDataSourceConfig` | `ufsinfo.*` |
+| **binmapper** | Portal 전용 데이터 | `config.datasource.PortalDataSourceConfig` | `admin.*`, `auth`, `binmapper.*`, `head.entity/repository`, `minio`, `tcgroup.*` |
 
 ```yaml
 # application.yaml

@@ -1,9 +1,38 @@
 ---
-title: Guacamole API
-description: Apache Guacamole 기반 원격 접속(SSH/RDP) VM 목록 조회 및 WebSocket 터널 API
+title: 원격 접속 API
+description: xterm.js SSH 터미널 및 Guacamole RDP 원격 접속 API
 ---
 
-Guacamole API는 Apache Guacamole 프로토콜을 통해 브라우저에서 SSH/RDP 원격 접속을 지원합니다. VPN 없이 Tentacle/HEAD 서버에 직접 접속할 수 있습니다.
+원격 접속 API는 SSH 터미널(xterm.js)과 RDP(Guacamole)를 지원합니다. VPN 없이 Tentacle/HEAD 서버에 직접 접속할 수 있습니다.
+
+## SSH 터미널 (xterm.js)
+
+### WebSocket `/api/terminal/ssh`
+
+xterm.js ↔ JSch SSH 브릿지 WebSocket 엔드포인트입니다.
+
+**연결 URL:**
+
+```
+ws://host:8080/api/terminal/ssh?vm=T1&cols=120&rows=40
+```
+
+| 파라미터 | 설명 |
+|----------|------|
+| `vm` | VM 이름 (DB `portal_servers` 조회) |
+| `cols` | 터미널 컬럼 수 (기본: 120) |
+| `rows` | 터미널 행 수 (기본: 40) |
+
+**메시지 프로토콜:**
+- **클라이언트 → 서버**: 텍스트 입력 (UTF-8)
+- **서버 → 클라이언트**: SSH 출력 (UTF-8)
+- **리사이즈**: `{"type":"resize","cols":120,"rows":40}` JSON 전송
+
+:::note
+SSH 접속 정보(IP, 포트, 계정)는 `portal_servers` 테이블에서 관리합니다. Admin 페이지에서 설정합니다.
+:::
+
+---
 
 ## VM 목록
 
