@@ -3,6 +3,35 @@ title: 변경 이력
 description: Samsung Portal의 주요 변경 사항 및 기능 추가 이력
 ---
 
+## 2026-03-16
+
+### Admin Slot Override
+
+Admin 대시보드에 **Slot Override** 탭 추가. HeadSlotData의 `testState`, `connection`, `product` 등 필드를 관리자가 직접 덮어쓸 수 있습니다. 오버라이드 적용 시 슬롯이 Lock 상태가 되어 이후 Head TCP 업데이트가 해당 슬롯에 반영되지 않으며, Restore로 원래 값으로 복원합니다.
+
+- `GET /api/admin/slot-overrides` — 현재 오버라이드 목록
+- `PUT /api/admin/slot-override` — 오버라이드 적용 및 Lock
+- `DELETE /api/admin/slot-override/{source}/{slotIndex}` — 오버라이드 삭제 및 복원
+
+### HeadSlotData product 계산 필드
+
+`HeadSlotData.getProduct()` 신규 추가. `Controller_NandType_CellType_NandSize_Density` 형식으로 조합된 계산 필드로, 슬롯 카드에 product 정보로 표시됩니다.
+
+### 슬롯 카드 툴팁
+
+슬롯 카드에 마우스를 올리면 전체 슬롯 상세 정보(modelName, battery, testState, setLocation, trName, runningState 등)를 보여주는 툴팁이 표시됩니다.
+
+### 파일 업로드 한도 및 압축 필수 정책
+
+- 파일 업로드 한도를 1GB에서 **1TB**로 상향 (`max-file-size`, `max-request-size`)
+- **2GB 초과 파일은 압축 형식(`.zip`, `.gz`, `.tar`, `.7z`, `.rar` 등)만 업로드 허용** — 비압축 파일이 2GB를 초과하면 서버에서 거부
+
+### HEAD 이미지 업로드 명령어 변경
+
+HEAD 명령어 `imageupload` → **`makeset`** 으로 변경. 이미지 업로드 및 셋 구성 명령으로 통합.
+
+---
+
 ## 2026-03-14
 
 ### 호환성/성능 히스토리 상세 검색 기능

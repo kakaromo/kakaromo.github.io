@@ -194,6 +194,59 @@ JVM 메모리, GC 통계, 스레드, CPU 정보를 반환합니다.
 
 ---
 
+## Slot Override
+
+슬롯 데이터 오버라이드 관리 API입니다. (Admin 전용)
+
+HeadSlotData의 특정 필드를 수동으로 덮어쓰고, Head TCP 업데이트를 차단(Lock)하거나 원래 값으로 복원합니다.
+
+| Method | Path | 설명 |
+|--------|------|------|
+| GET | `/api/admin/slot-overrides` | 현재 적용된 오버라이드 목록 조회 |
+| PUT | `/api/admin/slot-override` | 슬롯 오버라이드 적용 (Lock 포함) |
+| DELETE | `/api/admin/slot-override/{source}/{slotIndex}` | 오버라이드 삭제 및 원래 값 복원 |
+
+**요청 (PUT):**
+
+```json
+{
+  "source": "compatibility",
+  "slotIndex": 3,
+  "testState": "stop",
+  "connection": "disconnected",
+  "product": "CTRL_SLC_2D_256GB_1.0"
+}
+```
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `source` | string | 연결 이름 (compatibility, performance 등) |
+| `slotIndex` | number | 슬롯 인덱스 |
+| `testState` | string (선택) | 덮어쓸 테스트 상태 |
+| `connection` | string (선택) | 덮어쓸 연결 상태 |
+| `product` | string (선택) | 덮어쓸 product 값 |
+
+**응답 (GET):**
+
+```json
+[
+  {
+    "source": "compatibility",
+    "slotIndex": 3,
+    "testState": "stop",
+    "connection": "disconnected",
+    "product": "CTRL_SLC_2D_256GB_1.0",
+    "locked": true
+  }
+]
+```
+
+:::note
+오버라이드가 적용된 슬롯은 `locked: true` 상태가 되어, 이후 Head TCP 메시지가 수신되어도 해당 슬롯의 값이 변경되지 않습니다. DELETE 호출 시 Lock이 해제되고 슬롯이 원래 Head TCP 값으로 복원됩니다.
+:::
+
+---
+
 ## Menus
 
 메뉴 가시성 관리 API입니다. (Admin 전용)

@@ -94,6 +94,7 @@ Head 서버에 테스트 명령을 전송합니다.
 | `stop` | 테스트 중지 | `slotNumbers` |
 | `reordertest` | TC 순서 변경 | `slotNumbers`, `newOrder`, `currentOrder` |
 | `disconnect` | 연결 해제 | `slotNumbers` |
+| `makeset` | 이미지 업로드 및 셋 구성 | `slotNumbers`, `data` (이미지 경로/세트 정보) |
 
 **응답:**
 
