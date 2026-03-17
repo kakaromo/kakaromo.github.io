@@ -68,6 +68,7 @@ headers['X-XSRF-TOKEN'] = xsrfToken;
 | **BinMapper** | `/api/binmapper/...` | 바이너리 구조체 매핑 도구 |
 | **Guacamole** | `/api/guacamole/...` | 원격 접속 (SSH/RDP) |
 | **UFSInfo** | `/api/ufsinfo/...` | UFS 참조 데이터 CRUD |
+| **MakeSet Group** | `/api/makeset-groups/...` | MakeSet 보드 그룹 관리 |
 | **Auth / Admin** | `/api/auth/...`, `/api/admin/...` | 인증 상태 및 관리자 대시보드 |
 
 ## Redis 캐싱
@@ -85,4 +86,4 @@ headers['X-XSRF-TOKEN'] = xsrfToken;
 |------------|-----|--------|------|
 | `testdb` (Primary) | testdb | `testdb.*` | 테스트 데이터 |
 | `ufsinfo` | UFSInfo | `ufsinfo.*` | UFS 참조 코드 |
-| `portal` | binmapper | `binmapper.*`, `tcgroup.*`, `auth.*` | 도구/그룹/사용자 데이터 |
+| `portal` | binmapper | `binmapper.*`, `tcgroup.*`, `makesetgroup.*`, `auth.*` | 도구/그룹/사용자 데이터 |

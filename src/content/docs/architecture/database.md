@@ -11,7 +11,7 @@ Samsung Portal은 세 개의 MySQL 데이터베이스를 사용합니다. 각각
 |----|------|-------------------|--------|
 | **testdb** | UFS 테스트 관리 데이터 | `config.datasource.TestdbDataSourceConfig` (Primary) | `testdb.*` |
 | **UFSInfo** | UFS 참조 데이터 (코드 테이블) | `config.datasource.UfsInfoDataSourceConfig` | `ufsinfo.*` |
-| **binmapper** | Portal 전용 데이터 | `config.datasource.PortalDataSourceConfig` | `admin.*`, `auth`, `binmapper.*`, `head.entity/repository`, `minio`, `tcgroup.*` |
+| **binmapper** | Portal 전용 데이터 | `config.datasource.PortalDataSourceConfig` | `admin.*`, `auth`, `binmapper.*`, `head.entity/repository`, `minio`, `tcgroup.*`, `makesetgroup.*` |
 
 ```yaml
 # application.yaml
@@ -277,6 +277,32 @@ TC 그룹에 속한 TC 목록.
 - **FK**: `group_id` → `tc_groups(id)` ON DELETE CASCADE
 - **UK**: `(group_id, tc_id)`
 
+### makeset_groups
+
+MakeSet 그룹 정의. 다중 보드 배치 MakeSet 설정을 저장.
+
+| 컬럼명 | 타입 | 설명 |
+|--------|------|------|
+| id | bigint (PK, AUTO) | 고유 ID |
+| name | varchar(255) | 그룹 이름 |
+| description | varchar(500) | 설명 (선택) |
+| created_at | datetime | 생성 시간 |
+| updated_at | datetime | 수정 시간 |
+
+### makeset_group_items
+
+MakeSet 그룹에 속한 보드별 설정.
+
+| 컬럼명 | 타입 | 설명 |
+|--------|------|------|
+| id | bigint (PK, AUTO) | 고유 ID |
+| group_id | bigint (FK) | → makeset_groups.id (CASCADE DELETE) |
+| board | varchar(255) | 보드 이름 (슬롯 매칭 키) |
+| provision_path | varchar(1000) | Provision XML 경로 |
+| image_path | varchar(1000) | Image 폴더 경로 |
+| dd_value | varchar(100) | auto_dd 값 (기본: "none") |
+| sort_order | int | 정렬 순서 |
+
 ### predefined_structs
 
 BinMapper 사전 정의 구조체.
@@ -370,6 +396,12 @@ tc_groups (1) ---- (N) tc_group_items
   |                    |
   +-- name, tc_type    +-- tc_id (-> testdb TC ID, 논리적 참조)
   +-- description      +-- sort_order
+
+makeset_groups (1) ---- (N) makeset_group_items
+  |                         |
+  +-- name                  +-- board (슬롯 매칭 키)
+  +-- description           +-- provision_path, image_path
+                            +-- dd_value, sort_order
 
 predefined_structs (독립)
 ```
