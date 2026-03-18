@@ -39,6 +39,7 @@ export default defineConfig({
               label: '슬롯 & 모니터링',
               items: [
                 { label: '실시간 슬롯 모니터링', slug: 'guide/slot-monitoring' },
+                { label: 'DLM 디버그', slug: 'guide/dlm-debug' },
                 { label: 'UFS 참조 데이터', slug: 'guide/ufs-info' },
               ],
             },
@@ -79,6 +80,7 @@ export default defineConfig({
             { label: 'Log Browser API', slug: 'api/log-browser' },
             { label: 'MinIO API', slug: 'api/minio' },
             { label: 'BinMapper API', slug: 'api/binmapper' },
+            { label: 'Debug API', slug: 'api/debug' },
             { label: 'Guacamole API', slug: 'api/guacamole' },
             { label: 'UFSInfo API', slug: 'api/ufsinfo' },
             { label: 'Auth & Admin API', slug: 'api/auth-admin' },
