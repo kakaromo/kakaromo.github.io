@@ -80,10 +80,10 @@ portal/
 | `/testdb/performance` | 성능 테스트 | TR/History 관리 + 차트 |
 | `/testdb/performance/compare` | 성능 비교 | Overlay/SideBySide/Delta |
 | `/testdb/slots` | 슬롯 모니터링 | 카드 UI + 명령 전송 |
-| `/ufsinfo` | UFS 참조 데이터 | 7개 코드 테이블 |
 | `/remote` | 원격 접속 | SSH/RDP 터미널 |
 | `/storage` | 파일 스토리지 | MinIO 브라우저 |
 | `/devtools/bin-mapper` | BinMapper | 바이너리 구조체 매핑 |
+| `/admin` | 관리자 대시보드 | Health, Users, Servers, Sets, Slots, UFS Info, Perf Gen 등 |
 
 ## 설정 파일
 

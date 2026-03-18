@@ -3,6 +3,28 @@ title: 변경 이력
 description: Samsung Portal의 주요 변경 사항 및 기능 추가 이력
 ---
 
+## 2026-03-18
+
+### DB 테이블 관리를 Admin 페이지로 이동
+
+Sets, Slot Info, UFS Info, Perf Generator를 메인 메뉴에서 제거하고 Admin 대시보드 내 탭으로 통합했습니다. Admin 로그인 시에만 접근 가능합니다.
+
+- **Sets 탭**: SetInfomation CRUD (인라인 편집)
+- **Slots 탭**: SlotInfomation 조회/수정
+- **UFS Info 탭**: 7개 UFS 코드 테이블 CRUD (서브탭)
+- **Perf Gen 탭**: 성능 차트 컴포넌트 코드 생성기
+
+백엔드 변경:
+- `AdminDbTableController` 추가 (`/api/admin/db/sets`, `/api/admin/db/slots`, `/api/admin/db/ufsinfo/{table}`)
+- `AdminMenuService` DEFAULT_MENUS에서 제거된 메뉴 항목 동기화
+
+프론트엔드 변경:
+- `PerfGenerator.svelte`를 `$lib/components/`로 분리 (admin, devtools 양쪽에서 공유)
+- `AdminSetsTab`, `AdminSlotsTab`, `AdminUfsInfoTab` 컴포넌트 추가
+- 메인 메뉴(`+layout.svelte`)에서 4개 항목 제거
+
+---
+
 ## 2026-03-16
 
 ### Admin Slot Override

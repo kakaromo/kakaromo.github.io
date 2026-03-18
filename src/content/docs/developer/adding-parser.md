@@ -81,7 +81,7 @@ INSERT INTO performance_parsers (PARSER_NAME) VALUES ('new-parser-name');
 | `KernelLatency.svelte` | Latency 히스토그램 |
 
 :::tip[Perf Generator 활용]
-`/devtools/perf-generator` 페이지에서 JSON 데이터 구조를 입력하면 `perf-content` 패턴에 맞는 Svelte 컴포넌트 코드가 자동 생성됩니다. 초기 코드 작성 시 활용하면 편리합니다.
+Admin 대시보드의 **Perf Gen** 탭에서 JSON 데이터 구조를 입력하면 `perf-content` 패턴에 맞는 Svelte 컴포넌트 코드가 자동 생성됩니다. 초기 코드 작성 시 활용하면 편리합니다.
 :::
 
 ---
