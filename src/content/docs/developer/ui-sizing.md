@@ -64,7 +64,7 @@ bash resize-ui.sh large        # 두 단계 업 (넉넉한 크기)
 | 영역 | 파일 | compact | default | large |
 |------|------|---------|---------|-------|
 | 헤더 높이 | `+layout.svelte` | `h-10` | `h-12` | `h-14` |
-| 헤더 텍스트 | `+layout.svelte` | `text-[10px]` | `text-xs` | `text-sm` |
+| 헤더 텍스트 | `+layout.svelte` | `text-[11px]` | `text-xs` | `text-sm` |
 | 헤더 아이콘 | `+layout.svelte` | `size-2.5` | `size-3` | `size-3.5` |
 | 테이블 텍스트 | `DataTable.svelte` | `text-[11px]` | `text-xs` | `text-sm` |
 | 테이블 행 | `DataTable.svelte` | `h-7` | `h-8` | `h-9` |

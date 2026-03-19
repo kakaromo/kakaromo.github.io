@@ -62,7 +62,7 @@ const chartImage = chartRef?.getImageDataURL()
 ```
 
 :::tip
-`renderChartToImage()`는 숨겨진 `<div>` 생성 → ECharts 인스턴스 초기화 → PNG 캡처(`pixelRatio: 2`) → 정리의 과정을 거칩니다. ECharts도 dynamic import로 로드됩니다.
+`renderChartToImage()`는 숨겨진 `<div>` 생성 → ECharts 인스턴스 초기화 → PNG 캡처(`pixelRatio: 2`) → 정리의 과정을 거칩니다. ECharts도 dynamic import로 로드됩니다. 현재 다크모드 상태를 감지하여 적절한 테마(`shine`/`shine-dark`)와 배경색을 자동 적용합니다.
 :::
 
 ### 번들 최적화

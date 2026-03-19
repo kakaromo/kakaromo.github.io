@@ -109,6 +109,7 @@ interface CycleEntry {
 
 - **탭**: 데이터 키 `read`, `write`, `flushtime` 자동 감지 (대소문자 무관)
 - **차트 타입**: Line / Scatter 전환
+- **Min/Max 마커**: 토글 버튼으로 각 시리즈의 최솟값/최댓값을 마커로 표시 (기본: 비활성)
 - **Y축 단위**: tcName에 `rand` 포함 시 IOPS, `seq` 포함 시 MB/s
 - **Raw Data 테이블**: 접기/펼치기, 셀 복사 가능
 - **Statistics 테이블**: Cycle별 Min/Max/Avg
@@ -169,6 +170,14 @@ ECharts 래퍼 컴포넌트입니다. "shine" 테마가 적용됩니다.
 | `height` | `string` | `"400px"` | 차트 높이 |
 
 차트 줌은 마우스 휠로 가능합니다 (`dataZoom: [{ type: 'inside' }]`).
+
+### 로딩 인디케이터
+
+ECharts의 `finished` 이벤트를 감지하여 차트 렌더링 완료 전까지 반투명 오버레이 + 스피너를 자동 표시합니다. progressive 렌더링(대용량 데이터)이 활성화된 경우에도 실제 렌더링 완료 시점에 정확히 사라집니다.
+
+### 다크 모드 대응
+
+`MutationObserver`로 `document.documentElement`의 `class` 변경을 감지하여 테마 전환 시 자동으로 차트를 재생성합니다. `shine` (라이트) / `shine-dark` (다크) 테마가 적용됩니다.
 
 ---
 
@@ -239,7 +248,6 @@ DataTable 컬럼에 사용하는 커스텀 셀 렌더러입니다.
 | `select` | 셀렉트 박스 |
 | `separator` | 구분선 |
 | `sheet` | 사이드 시트 |
-| `sidebar` | 네비게이션 사이드바 |
 | `skeleton` | 로딩 스켈레톤 |
 | `table` | HTML 테이블 래퍼 |
 | `tabs` | 탭 인터페이스 |

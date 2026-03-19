@@ -15,6 +15,7 @@ description: SvelteKit 5 기반 SPA 프론트엔드의 기술 스택, 페이지 
 | TanStack Table | v8 | 데이터 테이블 |
 | ECharts | - | 성능 차트 |
 | ExcelJS | - | Excel Export (dynamic import) |
+| svelte-sonner | - | 토스트 알림 |
 | Lucide | - | 아이콘 |
 | xterm.js | - | SSH 터미널 (XtermClient) |
 | guacamole-common-js | - | RDP 원격 접속 (GuacamoleClient) |

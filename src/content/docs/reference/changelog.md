@@ -3,6 +3,28 @@ title: 변경 이력
 description: Samsung Portal의 주요 변경 사항 및 기능 추가 이력
 ---
 
+## 2026-03-20
+
+### UI/UX 개선 (Quick Wins)
+
+- **svelte-sonner 통합 토스트**: `<Toaster>` 컴포넌트를 전역 레이아웃에 추가하여 모든 페이지에서 일관된 알림 UX 제공. Storage 페이지의 커스텀 토스트를 `toast.success()`/`toast.error()`로 교체
+- **네비게이션 텍스트 크기 상향**: compact 프리셋의 nav 텍스트를 `text-[10px]` → `text-[11px]`로 상향하여 가독성 개선
+- **AppSidebar 데드코드 정리**: 미사용 `AppSidebar.svelte` 및 `ui/sidebar/` 디렉토리(26개 파일) 삭제
+- **아이콘 버튼 aria-label 추가**: DataTableShell, DataTablePagination의 페이지네이션 버튼에 접근성 라벨 추가
+- **차트 테마 반응성 개선**: `renderChartToImage()`가 현재 다크모드 상태를 감지하여 적절한 테마와 배경색 자동 적용
+
+### PerfChart 로딩 인디케이터
+
+PerfChart에 ECharts `finished` 이벤트 기반 로딩 오버레이 추가. 차트 렌더링 완료 전까지 반투명 배경 + 스피너를 표시하여 대용량 데이터의 progressive 렌더링 중에도 로딩 상태를 명확히 전달. 15개 perf-content 컴포넌트에 자동 적용.
+
+### GenPerf Min/Max 마커 개선
+
+- Min/Max 마커의 `symbolSize`를 28 → 40, `fontSize`를 8 → 10으로 확대
+- `formatter` 추가로 마커에 이름과 값을 줄바꿈으로 함께 표시
+- 기본값을 비활성으로 변경 (툴바 "Min/Max" 버튼으로 토글)
+
+---
+
 ## 2026-03-18
 
 ### DB 테이블 관리를 Admin 페이지로 이동
