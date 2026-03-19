@@ -11,7 +11,7 @@ Samsung Portal은 세 개의 MySQL 데이터베이스를 사용합니다. 각각
 |----|------|-------------------|--------|
 | **testdb** | UFS 테스트 관리 데이터 | `config.datasource.TestdbDataSourceConfig` (Primary) | `testdb.*` |
 | **UFSInfo** | UFS 참조 데이터 (코드 테이블) | `config.datasource.UfsInfoDataSourceConfig` | `ufsinfo.*` |
-| **binmapper** | Portal 전용 데이터 | `config.datasource.PortalDataSourceConfig` | `admin.*`, `auth`, `binmapper.*`, `head.entity/repository`, `minio`, `tcgroup.*`, `makesetgroup.*` |
+| **binmapper** | Portal 전용 데이터 | `config.datasource.PortalDataSourceConfig` | `admin.*`, `auth`, `binmapper.*`, `debug.*`, `head.entity/repository`, `minio`, `tcgroup.*`, `makesetgroup.*` |
 
 ```yaml
 # application.yaml
@@ -363,6 +363,34 @@ MinIO 버킷 가시성 관리.
 | bucket_name | varchar(255) | 버킷 이름 (UNIQUE, NOT NULL) |
 | is_visible | boolean | 가시성 여부 (NOT NULL, DEFAULT TRUE) |
 
+### debug_types
+
+디버그 종류 관리. Slots 페이지 Context Menu의 Debug 서브메뉴 항목이 됩니다.
+
+| 컬럼명 | 타입 | 설명 |
+|--------|------|------|
+| id | bigint (PK, AUTO) | 고유 ID |
+| name | varchar(100) | 표시 이름 (UNIQUE, NOT NULL) — e.g. DLM |
+| type_key | varchar(100) | 코드/API 매칭 키 (UNIQUE, NOT NULL) — e.g. dlm |
+| enabled | boolean | 활성화 여부 (NOT NULL, DEFAULT TRUE) |
+| description | varchar(500) | 설명 (선택) |
+| created_at | datetime | 생성 시간 |
+| updated_at | datetime | 수정 시간 |
+
+### debug_tools
+
+디버그 타입에 속하는 실행 바이너리. 실행 시 소스 경로 = `tool_path + "/" + tool_name`.
+
+| 컬럼명 | 타입 | 설명 |
+|--------|------|------|
+| id | bigint (PK, AUTO) | 고유 ID |
+| type_id | bigint (FK) | → debug_types.id (CASCADE DELETE) |
+| tool_name | varchar(255) | 바이너리 파일명 (NOT NULL) — e.g. dlm_250106 |
+| tool_path | varchar(500) | VM 내 디렉토리 경로 (NOT NULL) — e.g. /home/octo/tentacle/apps |
+| description | varchar(500) | 설명 (선택) |
+| created_at | datetime | 생성 시간 |
+| updated_at | datetime | 수정 시간 |
+
 ---
 
 ## 관계 다이어그램
@@ -404,6 +432,11 @@ makeset_groups (1) ---- (N) makeset_group_items
                             +-- dd_value, sort_order
 
 predefined_structs (독립)
+
+debug_types (1) ---- (N) debug_tools
+  |                       |
+  +-- name, type_key      +-- tool_name, tool_path
+  +-- enabled             +-- description
 ```
 
 ## 크로스 DB 관계

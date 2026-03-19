@@ -152,6 +152,42 @@ SlotInfomation은 복합 Primary Key (tentacleName + slotNumber)를 사용합니
 새로운 파서를 추가할 때 이 도구를 사용하면 초기 코드를 빠르게 작성할 수 있습니다.
 :::
 
+## Debug Management
+
+디버그 타입(Debug Types)과 디버그 툴(Debug Tools)을 관리합니다. 여기서 등록된 항목은 Slots 페이지의 우클릭 **Debug** 서브메뉴에 반영됩니다.
+
+### Debug Types
+
+디버그 종류를 정의합니다. Slots 페이지의 Context Menu에서 메뉴 항목이 됩니다.
+
+| 필드 | 설명 |
+|------|------|
+| **Name** | 표시 이름 (예: DLM) |
+| **Type Key** | 코드/API 매칭 키 (예: dlm) — 프론트엔드 `debugRegistry`의 키와 일치해야 함 |
+| **Enabled** | 활성화 여부 — 비활성화하면 Context Menu에서 숨겨짐 |
+| **Description** | 설명 (선택) |
+
+### Debug Tools
+
+각 디버그 타입에 속하는 실행 바이너리를 등록합니다.
+
+| 필드 | 설명 |
+|------|------|
+| **Type** | 소속 디버그 타입 |
+| **Tool Name** | 바이너리 파일명 (예: `dlm_250106`) |
+| **Tool Path** | VM 내 디렉토리 경로 (예: `/home/octo/tentacle/apps`) |
+| **Description** | 설명 (선택) |
+
+실행 시 소스 경로는 `Tool Path + "/" + Tool Name`으로 조합됩니다.
+
+:::note
+Debug Type을 삭제하면 해당 타입에 연결된 모든 Debug Tools도 함께 삭제됩니다 (CASCADE).
+:::
+
+:::tip
+새로운 디버그 기능을 추가하려면: DB에 타입/툴 등록 → 프론트엔드 Dialog 구현 → `debugRegistry.ts`에 등록. 자세한 내용은 [DLM 디버그](/guide/dlm-debug/) 문서를 참고하세요.
+:::
+
 ## Slot Override
 
 Admin 전용 탭으로, Head TCP 메시지로 수신된 슬롯 데이터를 관리자가 직접 덮어쓸 수 있습니다.
