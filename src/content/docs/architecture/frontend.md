@@ -51,7 +51,10 @@ frontend/
 │   │       ├── perf-content/         # 성능 데이터 시각화 (15개)
 │   │       ├── perf-compare/         # 성능 비교 뷰
 │   │       ├── bin-mapper/           # BinMapper 뷰
-│   │       └── PerfGenerator.svelte # 성능 코드 생성기 (공유 컴포넌트)
+│   │       ├── PerfGenerator.svelte  # 성능 코드 생성기
+│   │       ├── PerfGenerator.types.ts # 공유 타입 (FieldNode, TabInfo 등)
+│   │       ├── PerfPreview.svelte    # 실시간 차트/테이블 미리보기
+│   │       └── JsonTreeView.svelte   # JSON 트리 뷰 (읽기 전용)
 │   └── routes/                       # 페이지 라우트
 └── package.json
 ```
@@ -100,6 +103,14 @@ xterm.js SSH 터미널 기반 원격 접속. 다중 터미널 탭, Broadcast 명
 ### `/storage` -- MinIO 파일 브라우저
 
 S3 호환 스토리지의 파일 관리. 좌측 버킷 목록, 우측 파일/폴더 탐색, 드래그앤드롭 업로드 + 프로그레스 바.
+
+### `/devtools/perf-generator` -- Perf Content Code Generator
+
+JSON 구조 입력 → perf-content 패턴에 맞는 Svelte 컴포넌트 코드를 자동 생성하는 개발 도구.
+
+- **좌측**: JSON 입력 (Text/Tree 탭 전환), 필드 분석/매핑, 설정
+- **우측**: Code 탭 (생성된 코드 + Copy) / Preview 탭 (PerfChart + DataTable 실시간 미리보기)
+- `object-of-arrays`, `array-of-objects` 두 가지 JSON 구조 자동 감지
 
 ### `/devtools/bin-mapper` -- Binary Struct Mapper
 
