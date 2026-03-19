@@ -99,7 +99,7 @@ public class GuacamoleTunnelEndpoint {
 
 ### GuacamoleProperties
 
-guacd 데몬 연결 설정만 보유합니다. VM 정보는 DB `portal_servers` 테이블에서 관리합니다.
+글로벌 guacd 데몬 연결 설정을 보유합니다. VM 정보는 DB `portal_servers` 테이블에서 관리합니다.
 
 ```java
 @ConfigurationProperties(prefix = "guacamole")
@@ -108,6 +108,20 @@ public class GuacamoleProperties {
     private int guacdPort;
 }
 ```
+
+### VM별 guacd 설정
+
+`portal_servers` 테이블의 `guacd_host`, `guacd_port` 컬럼으로 VM별 개별 guacd를 지정할 수 있습니다. 설정하지 않으면 `GuacamoleProperties`의 글로벌 값을 사용합니다.
+
+```java
+// VM별 guacd 설정이 있으면 사용, 없으면 글로벌 fallback
+String guacdHost = vmConfig.getGuacdHost() != null ? vmConfig.getGuacdHost() : properties.getGuacdHost();
+int guacdPort = vmConfig.getGuacdPort() != null ? vmConfig.getGuacdPort() : properties.getGuacdPort();
+```
+
+:::tip
+여러 네트워크 세그먼트에 guacd가 분산 배치된 환경에서, 각 VM이 가까운 guacd를 사용하도록 설정할 수 있습니다. Admin 페이지의 Server Management에서 guacd Host/Port를 설정합니다.
+:::
 
 ### WebSocket 안정성 설정
 

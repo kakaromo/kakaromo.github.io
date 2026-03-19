@@ -76,8 +76,13 @@ Redis 캐시 목록을 조회하고 개별 캐시를 무효화(evict)할 수 있
 |------|------|
 | **CRUD** | 서버 정보 생성/조회/수정/삭제 |
 | **연결 타입** | 서버의 연결 타입 설정 (SSH/RDP 등) |
+| **guacd 설정** | VM별 guacd Host/Port 지정 (비워두면 글로벌 기본값 사용) |
 
 등록된 서버 정보는 원격 터미널 접속 시 VM 선택 목록에 반영됩니다.
+
+:::tip
+guacd Host/Port를 비워두면 `application.yaml`의 글로벌 guacd 설정이 사용됩니다. 특정 VM이 별도 네트워크의 guacd를 사용해야 할 때만 설정하세요.
+:::
 
 ## Head Connections Management
 
