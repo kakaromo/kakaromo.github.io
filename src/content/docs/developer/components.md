@@ -231,6 +231,80 @@ DataTable 컬럼에 사용하는 커스텀 셀 렌더러입니다.
 
 ---
 
+## ConfirmDialog
+
+**경로:** `frontend/src/lib/components/ConfirmDialog.svelte`
+
+네이티브 `confirm()`을 대체하는 커스텀 확인 다이얼로그입니다. 삭제 등 파괴적 액션에 사용됩니다.
+
+| Prop | 타입 | 기본값 | 설명 |
+|------|------|--------|------|
+| `open` | `boolean` (bindable) | 필수 | 열림/닫힘 상태 |
+| `title` | `string` | `'확인'` | 다이얼로그 제목 |
+| `description` | `string` | 필수 | 설명 텍스트 |
+| `confirmLabel` | `string` | `'확인'` | 확인 버튼 텍스트 |
+| `cancelLabel` | `string` | `'취소'` | 취소 버튼 텍스트 |
+| `variant` | `'destructive' \| 'default'` | `'destructive'` | 스타일 (destructive: 경고 아이콘 + 빨간 버튼) |
+| `onConfirm` | `() => void \| Promise<void>` | 필수 | 확인 콜백 (async 지원, 실행 중 스피너 표시) |
+| `onCancel` | `() => void` | 필수 | 취소 콜백 |
+
+### 사용 예시
+
+```svelte
+<ConfirmDialog
+  bind:open={confirmOpen}
+  title="삭제 확인"
+  description="이 항목을 삭제하시겠습니까?"
+  confirmLabel="삭제"
+  onConfirm={async () => {
+    await deleteItem(id);
+    confirmOpen = false;
+  }}
+  onCancel={() => { confirmOpen = false; }}
+/>
+```
+
+---
+
+## TableSkeleton
+
+**경로:** `frontend/src/lib/components/TableSkeleton.svelte`
+
+데이터 로딩 중 테이블 형태의 스켈레톤을 표시합니다. 전체 페이지 스피너를 대체합니다.
+
+| Prop | 타입 | 기본값 | 설명 |
+|------|------|--------|------|
+| `columns` | `number` | `5` | 컬럼 수 |
+| `rows` | `number` | `5` | 행 수 |
+
+### 사용 예시
+
+```svelte
+{#if loading}
+  <TableSkeleton columns={7} rows={6} />
+{:else}
+  <DataTable {data} {columns} />
+{/if}
+```
+
+---
+
+## 토스트 알림 (svelte-sonner)
+
+**Toaster 위치:** `+layout.svelte`에 `<Toaster richColors position="top-right" />`로 글로벌 설정.
+
+모든 페이지에서 `import { toast } from 'svelte-sonner'`로 사용합니다.
+
+```typescript
+toast.success('저장되었습니다');
+toast.error('저장에 실패했습니다');
+toast.error(e instanceof Error ? e.message : '오류가 발생했습니다');
+```
+
+API 클라이언트(`client.ts`)가 409 응답의 `error` 필드를 자동 파싱하므로, 서버에서 `Map.of("error", message)`로 응답하면 프론트에서 해당 메시지가 `toast.error()`로 표시됩니다.
+
+---
+
 ## shadcn-svelte 컴포넌트
 
 `frontend/src/lib/components/ui/` 하위에 다음 UI 기본 컴포넌트가 있습니다:

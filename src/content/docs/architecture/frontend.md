@@ -212,6 +212,45 @@ const perfStore = createHeadSlotStore('performance');
 
 ---
 
+## UI/UX 패턴
+
+### 페이지 전환
+
+SvelteKit `onNavigate` 훅 + View Transitions API로 150ms fade 전환을 구현합니다. 미지원 브라우저에서는 기존처럼 즉시 전환됩니다 (graceful degradation).
+
+### 로딩 상태
+
+| 상황 | 패턴 | 컴포넌트 |
+|------|------|----------|
+| 페이지 초기 로딩 (테이블) | 테이블 스켈레톤 | `TableSkeleton` |
+| 페이지 초기 로딩 (차트/카드) | Skeleton 조합 | `Skeleton` |
+| 차트 렌더링 | 오버레이 스피너 | `PerfChart` 내장 |
+| 비동기 버튼 | disabled + Loader 아이콘 | `saving` 상태 변수 |
+| 데이터 없음 | 아이콘 + 안내 메시지 | `SearchXIcon` + 텍스트 |
+
+### 사용자 피드백
+
+| 액션 | 피드백 |
+|------|--------|
+| CRUD 성공 | `toast.success()` |
+| CRUD 실패 | `toast.error()` (서버 메시지 파싱) |
+| 파괴적 액션 (삭제) | `ConfirmDialog` → 확인 후 실행 |
+| 미저장 변경사항 | `ConfirmDialog` (variant: default) |
+| 폼 필수 필드 미입력 | 빨간 테두리 + "필수 항목입니다" 인라인 메시지 |
+| 버튼 클릭 | `active:scale-[0.97]` 눌림 효과 |
+
+### 폼 밸리데이션
+
+`submitted` 상태 패턴을 사용합니다. Save 버튼은 항상 활성화되어 있고, 클릭 시 `submitted = true`로 설정하여 필수 필드 에러를 시각화합니다.
+
+```svelte
+<Select.Trigger class="... {submitted && !form.field ? 'border-destructive ring-1 ring-destructive/30' : ''}">
+<Input class="... {submitted && !form.name ? 'border-destructive ring-1 ring-destructive/30' : ''}" />
+{#if submitted && !form.name}<p class="text-[10px] text-destructive">필수 항목입니다</p>{/if}
+```
+
+---
+
 ## 빌드 및 배포
 
 ### 개발 모드

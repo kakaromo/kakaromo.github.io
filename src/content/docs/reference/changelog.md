@@ -5,10 +5,48 @@ description: Samsung Portal의 주요 변경 사항 및 기능 추가 이력
 
 ## 2026-03-20
 
-### UI/UX 개선 (Quick Wins)
+### 토스 UX 철학 기반 종합 UI 개선
 
-- **svelte-sonner 통합 토스트**: `<Toaster>` 컴포넌트를 전역 레이아웃에 추가하여 모든 페이지에서 일관된 알림 UX 제공. Storage 페이지의 커스텀 토스트를 `toast.success()`/`toast.error()`로 교체
-- **네비게이션 텍스트 크기 상향**: compact 프리셋의 nav 텍스트를 `text-[10px]` → `text-[11px]`로 상향하여 가독성 개선
+토스 UX 6대 원칙에 맞춰 전반적인 인터랙션 품질을 개선했습니다.
+
+**마이크로 인터랙션:**
+- **버튼 press 피드백**: `active:scale-[0.97]` 눌림 효과 추가 (모든 Button 컴포넌트)
+- **페이지 전환 모션**: View Transitions API 활용 150ms fade 전환. 미지원 브라우저는 기존처럼 즉시 전환
+- **네비 탭 터치 타겟 확대**: `text-[11px] px-2 py-1` → `text-xs px-2.5 py-1.5`, 아이콘 `size-2.5` → `size-3`
+
+**ConfirmDialog 컴포넌트:**
+- 네이티브 `confirm()` 전면 교체. 커스텀 다이얼로그로 통일 (경고 아이콘, 실행 중 스피너)
+- Admin 탭 삭제, MakeSet 그룹 삭제, Memo 미저장 변경사항 경고 등 6곳 적용
+
+**토스트 알림 통합:**
+- 앱 전체 `alert()` → `toast.success()`/`toast.error()` 교체 (0개 alert 잔존)
+- Compatibility, Performance, UFS Info, Slot Info, Admin 탭, MakeSet, DLM 등 모든 CRUD 작업에 성공/실패 토스트 추가
+- 토스트 위치: `top-right`
+
+**스켈레톤 로딩:**
+- `TableSkeleton` 재사용 컴포넌트 신규 생성 (columns, rows props)
+- 10개 페이지의 dsy-loading 스피너를 스켈레톤으로 교체: ufsinfo, slot-infomations, sets, compatibility, performance, performance/[trId], performance/compare, performance/history/[hisId], remote
+- Dashboard는 기존 Skeleton 유지
+
+**인라인 밸리데이션:**
+- TR/TC 폼에 `submitted` 상태 기반 필수 필드 에러 표시 (빨간 테두리 + "필수 항목입니다" 메시지)
+- Compatibility TR: Product, Controller / Compatibility TC: Name
+- Performance TR: Controller / Performance TC: Name
+- UFS Info: Name
+- Save 버튼의 disabled 조건을 제거하고 Save 클릭 시 밸리데이션+시각 피드백으로 전환
+
+**비동기 버튼 로딩 상태:**
+- Admin 탭(Debug, Sets, UfsInfo, Slots)의 Save 버튼에 `saving` 상태 + Loader 스피너 추가
+
+**Empty State 개선:**
+- DataTable, DataTableShell의 "No results." → SearchX 아이콘 + "검색 결과가 없습니다" + 안내 문구
+
+**TR 수정 제한:**
+- History가 연결된 TR은 수정 불가 (Compatibility, Performance 양쪽). 409 응답 + toast.error 표시
+
+### UI/UX 기본 개선
+
+- **svelte-sonner 통합 토스트**: `<Toaster>` 컴포넌트를 전역 레이아웃에 추가하여 모든 페이지에서 일관된 알림 UX 제공
 - **AppSidebar 데드코드 정리**: 미사용 `AppSidebar.svelte` 및 `ui/sidebar/` 디렉토리(26개 파일) 삭제
 - **아이콘 버튼 aria-label 추가**: DataTableShell, DataTablePagination의 페이지네이션 버튼에 접근성 라벨 추가
 - **차트 테마 반응성 개선**: `renderChartToImage()`가 현재 다크모드 상태를 감지하여 적절한 테마와 배경색 자동 적용

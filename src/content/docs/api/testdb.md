@@ -63,6 +63,14 @@ TestDB API는 테스트 데이터의 CRUD 및 조회를 담당합니다. 모든 
 }
 ```
 
+:::caution[수정/삭제 제한]
+연결된 History가 존재하는 TR은 수정(PUT) 및 삭제(DELETE) 시 `409 Conflict` 응답을 반환합니다.
+```json
+{ "error": "연결된 History가 존재하여 수정할 수 없습니다. (TR ID: 21)" }
+```
+Performance TR에도 동일한 제한이 적용됩니다.
+:::
+
 ## Compatibility Test Cases
 
 | Method | Path | 설명 |
