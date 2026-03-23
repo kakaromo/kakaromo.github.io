@@ -51,6 +51,12 @@ export default defineConfig({
                 { label: '파일 스토리지', slug: 'guide/file-storage' },
               ],
             },
+            {
+              label: 'Agent (디바이스 평가)',
+              items: [
+                { label: 'Agent 사용 가이드', slug: 'guide/agent' },
+              ],
+            },
             { label: 'Binary Struct Mapper', slug: 'guide/bin-mapper' },
             { label: '관리자 대시보드', slug: 'guide/admin' },
           ],
@@ -68,6 +74,7 @@ export default defineConfig({
             { label: 'Guacamole 통합', slug: 'architecture/guacamole' },
             { label: 'Excel Export 설계', slug: 'architecture/excel-export' },
             { label: 'MinIO 스토리지', slug: 'architecture/minio' },
+            { label: 'Agent 아키텍처', slug: 'architecture/agent' },
             { label: 'BinMapper 엔진', slug: 'architecture/bin-mapper' },
           ],
         },
@@ -83,6 +90,7 @@ export default defineConfig({
             { label: 'Debug API', slug: 'api/debug' },
             { label: 'Guacamole API', slug: 'api/guacamole' },
             { label: 'UFSInfo API', slug: 'api/ufsinfo' },
+            { label: 'Agent API', slug: 'api/agent' },
             { label: 'Auth & Admin API', slug: 'api/auth-admin' },
           ],
         },
