@@ -8,8 +8,8 @@ description: Android 디바이스 평가 시스템의 gRPC 연동 및 내부 설
 ```
 ┌─────────────┐     gRPC (50051)     ┌──────────────┐     ADB/USB     ┌──────────┐
 │   Portal    │ ◄──────────────────► │  Go Agent    │ ◄──────────────► │ Android  │
-│ (Spring Boot)│                     │  Server      │                  │ Devices  │
-└─────────────┘                     └──────────────┘                  └──────────┘
+│ (Spring Boot)│  WebSocket (screen) │  Server      │   scrcpy (H.264)│ Devices  │
+└─────────────┘ ◄──────────────────► └──────────────┘                  └──────────┘
       │                                    │
    MySQL 3307                        ftrace / fio
   (portal DB)                        iozone / tiotest
@@ -21,6 +21,8 @@ description: Android 디바이스 평가 시스템의 gRPC 연동 및 내부 설
 com.samsung.portal.agent
 ├── controller/
 │   └── AgentController.java        # REST API (/api/agent/*)
+├── endpoint/
+│   └── AgentScreenEndpoint.java    # WebSocket 프록시 (화면 스트리밍)
 ├── entity/
 │   ├── AgentServer.java            # gRPC 서버 관리
 │   ├── BenchmarkPreset.java        # 벤치마크 프리셋
@@ -74,6 +76,20 @@ gRPC 서버 스트리밍 → SSE로 변환하여 프론트엔드에 전달합니
 - **모니터링**: `MonitorDevices` → SSE `/api/agent/monitoring/stream`
 
 `AtomicBoolean` 가드로 emitter가 닫힌 후 send 시도를 방지합니다.
+
+### 화면 스트리밍 (WebSocket 프록시)
+
+scrcpy H.264 비디오를 WebSocket으로 릴레이합니다.
+
+```
+Browser ◄─ WS ─► AgentScreenEndpoint ◄─ WS ─► Go Agent ◄─ scrcpy ─► Android
+         (Spring WebSocket proxy)        (/ws/screen/{deviceId})
+```
+
+- **AgentScreenEndpoint** (`@ServerEndpoint("/api/agent/screen/{deviceId}")`): 브라우저 ↔ Agent 양방향 프록시
+- **Go Agent handler**: scrcpy 패킷 헤더(12B) 파싱 → 순수 H.264 데이터만 전송
+- **config/keyframe 캐시**: SPS/PPS + IDR 프레임 저장, `requestSync` 메시지로 재전송 (시트 재오픈 시 즉시 화면 표시)
+- **입력 릴레이**: JSON text 메시지 (touch, key, scroll, back) → scrcpy control protocol 변환
 
 ## 데이터베이스
 
@@ -130,9 +146,10 @@ portal datasource (MySQL 3307)에 3개 테이블:
 
 ### 상태 관리
 
-- **전역 상태** (`+page.svelte`): servers, selectedServerId, devices, selectedDeviceIds, centerMode, activeJobs, jobHistory
+- **전역 상태** (`+page.svelte`): servers, selectedServerId, devices, selectedDeviceIds, centerMode, activeJobs, jobHistory, activeTraceJobId
 - **localStorage 영속**: selectedServerId (`agent:lastServerId`), jobHistory (`agent:jobHistory`, 최대 100건)
 - **페이지 레벨 SSE**: 모니터링 연결은 시트가 아닌 페이지에서 관리 (시트 닫아도 유지)
+- **Trace job 복구**: 새로고침 시 Trace job은 SSE 대신 `GetJobStatus`로 상태만 확인하여 `activeTraceJobId` 복원 (벤치마크 SSE와 분리)
 
 ### Trace Scatter Chart
 

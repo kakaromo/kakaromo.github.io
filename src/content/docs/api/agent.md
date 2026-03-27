@@ -191,6 +191,43 @@ data: {"error":"..."}
 }
 ```
 
+## Screen Streaming (WebSocket)
+
+| Protocol | Path | 설명 |
+|----------|------|------|
+| WebSocket | `/api/agent/screen/{deviceId}?serverId={id}` | 디바이스 화면 스트리밍 |
+
+### Binary 메시지 (Server → Client)
+
+H.264 Annex B 프레임 (scrcpy 패킷 헤더 제거됨). JMuxer 등으로 디코딩.
+
+### Text 메시지 (Server → Client)
+
+```json
+{"type": "info", "device": "2-1.1.2", "serial": "R3CN...", "width": 1080, "height": 2340, "name": "Galaxy S24", "message": "scrcpy session started"}
+```
+
+### Text 메시지 (Client → Server)
+
+```json
+// 터치
+{"type": "touch", "touch": {"action": 0, "x": 0.5, "y": 0.3, "width": 1080, "height": 2340, "pressure": 1.0, "pointer_id": 0}}
+
+// 키 입력
+{"type": "key", "key": {"action": 0, "keycode": 3, "repeat": 0, "meta_state": 0}}
+
+// 스크롤
+{"type": "scroll", "scroll": {"x": 0.5, "y": 0.5, "width": 1080, "height": 2340, "h_scroll": 0, "v_scroll": -1}}
+
+// Back 버튼
+{"type": "back"}
+
+// 디코더 재초기화 요청 (시트 재오픈 시)
+{"type": "requestSync"}
+```
+
+action: 0=down, 1=up, 2=move. 좌표는 0~1 정규화.
+
 ## Monitoring (SSE)
 
 | Method | Path | 설명 |

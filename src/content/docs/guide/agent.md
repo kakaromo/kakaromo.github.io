@@ -32,6 +32,7 @@ Agent 페이지는 Android 디바이스에 연결된 Go gRPC 서버(DeviceAgent)
 - **serial**: 표시용 시리얼 번호
 - **상태**: Online(초록), Busy(노랑), Offline(회색)
 - **모니터링**: 디바이스 옆 📊 아이콘 → 실시간 CPU/Memory/Disk 차트 (시트 닫아도 연결 유지)
+- **화면 보기**: 디바이스 옆 📱 아이콘 → 실시간 Android 화면 스트리밍 (터치/스크롤/키 입력 지원)
 
 ## Benchmark
 
@@ -155,6 +156,17 @@ ftrace 기반으로 Android 디바이스의 UFS/Block I/O를 수집하고 분석
 - localStorage에 최대 100건 영속 저장
 - Job ID 복사, 상세 보기, 삭제 지원
 - 수동 Job ID 입력 조회 가능
+
+## 디바이스 화면 스트리밍
+
+디바이스 옆 📱 아이콘을 클릭하면 우측 시트에 Android 화면이 실시간으로 표시됩니다.
+
+- **H.264 비디오**: scrcpy v2.4 기반, WebSocket을 통해 JMuxer로 디코딩
+- **입력 지원**: 마우스 클릭(터치), 드래그(스와이프), 스크롤, Back/Home/Recent 소프트 버튼
+- **시트를 닫아도 연결 유지** — 다시 열면 서버에서 SPS/PPS + 키프레임을 재전송하여 즉시 화면 표시
+- **연결 끊기**: 하단 "연결 끊기" 버튼으로 명시적으로 종료
+- 다른 디바이스 선택 시 기존 연결 끊고 새로 시작
+- 해상도 1080p, 비트레이트 4Mbps, 저지연 설정 (Baseline profile, B-frame 없음)
 
 ## 실시간 모니터링
 
