@@ -250,12 +250,16 @@ MetadataCommandExecutor.execCommandWithTimeout()
 ```
 MetadataDialog.svelte
 ├── Props: open, tentacleName, slotNumber, controller, nandType, cellType, fwVer, logPath
-├── State: metadataTypes[], entries[], selectedTypeKey, viewTab
+├── State: metadataTypes[], entries[], selectedTypeKey, viewTab, deltaKeys, yAxisName
 ├── 타입 선택 → fetchSlotMetadata() 또는 fetchMetadataFile()
+├── Data pipeline:
+│   entries → flattenObject() → flatEntries → applyDelta(deltaKeys) → displayEntries
+│                                                                      ↓
+│                                                               chartOption / tableColumns
 ├── Tabs:
-│   ├── Chart — PerfChart (ECharts) + 키 멀티 선택
-│   ├── Table — DataTable (TanStack) + 컬럼 토글
-│   └── Tree View — JsonView (bin-mapper 재사용)
+│   ├── Chart — PerfChart (ECharts) + 키 멀티 선택 + 키별 Δ(delta) 토글 + Y축 이름 입력
+│   ├── Table — DataTable (TanStack) + 컬럼 토글 (delta 반영)
+│   └── Tree View — JsonView (bin-mapper 재사용, 원본 데이터)
 └── Polling: 30초 간격으로 인메모리 데이터 새로고침 (수집 중일 때)
 
 MetadataBrowseCell.svelte
@@ -277,11 +281,27 @@ flattenObject({ gc: { nMinEc: 1, nMaxEc: 2 } })
 
 classifyKeys(flatEntries)
 // → { numberKeys: ["gc.nMinEc", "gc.nMaxEc"], stringKeys: [...], objectKeys: [...] }
+
+applyDelta(flatEntries, deltaKeys)
+// deltaKeys에 포함된 키만 이전 값과의 차이로 변환 (첫 값=0)
+// [100, 105, 112] → [0, 5, 7]
 ```
 
-- **numberKeys** → Chart 탭에서 선택 가능
+- **numberKeys** → Chart 탭에서 선택 가능 + 키별 Δ(delta) 토글
 - **stringKeys** → Table 탭에서만 표시
 - **objectKeys** (배열 등 flatten 불가) → Tree View로 표시
+
+### Delta 모드 데이터 파이프라인
+
+```
+entries (원본 JSON 배열)
+  → flattenObject() per entry  →  flatEntries (dot notation)
+  → applyDelta(deltaKeys)      →  displayEntries (delta 적용)
+  → chartOption / tableColumns      (Chart + Table에서 사용)
+```
+
+`displayEntries`는 `$derived`로 `flatEntries`와 `deltaKeys` 변경 시 자동 재계산됩니다.
+delta가 없으면 (`deltaKeys.size === 0`) `flatEntries`를 그대로 반환하여 불필요한 복사를 방지합니다.
 
 ### 데이터 소스 분기
 
