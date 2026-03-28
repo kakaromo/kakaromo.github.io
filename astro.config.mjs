@@ -40,6 +40,7 @@ export default defineConfig({
               items: [
                 { label: '실시간 슬롯 모니터링', slug: 'guide/slot-monitoring' },
                 { label: 'DLM 디버그', slug: 'guide/dlm-debug' },
+                { label: 'UFS Metadata 모니터링', slug: 'guide/ufs-metadata' },
                 { label: 'UFS 참조 데이터', slug: 'guide/ufs-info' },
               ],
             },
@@ -75,6 +76,7 @@ export default defineConfig({
             { label: 'Excel Export 설계', slug: 'architecture/excel-export' },
             { label: 'MinIO 스토리지', slug: 'architecture/minio' },
             { label: 'Agent 아키텍처', slug: 'architecture/agent' },
+            { label: 'UFS Metadata 설계', slug: 'architecture/ufs-metadata' },
             { label: 'BinMapper 엔진', slug: 'architecture/bin-mapper' },
           ],
         },
@@ -88,6 +90,7 @@ export default defineConfig({
             { label: 'MinIO API', slug: 'api/minio' },
             { label: 'BinMapper API', slug: 'api/binmapper' },
             { label: 'Debug API', slug: 'api/debug' },
+            { label: 'Metadata API', slug: 'api/metadata' },
             { label: 'Guacamole API', slug: 'api/guacamole' },
             { label: 'UFSInfo API', slug: 'api/ufsinfo' },
             { label: 'Agent API', slug: 'api/agent' },
