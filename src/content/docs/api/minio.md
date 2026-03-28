@@ -82,6 +82,28 @@ MinIO API는 S3 호환 오브젝트 스토리지를 관리합니다. 버킷 CRUD
 | `bucket` | 버킷 이름 |
 | `objectName` | 오브젝트 경로 (query) |
 
+### GET `/api/minio/buckets/{bucket}/objects/recursive`
+
+폴더 내 모든 파일을 재귀적으로 나열합니다. 폴더 다운로드 시 사용됩니다.
+
+| 파라미터 | 타입 | 설명 |
+|----------|------|------|
+| `bucket` | string (path) | 버킷 이름 |
+| `prefix` | string (query) | 폴더 경로 (예: `folder/subfolder/`) |
+
+**응답:**
+
+```json
+[
+  { "name": "folder/file1.txt", "size": 1024, "lastModified": "2026-03-01T09:00:00" },
+  { "name": "folder/sub/file2.txt", "size": 2048, "lastModified": "2026-03-01T10:00:00" }
+]
+```
+
+:::note
+디렉토리 마커(빈 object)는 결과에서 제외되며, 실제 파일만 반환됩니다.
+:::
+
 ### DELETE `/api/minio/buckets/{bucket}/objects`
 
 오브젝트를 삭제합니다.
