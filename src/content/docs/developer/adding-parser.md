@@ -107,7 +107,7 @@ register(30, NewParser);  // 30 = DB의 parserId
 
 ## Step 4: (선택) Go Excel Service에 Generator 추가
 
-Excel Export 기능이 필요한 경우 Go Excel Service(`~/project/excel-service`)에 Generator를 추가합니다.
+Excel Export 기능이 필요한 경우 Go Excel Service(`~/project/excel-service`)에 Generator를 추가합니다. 상세한 코드 작성 가이드는 **[Excel Generator 추가하기](/developer/adding-excel-generator/)**를 참고하세요.
 
 1. `generator/` 디렉토리에 새 Generator 구현
 2. `generator/generator.go`의 registry에 parserId 매핑 추가
