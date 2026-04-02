@@ -96,17 +96,69 @@ History 상세 페이지에서 GenPerf 차트를 전체 화면으로 볼 수 있
 - **RUNNING** 상태인 History에는 버튼이 표시되지 않음
 - 이미 재파싱 중인 History에는 "Reparsing..." 비활성 상태로 표시
 
-### 재파싱 흐름
+### 재파싱 시퀀스
 
 ```
-Reparse 클릭 → 서버에서 SSH로 원격 접속
-  → *_testcase.log 에서 로그 파일 리스트 추출
-  → 기존 JSON 삭제
-  → 각 파일별 parsingcontroller 실행
-  → (NAS인 경우) 압축파일 + JSON만 남기고 정리
+Frontend                    Backend                       Tentacle Server
+   |                          |                                |
+   |-- Reparse 클릭 --------->|                                |
+   |                          |-- SSH 연결 ------------------->|
+   |                          |                                |
+   |                          |-- *_testcase.log 읽기 -------->|
+   |                          |<- LOGFILE 목록 반환 -----------|
+   |                          |                                |
+   |                          |-- 기존 JSON 삭제 ------------->|
+   |                          |                                |
+   |                          |  [NAS 경로인 경우]             |
+   |                          |-- 압축파일 해제 -------------->|
+   |                          |                                |
+   |                          |-- parsingcontroller 실행 ----->|
+   |                          |   (파일별 순차 실행)           |
+   |                          |<- 파싱 결과 JSON 생성 ---------|
+   |                          |                                |
+   |                          |  [NAS 경로인 경우]             |
+   |                          |-- 압축/JSON 외 파일 삭제 ----->|
+   |                          |                                |
+   |<-- SSE 진행상황 push ----|                                |
+   |    (1초 간격)            |                                |
 ```
 
-**NAS(UFS) 경로**: 압축파일 해제 → 파싱 → JSON 남기고 압축/JSON 외 파일 삭제
+### NAS vs 일반 경로 분기
+
+재파싱은 `logPath`의 경로 패턴에 따라 두 가지 모드로 동작합니다:
+
+| 구분 | NAS(UFS) 경로 | 일반 경로 |
+|------|---------------|-----------|
+| 판별 | `logPath`에 "NAS" 포함 | 그 외 |
+| 전처리 | 압축파일 해제 | 없음 |
+| 파싱 | `parsingcontroller` 실행 | `parsingcontroller` 실행 |
+| 후처리 | 압축/JSON 외 파일 삭제 (디스크 절약) | 없음 |
+
+### parsingMethod 결정
+
+`parsingcontroller` 실행 시 전달되는 `parsingMethod` 파라미터는 DB에서 조회합니다:
+
+```
+History → TC (testCaseId) → Parser (parserId) → parser.name
+```
+
+TC에 설정된 `parserId`로 Parser 테이블을 조회하여 `name` 필드를 `parsingMethod`로 사용합니다. 이 값이 `parsingcontroller` 바이너리에 어떤 파서 로직을 적용할지 지시합니다.
+
+### latencyType 비트마스크
+
+`parsingcontroller`에 전달되는 `latencyType`은 TC의 `ioType` 문자열을 비트마스크로 변환한 값입니다:
+
+| ioType 문자 | 비트 | 값 |
+|-------------|------|-----|
+| R (Read) | bit 0 | 1 |
+| W (Write) | bit 1 | 2 |
+| U (Unknown) | bit 2 | 4 |
+
+**예시:**
+- ioType `"R"` → latencyType = `1` (bit0)
+- ioType `"W"` → latencyType = `2` (bit1)
+- ioType `"RW"` → latencyType = `3` (bit0 OR bit1 = 1|2)
+- ioType `"RWU"` → latencyType = `7` (1|2|4)
 
 ### 진행상황 모니터링
 

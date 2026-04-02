@@ -28,3 +28,11 @@ Samsung Portal에서 사용되는 주요 용어를 정리합니다.
 | **DataZoom** | ECharts의 줌 기능. 마우스 휠로 차트를 확대/축소합니다. |
 | **HikariCP** | Spring Boot 기본 JDBC 커넥션 풀입니다. |
 | **Runes** | Svelte 5의 반응성 시스템. `$state`, `$derived`, `$effect`, `$props`를 포함합니다. |
+| **Reparse** | 성능 결과 재파싱. 완료된 테스트의 원본 로그에서 결과 JSON을 다시 생성하는 기능입니다. |
+| **parsingcontroller** | 원격 tentacle 서버에 배포된 로그 파싱 바이너리. `parsingMethod`와 로그 파일을 입력받아 결과 JSON을 생성합니다. |
+| **headType** | HEAD 연결 타입을 구분하는 정수 값. 0=호환성 테스트, 1=성능 테스트. Slots 페이지에서 탭 필터링에 사용됩니다. |
+| **SessionLock** | VM 세션 잠금. 원격 접속 시 다른 사용자의 동시 접근을 방지하는 배타적 잠금 메커니즘입니다. |
+| **AppMacro** | 앱 이벤트 녹화/재생 기능. Android 디바이스에서 사용자 인터랙션을 기록하고 자동 재생합니다. |
+| **ScenarioCanvas** | @xyflow/svelte 기반 시나리오 편집기. 노드와 엣지로 Agent 시나리오를 시각적으로 구성합니다. |
+| **DAG (Directed Acyclic Graph)** | 방향 비순환 그래프. ScenarioCanvas에서 조건 분기가 포함된 시나리오의 실행 흐름을 표현합니다. |
+| **latencyType** | ioType 비트마스크. R(Read)=1, W(Write)=2, U(Unknown)=4. 조합 예: RW=3, RWU=7. `parsingcontroller`에 전달됩니다. |

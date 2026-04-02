@@ -23,9 +23,31 @@ description: Samsung Portal의 주요 변경 사항 및 기능 추가 이력
 - History 상세, TR 상세, Slots 페이지 3곳에 Reparse 버튼 배치
 - 브라우저 닫아도 서버에서 계속 진행, 재접속 시 자동 복원
 
+### headType 시스템
+
+HEAD 연결의 타입 구분을 이름 기반에서 정수 타입 기반으로 변경했습니다.
+
+- 기존: `name` 문자열에서 용도를 유추
+- 변경: `headType` 정수 필드로 명시적 구분 (0=호환성 테스트, 1=성능 테스트)
+- `portal_head_connections` 테이블에 `headType` 컬럼 추가
+- 프론트엔드 Slots 페이지가 headType 기반으로 탭 필터링
+
+### SessionLockManager (VM 배타적 접근)
+
+원격 VM 접속 시 세션 잠금을 통해 동시 접근을 방지합니다.
+
+- `SessionLockManager`: 서버별 세션 잠금 관리 (사용자 ID + 타임스탬프)
+- 이미 다른 사용자가 접속 중인 VM은 잠금 상태로 표시
+- 잠금 자동 해제: 접속 종료 또는 타임아웃 시 자동 릴리스
+- Remote 페이지에서 잠금 상태 시각적 표시 (잠금 아이콘 + 사용자 정보)
+
 ### Slot 페이지 성능 비교 기능
 
-슬롯의 Assigned TC 테이블에 VS 버튼 추가. 클릭 시 CompareSheet가 직접 열리며, 내장 picker로 다른 FW의 동일 TC 결과를 추가하여 비교할 수 있습니다.
+슬롯의 Assigned TC 테이블에 VS 버튼(`CompareOpenCell`) 추가. 클릭 시 CompareSheet가 직접 열리며, 내장 picker로 다른 FW의 동일 TC 결과를 추가하여 비교할 수 있습니다.
+
+- `CompareOpenCell`: TC 행에 VS 아이콘 버튼 렌더링
+- CompareSheet: 슬롯 페이지 내에서 Sheet 형태로 열림 (페이지 이동 불필요)
+- 내장 Picker로 TR 선택 → 동일 TC History 목록 → 비교 대상 추가
 
 ---
 

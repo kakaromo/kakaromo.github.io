@@ -7,7 +7,7 @@ description: xterm.js SSH 터미널과 Guacamole RDP 원격 접속 아키텍처,
 
 원격 접속은 두 가지 방식을 지원합니다:
 
-### SSH 터미널 (xterm.js) — 기본
+### SSH 터미널 (xterm.js) -- 기본
 
 ```
 Browser (XtermClient.svelte / xterm.js)
@@ -25,7 +25,7 @@ Tentacle Server (T1, T2, T3, T4, HEAD)
 - DOM 기반 렌더링으로 자연스러운 UX
 - `terminal` 패키지: `SshTerminalEndpoint`, `SshConnectionService`, `SshConnectionInfo`
 
-### RDP (Guacamole) — GUI 데스크톱
+### RDP (Guacamole) -- GUI 데스크톱
 
 ```
 Browser (GuacamoleClient.svelte)
@@ -75,6 +75,7 @@ guacamole/
 ├── controller/   GuacamoleController
 ├── dto/          VmInfo
 ├── endpoint/     GuacamoleTunnelEndpoint, GuacamoleProxyEndpoint
+├── tunnel/       SessionLockManager
 └── service/      GuacamoleService, GuacamoleApiService
 ```
 
@@ -135,6 +136,98 @@ public void onOpen(Session session, EndpointConfig config) {
 
 :::caution
 `maxIdleTimeout`을 설정하지 않으면 기본값(30초)으로 인해 유휴 상태에서 WebSocket이 close code 0으로 끊기는 문제가 발생합니다.
+:::
+
+## SessionLockManager
+
+VM 단위의 배타적 접근 제어를 담당하는 컴포넌트입니다. 한 VM에 대해 한 명의 사용자만 RDP/VNC 세션을 가질 수 있도록 보장합니다.
+
+### 설계 목적
+
+- **1VM = 1사용자**: 동일 VM에 대해 동시에 하나의 RDP/VNC 연결만 허용
+- **접속 시도 알림**: 다른 사용자가 접속을 시도하면 현재 사용자에게 알림 전달
+- **비정상 종료 대응**: Heartbeat 기반 타임아웃으로 좀비 Lock 자동 해제
+
+### 데이터 구조
+
+```java
+// VM별 Lock 정보
+ConcurrentHashMap<String, LockInfo> locks;      // vmName → LockInfo
+
+// VM별 접속 시도 알림 큐
+ConcurrentHashMap<String, List<AttemptInfo>> attempts;  // vmName → 시도 목록
+```
+
+### 레코드 정의
+
+| 레코드 | 필드 | 설명 |
+|--------|------|------|
+| `LockInfo` | `user` | Lock을 보유한 사용자 |
+| | `protocol` | 접속 프로토콜 (rdp, vnc) |
+| | `lockedAt` | Lock 획득 시각 |
+| | `lastHeartbeat` | 마지막 Heartbeat 시각 |
+| `AttemptInfo` | `user` | 접속을 시도한 사용자 |
+| | `attemptedAt` | 시도 시각 |
+
+### 주요 메서드
+
+| 메서드 | 반환 | 동작 |
+|--------|------|------|
+| `tryAcquire(vmName, user, protocol)` | `null` (성공) / `LockInfo` (거부) | Lock 획득 시도. 만료된 Lock은 자동 해제 후 재시도. 거부 시 attempts 큐에 기록 |
+| `release(vmName, user)` | void | Lock 해제 (본인 Lock만 해제 가능) |
+| `forceRelease(vmName)` | void | 강제 Lock 해제 (관리자/시스템용, 소유자 체크 없음) |
+| `heartbeat(vmName, user)` | void | Heartbeat 갱신 -- `lastHeartbeat`를 현재 시각으로 업데이트 |
+| `pollAttempts(vmName)` | `List<AttemptInfo>` | 접속 시도 알림 가져오기 (가져오면 큐에서 제거) |
+| `hasAttempts(vmName)` | boolean | 접속 시도가 있는지 확인 (제거하지 않음) |
+| `getLock(vmName)` | `LockInfo` / null | 현재 Lock 상태 조회 |
+| `getAllLocks()` | `Map<String, LockInfo>` | 전체 Lock 상태 조회 (불변 맵) |
+
+### Lock 획득 흐름
+
+```
+tryAcquire(vm, userB, rdp)
+    │
+    ├─ Lock 없음 → LockInfo 생성, 반환 null (성공)
+    │
+    ├─ Lock 있음, 같은 사용자 → LockInfo 갱신, 반환 null (성공)
+    │
+    └─ Lock 있음, 다른 사용자
+         │
+         ├─ Lock 만료 (lastHeartbeat > 5분) → 자동 해제 후 새 Lock 획득
+         │
+         └─ Lock 유효 → attempts 큐에 기록, 기존 LockInfo 반환 (거부)
+```
+
+### 자동 정리 (Auto-Cleanup)
+
+```java
+@Scheduled(fixedRate = 60_000)  // 1분마다 실행
+public void cleanupExpiredLocks() {
+    // lastHeartbeat로부터 5분(LOCK_TIMEOUT) 경과한 Lock 제거
+}
+```
+
+- `@Scheduled`로 60초마다 전체 Lock을 순회
+- `lastHeartbeat`로부터 5분이 지난 Lock을 자동 해제
+- 해당 VM의 attempts 큐도 함께 정리
+
+:::note
+`@EnableScheduling`이 `PortalApplication`에 설정되어 있어야 `@Scheduled` 메서드가 동작합니다.
+:::
+
+### GuacamoleTunnelEndpoint 연동
+
+`GuacamoleTunnelEndpoint`의 WebSocket 생명주기에서 `SessionLockManager`를 호출합니다:
+
+| WebSocket 이벤트 | SessionLockManager 호출 |
+|-------------------|------------------------|
+| `@OnOpen` | `tryAcquire()` -- 실패 시 WebSocket 즉시 close |
+| 메시지 수신 중 (주기적) | `heartbeat()` -- 연결이 살아있음을 알림 |
+| `@OnClose` | `release()` -- Lock 해제 |
+| 에러/비정상 종료 | 자동 정리가 5분 후 Lock 해제 |
+
+:::caution
+`forceRelease()`는 소유자 체크 없이 Lock을 해제합니다. Admin API나 시스템 내부에서만 사용해야 하며, 일반 사용자 API에 노출하지 않아야 합니다.
 :::
 
 ## 프론트엔드

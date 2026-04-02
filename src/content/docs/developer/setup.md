@@ -49,6 +49,59 @@ brew install protobuf
 <protocExecutable>/opt/homebrew/bin/protoc</protocExecutable>
 ```
 
+:::note
+이 이슈는 macOS Sequoia의 보안 정책(`com.apple.provenance` extended attribute)으로 인해 Maven이 다운로드한 protoc 바이너리의 실행이 차단되는 현상입니다. Homebrew로 설치한 바이너리는 이 제한을 받지 않습니다.
+:::
+
+---
+
+## Go Agent 서버 개발 환경
+
+Agent 기능을 개발하려면 Go Agent 서버가 필요합니다.
+
+### Go 설치
+
+```bash
+brew install go  # Go 1.22 이상
+```
+
+### proto 컴파일 도구 설치
+
+```bash
+# protoc (이미 설치된 경우 생략)
+brew install protobuf
+
+# Go gRPC 플러그인
+go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+```
+
+설치 후 `$HOME/go/bin`이 PATH에 포함되어 있는지 확인합니다:
+
+```bash
+export PATH="$PATH:$HOME/go/bin"
+```
+
+### Agent 서버 실행
+
+```bash
+cd ~/project/agent
+go run .
+```
+
+기본적으로 포트 50051에서 gRPC 서버가 시작됩니다.
+
+### Proto 컴파일 (Go)
+
+```bash
+cd ~/project/agent
+PATH="$PATH:$HOME/go/bin" protoc \
+  --go_out=paths=source_relative:. \
+  --go-grpc_out=paths=source_relative:. \
+  proto/agent.proto \
+  && cp proto/*.go pb/
+```
+
 ---
 
 ## IDE 설정
@@ -129,6 +182,7 @@ cd frontend && npm run build
 | MinIO | 9000 | S3 스토리지 |
 | guacd | 4822 | 원격 접속 데몬 |
 | Go Excel Service | 50052 | Excel Export (gRPC) |
+| Go Agent Server | 50051 | Agent 디바이스 관리 (gRPC) |
 | Head Server | 10001, 10030 | 테스트 제어 서버 |
 
 :::tip

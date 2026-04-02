@@ -173,6 +173,105 @@ frontend/src/lib/
 
 ---
 
+## Proto 컴파일 워크플로우
+
+Portal은 Go Agent 서버 및 Go Excel Service와 gRPC로 통신합니다. 양쪽 프로젝트의 proto 파일을 동기화된 상태로 유지해야 합니다.
+
+### Proto 파일 위치
+
+| 프로젝트 | 경로 |
+|----------|------|
+| Go Agent | `~/project/agent/proto/agent.proto` |
+| Java Portal | `src/main/proto/device_agent.proto` |
+
+두 파일은 동일한 서비스/메시지 정의를 공유하며, Java 쪽에만 `java_package` 옵션이 추가됩니다.
+
+### Go proto 컴파일
+
+```bash
+cd ~/project/agent
+PATH="$PATH:$HOME/go/bin" protoc \
+  --go_out=paths=source_relative:. \
+  --go-grpc_out=paths=source_relative:. \
+  proto/agent.proto \
+  && cp proto/*.go pb/
+```
+
+- `protoc-gen-go`, `protoc-gen-go-grpc` 플러그인이 `$HOME/go/bin`에 설치되어 있어야 합니다.
+- 생성된 `.go` 파일을 `pb/` 디렉토리로 복사합니다.
+
+### Java proto 컴파일
+
+Maven 빌드 시 `protobuf-maven-plugin`이 자동으로 컴파일합니다.
+
+```bash
+./mvnw clean install
+```
+
+macOS Sequoia 환경에서는 `pom.xml`에 `protocExecutable=/opt/homebrew/bin/protoc`을 설정해야 합니다 (xattr 이슈 회피).
+
+:::caution
+Proto 파일을 수정할 때는 반드시 Go와 Java 양쪽 모두 업데이트하고 컴파일해야 합니다. `java_package` 옵션만 차이가 있고 나머지 정의는 동일해야 합니다.
+:::
+
+---
+
+## Agent gRPC 서비스 추가 패턴
+
+새로운 Agent gRPC RPC를 추가할 때의 전체 워크플로우입니다.
+
+### 1. Proto 정의 추가
+
+`agent.proto`에 새 RPC와 메시지를 정의합니다 (Go/Java 양쪽 동일).
+
+```protobuf
+service DeviceAgent {
+  rpc NewMethod(NewRequest) returns (NewResponse);
+}
+
+message NewRequest { ... }
+message NewResponse { ... }
+```
+
+### 2. Go 서버 구현
+
+Go Agent 서버에서 RPC 핸들러를 구현합니다.
+
+```go
+func (s *server) NewMethod(ctx context.Context, req *pb.NewRequest) (*pb.NewResponse, error) {
+    // 구현
+}
+```
+
+### 3. Java gRPC Client 추가
+
+`AgentGrpcClient.java`에 새 메서드를 추가합니다.
+
+```java
+public NewResponse newMethod(String host, int port, NewRequest request) {
+    var channel = connectionManager.getChannel(host, port);
+    var stub = DeviceAgentGrpc.newBlockingStub(channel);
+    return stub.newMethod(request);
+}
+```
+
+### 4. Controller 엔드포인트 추가
+
+`AgentController.java`에 REST API를 추가합니다.
+
+```java
+@PostMapping("/new-method")
+public ResponseEntity<?> newMethod(@RequestBody NewMethodDto dto) {
+    // AgentGrpcClient 호출
+}
+```
+
+### 5. 프론트엔드 연동
+
+SvelteKit에서 API를 호출하고 UI를 구현합니다.
+
+---
+
 ## 커밋 메시지
 
 커밋 메시지는 한국어로 작성합니다. prefix는 영어를 유지합니다.

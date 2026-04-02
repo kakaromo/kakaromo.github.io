@@ -43,6 +43,62 @@ Head 프로토콜은 두 개의 소켓을 사용합니다:
 | compatibility | 1 | 2 | 10001 | 10002 |
 | performance | 30 | 32 | 10030 | 10032 |
 
+## headType 시스템
+
+### 개요
+
+Head 연결의 종류(호환성/성능)를 구분하기 위해 정수 기반 `headType` 필드를 사용합니다. 기존에는 연결 이름(name) 문자열에 "compatibility" / "performance"가 포함되어 있는지로 판별했으나, 이름 규칙에 의존하는 방식은 깨지기 쉬워 명시적인 정수 타입으로 마이그레이션되었습니다.
+
+### 타입 상수
+
+`HeadConnection` 엔티티에 정의된 상수:
+
+| 상수 | 값 | 설명 |
+|------|-----|------|
+| `TYPE_COMPATIBILITY` | 0 | 호환성 테스트 Head |
+| `TYPE_PERFORMANCE` | 1 | 성능 테스트 Head |
+| (예약) | 2+ | 향후 확장용 |
+
+### DB 스키마
+
+`portal_head_connections` 테이블:
+
+| 컬럼 | 타입 | 설명 |
+|------|------|------|
+| `id` | BIGINT (PK, AUTO_INCREMENT) | 기본키 |
+| `name` | VARCHAR(100), UNIQUE | 연결 이름 |
+| `head_type` | INT, NOT NULL, DEFAULT 0 | 연결 타입 (0=호환성, 1=성능) |
+| `host` | VARCHAR(100) | Head 서버 호스트 |
+| `port_suffix` | VARCHAR(10) | outSocket 포트 suffix |
+| `listen_port_suffix` | VARCHAR(10) | inSocket 포트 suffix |
+| `enabled` | BOOLEAN, DEFAULT TRUE | 활성화 여부 |
+| `test_mode` | BOOLEAN, DEFAULT FALSE | 테스트 모드 |
+| `created_at` | DATETIME | 생성 시각 |
+| `updated_at` | DATETIME | 수정 시각 |
+
+### HeadTcpClient에서의 사용
+
+`HeadTcpClient`는 생성자에서 `headType` 정수를 직접 받아 필드로 보관합니다. 이름 문자열 파싱 없이 타입을 판별합니다:
+
+```java
+public HeadTcpClient(String name, int headType, ...) {
+    this.headType = headType;  // 0=compatibility, 1=performance
+}
+
+public boolean isCompatibility() { return headType == 0; }
+public boolean isPerformance() { return headType == 1; }
+```
+
+`HeadConnection` 엔티티에서도 동일한 편의 메서드를 제공하여 `headType == TYPE_COMPATIBILITY` 대신 `isCompatibility()`로 가독성 있게 사용합니다.
+
+### Admin UI 설정
+
+Admin 페이지의 Head Connections 탭에서 연결을 추가/수정할 때 **Type** 드롭다운으로 `Compatibility` 또는 `Performance`를 선택합니다. 기존 연결은 마이그레이션 시 이름 기반으로 자동 매핑되었으며, 이후에는 `head_type` 컬럼 값만 사용합니다.
+
+:::tip
+새로운 Head 연결 타입이 필요하면 `HeadConnection`에 상수(예: `TYPE_CUSTOM = 2`)를 추가하고, Admin UI 드롭다운에 옵션을 추가하면 됩니다. `headType` 필드가 정수이므로 확장이 용이합니다.
+:::
+
 ## 설정
 
 ### 연결 정보 (DB 관리)
