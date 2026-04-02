@@ -258,3 +258,66 @@ TC 조합을 그룹으로 저장/관리합니다. Slots 페이지의 SetTC에서
   "updatedAt": "2026-03-06T08:30:00"
 }
 ```
+
+---
+
+## Reparse (재파싱)
+
+성능 테스트 결과를 원본 로그에서 다시 파싱합니다. SSH로 원격 서버에 접속하여 `parsingcontroller`를 실행하며, 백그라운드로 동작합니다.
+
+### POST `/api/reparse/{historyId}`
+
+재파싱을 시작합니다.
+
+**응답 (200):**
+
+```json
+{
+  "jobId": "550e8400-e29b-41d4-a716-446655440000",
+  "historyId": 123,
+  "tcId": 45,
+  "tentacleName": "T10",
+  "state": "preparing",
+  "totalFiles": 0,
+  "currentIndex": 0,
+  "currentFileName": "",
+  "error": "",
+  "startedAt": 1712150400000,
+  "updatedAt": 1712150400000
+}
+```
+
+**에러 응답:**
+
+| 코드 | 상황 |
+|------|------|
+| 400 | logPath 없음, RUNNING 상태, TC/Parser 없음 |
+| 409 | 이미 재파싱 진행 중 |
+
+### GET `/api/reparse/jobs`
+
+모든 활성 재파싱 작업 목록을 반환합니다. 완료된 작업은 10분 후 자동 정리됩니다.
+
+### GET `/api/reparse/jobs/{jobId}`
+
+특정 재파싱 작업의 상태를 조회합니다.
+
+### GET `/api/reparse/stream` (SSE)
+
+실시간 재파싱 진행상황을 Server-Sent Events로 스트리밍합니다.
+
+**이벤트:**
+
+| 이벤트 | 데이터 | 설명 |
+|--------|--------|------|
+| `init` | `{ jobs: [...] }` | 연결 시 전체 작업 목록 |
+| `update` | `{ jobs: [...] }` | 1초 주기 변경사항 push |
+
+**Job 상태:**
+
+| state | 설명 |
+|-------|------|
+| `preparing` | SSH 연결 및 파일 탐색 중 |
+| `running` | parsingcontroller 실행 중 |
+| `completed` | 재파싱 완료 |
+| `failed` | 오류 발생 |

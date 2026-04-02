@@ -3,6 +3,32 @@ title: 변경 이력
 description: Samsung Portal의 주요 변경 사항 및 기능 추가 이력
 ---
 
+## 2026-04-03
+
+### 성능 결과 재파싱 (Reparse) 기능
+
+완료된 성능 테스트의 원본 로그에서 결과 JSON을 다시 생성하는 기능입니다. 파싱 오류 발생 시나 파서 업데이트 후 재파싱이 필요할 때 사용합니다.
+
+**백엔드:**
+- `PerformanceReparseService`: SSH로 원격 tentacle 서버 접속, `parsingcontroller` 백그라운드 실행 (ExecutorService 4스레드)
+- NAS(UFS) 경로: 압축 해제 → 파싱 → 압축/JSON 외 파일 삭제
+- 일반 경로: `*_testcase.log` → LOGFILE 추출 → 파일 존재 검증 → JSON 삭제 → 파싱
+- `parsingMethod`는 DB의 parser name 사용 (TC → parserId → parser.name)
+- `latencyType` 비트마스크: ioType의 R→bit0, W→bit1, U→bit2
+- `ReparseController`: REST API + SSE 실시간 진행 스트리밍 (1초 push)
+
+**프론트엔드:**
+- `reparseStore`: 글로벌 Svelte 5 store (SSE + localStorage 영속)
+- `ReparseFloatingCard`: 모든 페이지 우하단 플로팅 진행 카드 (파일명, 진행률, 경과시간)
+- History 상세, TR 상세, Slots 페이지 3곳에 Reparse 버튼 배치
+- 브라우저 닫아도 서버에서 계속 진행, 재접속 시 자동 복원
+
+### Slot 페이지 성능 비교 기능
+
+슬롯의 Assigned TC 테이블에 VS 버튼 추가. 클릭 시 CompareSheet가 직접 열리며, 내장 picker로 다른 FW의 동일 TC 결과를 추가하여 비교할 수 있습니다.
+
+---
+
 ## 2026-03-20
 
 ### 토스 UX 철학 기반 종합 UI 개선
