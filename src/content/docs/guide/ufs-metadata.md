@@ -12,7 +12,7 @@ UFS 제품마다 지원하는 메타데이터 종류가 다릅니다. 이 기능
 | 관리 항목 | 설명 | 예시 |
 |-----------|------|------|
 | **Metadata Type** | 수집할 메타데이터 종류 | SSR, Telemetry, Read10Debug |
-| **Command** | 각 타입별 adb shell 실행 명령어 | `/data/local/tmp/ufs-utils /dev/block/sda ssr --json` |
+| **Command** | 각 타입별 수집 명령어 (Tool: adb 명령어, Sysfs: 경로+정규식) | Tool: `/data/local/tmp/ufs-utils ... --json`, Sysfs: `/sys/block/sda/stat` |
 | **Product Mapping** | UFS 제품(controller/nandType/cellType)별 지원 타입 매핑 | Santos + TLC + V7 → SSR, Telemetry |
 
 ## 수집 활성화 (기본값: OFF)
@@ -56,15 +56,16 @@ adb -s {serial} shell 'chmod +x /data/local/tmp/{tool_name}'
 
 ### 3. 주기적 수집
 
-설정된 간격(기본 5분)마다 각 메타데이터 타입의 명령어를 실행합니다:
+설정된 간격(기본 5분)마다 각 메타데이터 타입의 명령어를 command_type에 따라 실행합니다:
 
-```
-adb -s {serial} shell '{command_template}'
-```
-
-예시:
+**Tool 모드**: `adb shell`로 명령어 실행 → JSON 출력
 ```
 adb -s 12345678 shell '/data/local/tmp/ufs-utils /dev/block/sda ssr --json'
+```
+
+**Sysfs 모드**: `adb shell cat`으로 경로 읽기 → 정규식 파싱 → JSON 변환
+```
+adb -s 12345678 shell 'cat /sys/block/sda/stat'
 ```
 
 ### 4. JSON 저장
@@ -204,13 +205,49 @@ flatten된 결과에서:
 
 ### Commands
 
-각 타입에 연결된 adb 실행 명령어입니다.
+각 타입에 연결된 수집 명령어입니다. **Command Type**에 따라 실행 방식이 달라집니다.
 
 | 필드 | 설명 |
 |------|------|
 | Metadata Type | 연결할 타입 |
-| Command Template | adb shell로 실행할 명령어 (예: `/data/local/tmp/ufs-utils /dev/block/sda ssr --json`) |
-| Debug Tool | 필요한 바이너리 (debug_tools에서 선택, 없으면 None) |
+| Command Type | **Tool** (기본) 또는 **Sysfs** |
+| Command Template | 실행할 명령어 또는 sysfs 경로 (아래 참조) |
+| Debug Tool | 필요한 바이너리 — Tool 모드에서만 사용. Sysfs 모드에서는 불필요 |
+
+#### Tool 모드 (기본)
+
+기존 방식. `adb shell`로 명령어를 실행하고 JSON 출력을 기대합니다.
+
+```
+/data/local/tmp/ufs-utils /dev/block/sda ssr --json
+```
+
+#### Sysfs 모드
+
+`adb shell cat`으로 sysfs/proc 경로를 읽고, 정규식으로 값을 추출하여 JSON으로 변환합니다. 줄바꿈으로 여러 경로를 나열합니다.
+
+**포맷**: `경로 | regex:패턴 | keys:키1,키2`
+
+```
+/sys/block/sda/size
+/sys/block/sda/stat | regex:(\d+)\s+\d+\s+(\d+) | keys:read_ios,read_sectors
+/proc/meminfo | regex:MemTotal:\s+(\d+) | keys:mem_total_kb
+```
+
+| 구성요소 | 필수 | 설명 |
+|----------|------|------|
+| 경로 | 필수 | `adb shell cat`으로 읽을 파일 경로 |
+| `regex:패턴` | 선택 | 정규식 캡처 그룹으로 원하는 값만 추출. 생략 시 전체 출력을 값으로 사용 |
+| `keys:키1,키2` | 선택 | 캡처 그룹에 대응하는 JSON key. 생략 시 경로 마지막 세그먼트가 key |
+
+위 예시의 수집 결과:
+```json
+{ "size": "125034840", "read_ios": "1234", "read_sectors": "56789", "mem_total_kb": "3891204" }
+```
+
+:::tip
+sysfs/proc의 출력이 단순 숫자든, `key : value` 형태든, 공백 구분 여러 값이든 정규식으로 원하는 부분만 추출할 수 있습니다. 캡처 그룹 `()` 개수와 `keys` 개수를 맞추면 됩니다.
+:::
 
 ### Product Mappings
 
