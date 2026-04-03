@@ -33,38 +33,39 @@ Samsung ADFS (sts.secsso.net/adfs)
 
 ## 인증 플로우
 
-```
-사용자                    Portal (Spring)              Galaxy SSO (ADFS)
-  |                           |                              |
-  |-- 페이지 접속 (/) ------->|                              |
-  |<-- SPA 로드 ------------- |                              |
-  |                           |                              |
-  |-- GET /api/auth/me -----> |                              |
-  |<-- {authenticated:false} -|                              |
-  |                           |                              |
-  |-- "Login" 클릭 ---------> |                              |
-  |   /oauth2/authorization/galaxy                           |
-  |<-- 302 Redirect --------- |                              |
-  |                           |                              |
-  |-- ADFS 로그인 페이지 ------------------------------------>|
-  |<-- 인증 후 콜백 ------------------------------------------|
-  |   /login/oauth2/code/galaxy?code=xxx                     |
-  |                           |                              |
-  |                           |-- 토큰 교환 (code -> token) ->|
-  |                           |<-- access_token + id_token ---|
-  |                           |                              |
-  |<-- 302 -> / + JSESSIONID -|                              |
-  |                           |                              |
-  |-- GET /api/auth/me -----> |                              |
-  |<-- {authenticated:true,   |                              |
-  |     name:"홍길동",        |                              |
-  |     email:"hong@..."}    |                              |
-  |                           |                              |
-  |-- API 요청 + XSRF 토큰 ->|  (JSESSIONID로 인증 확인)    |
-  |<-- 응답 ----------------- |                              |
-  |                           |                              |
-  |-- POST /api/auth/logout ->|                              |
-  |<-- {loggedOut:true} ----- |  (세션 무효화)               |
+```mermaid
+sequenceDiagram
+    participant U as 사용자
+    participant P as Portal (Spring)
+    participant S as Galaxy SSO (ADFS)
+
+    U->>P: 페이지 접속 (/)
+    P-->>U: SPA 로드
+
+    U->>P: GET /api/auth/me
+    P-->>U: {authenticated:false}
+
+    U->>P: "Login" 클릭<br/>/oauth2/authorization/galaxy
+    P-->>U: 302 Redirect
+
+    U->>S: ADFS 로그인 페이지
+    S-->>U: 인증 후 콜백<br/>/login/oauth2/code/galaxy?code=xxx
+
+    P->>S: 토큰 교환 (code → token)
+    S-->>P: access_token + id_token
+
+    P-->>U: 302 → / + JSESSIONID
+
+    U->>P: GET /api/auth/me
+    P-->>U: {authenticated:true,<br/>name:"홍길동",<br/>email:"hong@..."}
+
+    U->>P: API 요청 + XSRF 토큰
+    Note over P: JSESSIONID로 인증 확인
+    P-->>U: 응답
+
+    U->>P: POST /api/auth/logout
+    Note over P: 세션 무효화
+    P-->>U: {loggedOut:true}
 ```
 
 ## application.yaml 설정

@@ -98,29 +98,30 @@ History 상세 페이지에서 GenPerf 차트를 전체 화면으로 볼 수 있
 
 ### 재파싱 시퀀스
 
-```
-Frontend                    Backend                       Tentacle Server
-   |                          |                                |
-   |-- Reparse 클릭 --------->|                                |
-   |                          |-- SSH 연결 ------------------->|
-   |                          |                                |
-   |                          |-- *_testcase.log 읽기 -------->|
-   |                          |<- LOGFILE 목록 반환 -----------|
-   |                          |                                |
-   |                          |-- 기존 JSON 삭제 ------------->|
-   |                          |                                |
-   |                          |  [NAS 경로인 경우]             |
-   |                          |-- 압축파일 해제 -------------->|
-   |                          |                                |
-   |                          |-- parsingcontroller 실행 ----->|
-   |                          |   (파일별 순차 실행)           |
-   |                          |<- 파싱 결과 JSON 생성 ---------|
-   |                          |                                |
-   |                          |  [NAS 경로인 경우]             |
-   |                          |-- 압축/JSON 외 파일 삭제 ----->|
-   |                          |                                |
-   |<-- SSE 진행상황 push ----|                                |
-   |    (1초 간격)            |                                |
+```mermaid
+sequenceDiagram
+    participant F as Frontend
+    participant B as Backend
+    participant T as Tentacle Server
+
+    F->>B: Reparse 클릭
+    B->>T: SSH 연결
+    B->>T: *_testcase.log 읽기
+    T-->>B: LOGFILE 목록 반환
+    B->>T: 기존 JSON 삭제
+
+    opt NAS 경로인 경우
+        B->>T: 압축파일 해제
+    end
+
+    B->>T: parsingcontroller 실행 (파일별 순차)
+    T-->>B: 파싱 결과 JSON 생성
+
+    opt NAS 경로인 경우
+        B->>T: 압축/JSON 외 파일 삭제
+    end
+
+    B-->>F: SSE 진행상황 push (1초 간격)
 ```
 
 ### NAS vs 일반 경로 분기
