@@ -72,6 +72,7 @@ erDiagram
         BIGINT id PK
         BIGINT metadata_type_id FK
         VARCHAR command_template
+        VARCHAR command_type
         BIGINT debug_tool_id FK
         VARCHAR description
         DATETIME created_at
@@ -161,7 +162,9 @@ collectOnce(SlotCollectionContext)
   ├── ReentrantLock.tryLock() — 동시 실행 방지
   │
   ├── 각 UfsMetadataCommand에 대해:
-  │   ├── adb shell로 명령어 실행 (60초 timeout)
+  │   ├── command_type 분기:
+  │   │   ├── "tool" → adb shell로 명령어 실행 (JSON 출력 기대)
+  │   │   └── "sysfs" → executeSysfsRead() (경로 읽기 + 정규식 파싱)
   │   ├── 응답이 JSON인지 검증 ({ 또는 [ 로 시작)
   │   ├── ObjectMapper로 파싱 → Map<String, Object>
   │   ├── "time" 필드 추가 (elapsedMinutes)
@@ -170,6 +173,39 @@ collectOnce(SlotCollectionContext)
   │
   └── elapsedMinutes += collectionIntervalMin
 ```
+
+### Command Type: tool vs sysfs
+
+| command_type | 실행 방식 | commandTemplate 포맷 | 출력 |
+|---|---|---|---|
+| **tool** (기본) | `adb shell '{commandTemplate}'` | 쉘 명령어 문자열 | JSON 직접 출력 |
+| **sysfs** | `adb shell cat {경로}` × N개 | 줄바꿈 구분 경로 + 정규식 | plaintext → JSON 변환 |
+
+#### sysfs commandTemplate 포맷
+
+각 줄: `경로 | regex:패턴 | keys:키1,키2`
+
+```
+/sys/block/sda/size
+/sys/block/sda/stat | regex:(\d+)\s+\d+\s+(\d+) | keys:read_ios,read_sectors
+/proc/meminfo | regex:MemTotal:\s+(\d+) | keys:mem_total_kb
+```
+
+- **경로만** — 전체 값을 경로 마지막 세그먼트(예: `size`)를 key로 저장
+- **regex 추가** — 정규식 캡처 그룹으로 원하는 값만 추출
+- **keys 추가** — 캡처 그룹에 대응하는 JSON key 지정 (생략 시 경로 마지막 세그먼트)
+
+수집 결과 예시:
+
+```json
+[
+  { "time": 0,  "size": "125034840", "read_ios": "1234", "read_sectors": "56789", "mem_total_kb": "3891204" },
+  { "time": 5,  "size": "125034840", "read_ios": "1340", "read_sectors": "58012", "mem_total_kb": "3891204" },
+  { "time": 10, "size": "125034840", "read_ios": "1456", "read_sectors": "59234", "mem_total_kb": "3891204" }
+]
+```
+
+이 JSON 배열은 기존 tool 방식과 동일한 구조이므로, 프론트엔드 차트에서 `time`을 X축, 나머지 필드를 Y축으로 자동 표시됩니다.
 
 ### 수집 중지 (stopCollection)
 
