@@ -53,7 +53,7 @@ erDiagram
     ufs_metadata_types {
         BIGINT id PK
         VARCHAR name
-        VARCHAR type_key UK
+        VARCHAR type_key
         VARCHAR category
         BOOLEAN enabled
         VARCHAR description
@@ -80,16 +80,16 @@ erDiagram
 
     ufs_product_metadata {
         BIGINT id PK
-        VARCHAR controller "nullable"
-        VARCHAR cell_type "nullable"
-        VARCHAR nand_type "nullable"
-        VARCHAR oem "nullable"
+        VARCHAR controller
+        VARCHAR cell_type
+        VARCHAR nand_type
+        VARCHAR oem
         BIGINT metadata_type_id FK
     }
 
-    ufs_metadata_types ||--o{ ufs_metadata_commands : "1:N"
-    ufs_metadata_types ||--o{ ufs_product_metadata : "1:N"
-    debug_tools ||--o| ufs_metadata_commands : "0..1"
+    ufs_metadata_types ||--o{ ufs_metadata_commands : has
+    ufs_metadata_types ||--o{ ufs_product_metadata : has
+    debug_tools ||--o{ ufs_metadata_commands : uses
 ```
 
 ### 제품 매핑 쿼리 로직

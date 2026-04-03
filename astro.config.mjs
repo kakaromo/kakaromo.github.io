@@ -1,12 +1,12 @@
 // @ts-check
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
-import { rehypeMermaid } from '@beoe/rehype-mermaid';
+import remarkMermaidjs from 'remark-mermaidjs';
 
 export default defineConfig({
   site: 'https://kakaromo.github.io',
   markdown: {
-    rehypePlugins: [[rehypeMermaid, { class: 'not-content' }]],
+    remarkPlugins: [remarkMermaidjs],
   },
   integrations: [
     starlight({
