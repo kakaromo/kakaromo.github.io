@@ -6,10 +6,17 @@ import rehypeMermaid from 'rehype-mermaid';
 export default defineConfig({
   site: 'https://kakaromo.github.io',
   markdown: {
-    rehypePlugins: [[rehypeMermaid, { strategy: 'inline-svg' }]],
+    rehypePlugins: [[rehypeMermaid, { strategy: 'pre-mermaid' }]],
   },
   integrations: [
     starlight({
+      head: [
+        {
+          tag: 'script',
+          attrs: { type: 'module' },
+          content: `import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs'; mermaid.initialize({ startOnLoad: true, theme: 'default' });`,
+        },
+      ],
       title: 'Portal Docs',
       defaultLocale: 'root',
       locales: {
