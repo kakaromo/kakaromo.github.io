@@ -26,43 +26,65 @@ Svelte 5 Runes(`$state`, `$derived`, `$effect`)를 사용하여 명시적 반응
 
 ## 디렉토리 구조
 
-```
-frontend/
-├── src/
-│   ├── lib/
-│   │   ├── api/                        # API 클라이언트 계층
-│   │   │   ├── client.ts              # 기본 fetch 래퍼 (XSRF, 401 처리)
-│   │   │   ├── testdb.ts             # TestDB CRUD + Head 명령 + TC Group
-│   │   │   ├── ufsinfo.ts            # UFSInfo 조회
-│   │   │   ├── guacamole.ts          # Guacamole API
-│   │   │   ├── minio.ts              # MinIO API (XHR 업로드 포함)
-│   │   │   ├── binMapper.ts          # BinMapper API
-│   │   │   └── types.ts              # 공유 TypeScript 인터페이스
-│   │   ├── stores/
-│   │   │   ├── auth.svelte.ts         # 인증 상태 스토어
-│   │   │   ├── tentacle.svelte.ts     # Tentacle 경로 프리픽스 스토어
-│   │   │   ├── menu.svelte.ts         # 메뉴 가시성 스토어
-│   │   │   ├── reparse.svelte.ts      # Reparse Job SSE 스토어
-│   │   │   └── headSlotStore.svelte.ts # Head SSE 스토어
-│   │   ├── config/
-│   │   │   └── slotState.ts           # 슬롯 상태 색상/아이콘 중앙 관리
-│   │   ├── utils/
-│   │   │   └── excel-export.ts        # Excel Export 유틸리티
-│   │   └── components/
-│   │       ├── ui/                    # shadcn-svelte 기본 UI 컴포넌트
-│   │       ├── data-table/           # 데이터 테이블 시스템
-│   │       ├── perf-chart/           # ECharts 래퍼
-│   │       ├── perf-content/         # 성능 데이터 시각화 (15개)
-│   │       ├── perf-compare/         # 성능 비교 뷰
-│   │       ├── bin-mapper/           # BinMapper 뷰
-│   │       ├── PerfGenerator.svelte  # 성능 코드 생성기
-│   │       ├── PerfGenerator.types.ts # 공유 타입 (FieldNode, TabInfo 등)
-│   │       ├── PerfPreview.svelte    # 실시간 차트/테이블 미리보기
-│   │       ├── ReparseFloatingCard.svelte # Reparse 진행률 플로팅 카드
-│   │       └── JsonTreeView.svelte   # JSON 트리 뷰 (읽기 전용)
-│   └── routes/                       # 페이지 라우트
-│       └── +layout.svelte            # 글로벌 레이아웃 (네비게이션 + 스토어 초기화)
-└── package.json
+```mermaid
+flowchart TD
+    subgraph API ["api/ — API 클라이언트 계층"]
+        direction LR
+        API_CLIENT["client.ts\nfetch 래퍼\n(XSRF, 401)"]
+        API_TESTDB["testdb.ts\nTestDB CRUD"]
+        API_UFS["ufsinfo.ts\nUFSInfo 조회"]
+        API_GUAC["guacamole.ts\nGuacamole"]
+        API_MINIO["minio.ts\nMinIO (XHR)"]
+        API_BIN["binMapper.ts\nBinMapper"]
+        API_TYPES["types.ts\n공유 인터페이스"]
+    end
+
+    subgraph STORES ["stores/ — Svelte 5 Runes 스토어"]
+        direction LR
+        ST_AUTH["auth.svelte.ts\n인증 상태"]
+        ST_TENT["tentacle.svelte.ts\n경로 프리픽스"]
+        ST_MENU["menu.svelte.ts\n메뉴 가시성"]
+        ST_REP["reparse.svelte.ts\nReparse SSE"]
+        ST_HEAD["headSlotStore.svelte.ts\nHead SSE"]
+    end
+
+    subgraph COMP ["components/ — UI 컴포넌트"]
+        direction TB
+        subgraph COMP_SYS ["시스템 컴포넌트"]
+            direction LR
+            C_UI["ui/\nshadcn-svelte"]
+            C_DT["data-table/\nTanStack Table"]
+        end
+        subgraph COMP_PERF ["성능 시각화"]
+            direction LR
+            C_CHART["perf-chart/\nECharts 래퍼"]
+            C_CONTENT["perf-content/\n15개 파서별 뷰"]
+            C_COMPARE["perf-compare/\n성능 비교"]
+        end
+        subgraph COMP_TOOL ["도구 컴포넌트"]
+            direction LR
+            C_BIN["bin-mapper/\nBinMapper 뷰"]
+            C_GEN["PerfGenerator\n코드 생성기"]
+            C_PREVIEW["PerfPreview\n실시간 미리보기"]
+            C_REPARSE["ReparseFloatingCard\n진행률 카드"]
+            C_JSON["JsonTreeView\nJSON 트리 뷰"]
+        end
+    end
+
+    subgraph CONFIG ["config/ · utils/"]
+        direction LR
+        CFG_SLOT["slotState.ts\n슬롯 상태 색상·아이콘"]
+        UTIL_EXCEL["excel-export.ts\nExcel Export"]
+    end
+
+    subgraph ROUTES ["routes/ — 페이지 라우트"]
+        LAYOUT["+layout.svelte\n글로벌 레이아웃\n(네비게이션 + 스토어 초기화)"]
+    end
+
+    ROUTES --> COMP
+    COMP --> STORES
+    COMP --> API
+    COMP --> CONFIG
 ```
 
 ## 글로벌 스토어 패턴

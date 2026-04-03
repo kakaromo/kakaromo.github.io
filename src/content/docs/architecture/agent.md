@@ -55,39 +55,61 @@ sequenceDiagram
 
 ## 2. 백엔드 패키지 구조
 
-```
-com.samsung.portal.agent
-├── controller/
-│   ├── AgentController.java              # 메인 REST API (/api/agent/*)
-│   ├── JobExecutionController.java       # Job 실행 이력 CRUD (/api/agent/job-executions/*)
-│   └── ScheduledJobController.java       # 스케줄 작업 CRUD (/api/agent/scheduled-jobs/*)
-├── endpoint/
-│   └── AgentScreenEndpoint.java          # WebSocket 화면 프록시 (@ServerEndpoint)
-├── entity/
-│   ├── AgentServer.java                  # gRPC 서버 관리 (portal_agent_servers)
-│   ├── BenchmarkPreset.java              # 벤치마크 프리셋 (portal_benchmark_presets)
-│   ├── ScenarioTemplate.java             # 시나리오 템플릿 (portal_scenario_templates)
-│   ├── JobExecution.java                 # Job 실행 이력 (portal_job_executions)
-│   ├── ScheduledJob.java                 # 스케줄 작업 (portal_scheduled_jobs)
-│   └── AppMacro.java                     # 앱 매크로 (portal_app_macros)
-├── repository/
-│   ├── AgentServerRepository.java
-│   ├── BenchmarkPresetRepository.java
-│   ├── ScenarioTemplateRepository.java
-│   ├── JobExecutionRepository.java
-│   ├── ScheduledJobRepository.java
-│   └── AppMacroRepository.java
-├── service/
-│   ├── AgentServerService.java           # 서버 CRUD + 활성화 관리
-│   ├── BenchmarkPresetService.java       # 프리셋 CRUD
-│   ├── ScenarioTemplateService.java      # 템플릿 CRUD
-│   ├── JobExecutionService.java          # Job 이력 저장/조회/상태 업데이트
-│   ├── ScheduledJobService.java          # Cron 스케줄 관리 + Spring @Scheduled 연동
-│   ├── AppMacroService.java              # 매크로 CRUD
-│   └── NotificationService.java          # Webhook 알림 (성공/실패 시)
-└── grpc/
-    ├── AgentGrpcClient.java              # gRPC stub wrapper (blocking + async)
-    └── AgentConnectionManager.java       # 서버별 동적 채널 캐시 관리
+```mermaid
+flowchart TD
+    subgraph CTRL ["controller/ — REST API"]
+        direction LR
+        C1["AgentController\n메인 API\n/api/agent/*"]
+        C2["JobExecutionController\nJob 이력 CRUD"]
+        C3["ScheduledJobController\n스케줄 CRUD"]
+    end
+
+    subgraph EP ["endpoint/ — WebSocket"]
+        E1["AgentScreenEndpoint\n화면 프록시\n@ServerEndpoint"]
+    end
+
+    subgraph SVC ["service/ — 비즈니스 로직 (7개)"]
+        direction LR
+        S1["AgentServerService\n서버 CRUD + 활성화"]
+        S2["BenchmarkPresetService\n프리셋 CRUD"]
+        S3["ScenarioTemplateService\n템플릿 CRUD"]
+        S4["JobExecutionService\nJob 이력·상태"]
+        S5["ScheduledJobService\nCron 스케줄"]
+        S6["AppMacroService\n매크로 CRUD"]
+        S7["NotificationService\nWebhook 알림"]
+    end
+
+    subgraph GRPC ["grpc/ — Go Agent 통신"]
+        direction LR
+        G1["AgentGrpcClient\nblocking + async stub"]
+        G2["AgentConnectionManager\n동적 채널 캐시"]
+    end
+
+    subgraph ENTITY ["entity/ — JPA 엔티티 (6개)"]
+        direction LR
+        EN1["AgentServer\nportal_agent_servers"]
+        EN2["BenchmarkPreset\nportal_benchmark_presets"]
+        EN3["ScenarioTemplate\nportal_scenario_templates"]
+        EN4["JobExecution\nportal_job_executions"]
+        EN5["ScheduledJob\nportal_scheduled_jobs"]
+        EN6["AppMacro\nportal_app_macros"]
+    end
+
+    subgraph REPO ["repository/ — JPA (6개)"]
+        direction LR
+        R1["AgentServerRepository"]
+        R2["BenchmarkPresetRepository"]
+        R3["ScenarioTemplateRepository"]
+        R4["JobExecutionRepository"]
+        R5["ScheduledJobRepository"]
+        R6["AppMacroRepository"]
+    end
+
+    CTRL --> SVC
+    EP --> GRPC
+    SVC --> GRPC
+    SVC --> REPO
+    REPO --> ENTITY
 ```
 
 ### 2.1 AgentController.java — 주요 엔드포인트

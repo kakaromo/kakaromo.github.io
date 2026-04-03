@@ -11,24 +11,42 @@ Samsung Portal 프로젝트의 코딩 컨벤션입니다.
 
 도메인별로 패키지를 분리합니다. 각 패키지는 entity, repository, service, controller를 포함합니다.
 
-```
-com.samsung.portal
-├── head/           # Head TCP 통신, SSE, 슬롯 상태
-├── testdb/         # 테스트 데이터 CRUD
-│   ├── compatibility/
-│   ├── performance/
-│   ├── set/
-│   ├── slot/
-│   └── excel/
-├── ufsinfo/        # UFS 참조 데이터
-├── binmapper/      # Binary Struct Mapper
-├── tcgroup/        # TC 그룹 관리
-├── minio/          # S3 스토리지
-├── logbrowser/     # 로그 브라우저
-├── guacamole/      # 원격 접속
-├── admin/          # 관리자 대시보드
-├── auth/           # 인증
-└── config/         # DataSource, Security 등 설정
+```mermaid
+flowchart TD
+    root["com.samsung.portal"]
+
+    subgraph core["핵심 도메인"]
+        head["head/ — Head TCP 통신, SSE, 슬롯 상태"]
+        testdb["testdb/ — 테스트 데이터 CRUD"]
+        ufsinfo["ufsinfo/ — UFS 참조 데이터"]
+    end
+
+    subgraph testdb_sub["testdb 하위 패키지"]
+        compatibility["compatibility/"]
+        performance["performance/"]
+        set["set/"]
+        slot["slot/"]
+        excel["excel/"]
+    end
+
+    subgraph features["기능 모듈"]
+        binmapper["binmapper/ — Binary Struct Mapper"]
+        tcgroup["tcgroup/ — TC 그룹 관리"]
+        minio["minio/ — S3 스토리지"]
+        logbrowser["logbrowser/ — 로그 브라우저"]
+        guacamole["guacamole/ — 원격 접속"]
+    end
+
+    subgraph infra["인프라"]
+        admin["admin/ — 관리자 대시보드"]
+        auth["auth/ — 인증"]
+        config["config/ — DataSource, Security 등 설정"]
+    end
+
+    root --> core
+    root --> features
+    root --> infra
+    testdb --> testdb_sub
 ```
 
 ### 엔티티
@@ -159,16 +177,26 @@ const result = await request<MyType>('/api/entities', {
 
 ### 컴포넌트 파일 구조
 
-```
-frontend/src/lib/
-├── api/            # API 클라이언트 함수
-├── components/     # 공용 컴포넌트
-│   ├── ui/         # shadcn-svelte 기본 컴포넌트
-│   ├── data-table/ # DataTable 관련
-│   ├── perf-content/ # 성능 차트 컴포넌트
-│   └── perf-chart/   # ECharts 래퍼
-├── stores/         # Svelte stores
-└── types/          # TypeScript 타입 정의
+```mermaid
+flowchart TD
+    root["frontend/src/lib/"]
+
+    subgraph top["최상위 디렉토리"]
+        api["api/ — API 클라이언트 함수"]
+        components["components/ — 공용 컴포넌트"]
+        stores["stores/ — Svelte stores"]
+        types["types/ — TypeScript 타입 정의"]
+    end
+
+    subgraph comp_sub["components 하위"]
+        ui["ui/ — shadcn-svelte 기본 컴포넌트"]
+        datatable["data-table/ — DataTable 관련"]
+        perfcontent["perf-content/ — 성능 차트 컴포넌트"]
+        perfchart["perf-chart/ — ECharts 래퍼"]
+    end
+
+    root --> top
+    components --> comp_sub
 ```
 
 ---

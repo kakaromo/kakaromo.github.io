@@ -54,14 +54,28 @@ terminal/
 
 ### Guacamole RDP (guacamole 패키지)
 
-```
-guacamole/
-├── config/       GuacamoleProperties
-├── controller/   GuacamoleController
-├── dto/          VmInfo
-├── endpoint/     GuacamoleTunnelEndpoint, GuacamoleProxyEndpoint
-├── tunnel/       SessionLockManager
-└── service/      GuacamoleService, GuacamoleApiService
+```mermaid
+flowchart TD
+    subgraph GUAC ["guacamole/ 패키지"]
+        direction TB
+        subgraph API_LAYER ["API 계층"]
+            direction LR
+            CTRL["controller/\nGuacamoleController"]
+            EP["endpoint/\nGuacamoleTunnelEndpoint\nGuacamoleProxyEndpoint"]
+            DTO["dto/\nVmInfo"]
+        end
+        subgraph SVC_LAYER ["서비스 계층"]
+            direction LR
+            SVC["service/\nGuacamoleService\nGuacamoleApiService"]
+            TUNNEL["tunnel/\nSessionLockManager"]
+        end
+        subgraph CFG_LAYER ["설정"]
+            CFG["config/\nGuacamoleProperties"]
+        end
+    end
+
+    API_LAYER --> SVC_LAYER
+    SVC_LAYER --> CFG_LAYER
 ```
 
 `GuacamoleTunnelEndpoint`는 `@ServerEndpoint`로 WebSocket 엔드포인트를 구현합니다.

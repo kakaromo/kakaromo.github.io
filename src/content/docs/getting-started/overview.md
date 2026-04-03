@@ -21,19 +21,27 @@ Samsung Portal은 UFS(Universal Flash Storage) 테스트 자동화 관리 시스
 
 ## 시스템 아키텍처 개요
 
-```
-Browser (SvelteKit 5 SPA)
-    │
-    ├── REST API / SSE / WebSocket
-    │
-Spring Boot 4.0.2 Backend
-    │
-    ├── MySQL (testdb, UFSInfo, binmapper)
-    ├── Head Server (TCP 듀얼 소켓)
-    ├── MinIO S3 Storage
-    ├── guacd (원격 접속 데몬)
-    ├── Go Excel Service (gRPC)
-    └── Redis (캐시)
+```mermaid
+flowchart TD
+    BROWSER["Browser\nSvelteKit 5 SPA"]
+    BROWSER <-->|"REST API / SSE / WebSocket"| BACKEND
+
+    subgraph BACKEND ["Spring Boot 4.0.2 Backend"]
+        direction LR
+        BE["Portal Application"]
+    end
+
+    subgraph INFRA ["외부 서비스"]
+        direction LR
+        MYSQL["MySQL\ntestdb · UFSInfo · binmapper"]
+        HEAD["Head Server\nTCP 듀얼 소켓"]
+        MINIO["MinIO\nS3 Storage"]
+        GUACD["guacd\n원격 접속 데몬"]
+        EXCEL["Go Excel Service\ngRPC"]
+        REDIS["Redis\n캐시"]
+    end
+
+    BACKEND --> INFRA
 ```
 
 ## 기술 스택

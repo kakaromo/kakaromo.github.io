@@ -21,25 +21,42 @@ flowchart TD
 
 ## 백엔드 패키지 구조
 
-```
-com.samsung.portal.metadata
-├── config/
-│   └── MetadataCollectionProperties.java    # 수집 설정 (간격, 활성화 등)
-├── entity/
-│   ├── UfsMetadataType.java                 # 메타데이터 타입 (SSR, Telemetry 등)
-│   ├── UfsMetadataCommand.java              # 타입별 실행 명령어
-│   └── UfsProductMetadata.java              # 제품-타입 매핑
-├── repository/
-│   ├── UfsMetadataTypeRepository.java
-│   ├── UfsMetadataCommandRepository.java
-│   └── UfsProductMetadataRepository.java
-├── service/
-│   ├── MetadataMonitorService.java          # 핵심: 상태 감지 + 수집 스케줄링
-│   ├── MetadataCommandExecutor.java         # SSH/ADB 명령 실행 (timeout 포함)
-│   └── MetadataTypeService.java             # Admin CRUD
-└── controller/
-    ├── MetadataController.java              # 데이터 조회 + 슬롯 토글 API
-    └── MetadataAdminController.java         # 타입/명령어/매핑 Admin CRUD
+```mermaid
+flowchart TD
+    subgraph META ["com.samsung.portal.metadata"]
+        direction TB
+        subgraph CTRL_LAYER ["controller/ — REST API"]
+            direction LR
+            MC["MetadataController\n데이터 조회 + 슬롯 토글"]
+            MAC["MetadataAdminController\n타입·명령어·매핑 Admin CRUD"]
+        end
+        subgraph SVC_LAYER ["service/ — 비즈니스 로직"]
+            direction LR
+            MONITOR["MetadataMonitorService\n상태 감지 + 수집 스케줄링"]
+            EXECUTOR["MetadataCommandExecutor\nSSH/ADB 명령 실행\n(timeout 포함)"]
+            TYPE_SVC["MetadataTypeService\nAdmin CRUD"]
+        end
+        subgraph REPO_LAYER ["repository/ — JPA"]
+            direction LR
+            R1["UfsMetadataTypeRepository"]
+            R2["UfsMetadataCommandRepository"]
+            R3["UfsProductMetadataRepository"]
+        end
+        subgraph ENTITY_LAYER ["entity/ — 도메인 모델"]
+            direction LR
+            E1["UfsMetadataType\nSSR, Telemetry 등"]
+            E2["UfsMetadataCommand\n타입별 실행 명령어"]
+            E3["UfsProductMetadata\n제품-타입 매핑"]
+        end
+        subgraph CFG_LAYER ["config/"]
+            CFG["MetadataCollectionProperties\n수집 설정 (간격, 활성화)"]
+        end
+    end
+
+    CTRL_LAYER --> SVC_LAYER
+    SVC_LAYER --> REPO_LAYER
+    REPO_LAYER --> ENTITY_LAYER
+    SVC_LAYER --> CFG_LAYER
 ```
 
 ## 데이터베이스 설계
