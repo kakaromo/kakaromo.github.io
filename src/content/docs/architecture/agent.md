@@ -7,62 +7,48 @@ description: Android 디바이스 성능 평가 시스템의 전체 아키텍처
 
 Portal의 Agent 모듈은 Android 디바이스를 대상으로 벤치마크, I/O trace, 앱 매크로 자동화를 수행하는 분산 시스템입니다. Spring Boot 백엔드가 Go Agent 서버와 gRPC로 통신하며, Go Agent가 ADB를 통해 실제 디바이스를 제어합니다.
 
-```
-┌─────────────────┐        gRPC (50051)         ┌──────────────────┐
-│                 │  ◄─────────────────────────► │                  │
-│  Portal         │   blocking + async stubs     │  Go Agent Server │
-│  (Spring Boot)  │                              │  (~/project/agent)│
-│                 │  WebSocket (screen proxy)    │                  │
-│  - REST API     │  ◄─────────────────────────► │  - ADB 제어      │
-│  - SSE 스트리밍  │   H.264 비디오 릴레이         │  - fio/iozone    │
-│  - WebSocket    │                              │  - ftrace 수집   │
-│                 │                              │  - scrcpy 화면   │
-│                 │                              │  - Tesseract OCR │
-└────────┬────────┘                              └────────┬─────────┘
-         │                                                │
-         │ JPA                                            │ ADB / USB
-         ▼                                                ▼
-┌─────────────────┐                              ┌──────────────────┐
-│  MySQL 3307     │                              │  Android Devices │
-│  (portal DB)    │                              │  - Galaxy 시리즈  │
-│                 │                              │  - 개발 보드       │
-│  6개 테이블:     │                              └──────────────────┘
-│  - agent_servers│
-│  - job_executions│
-│  - scheduled_jobs│
-│  - scenario_templates│
-│  - benchmark_presets│
-│  - app_macros   │
-└─────────────────┘
+```mermaid
+flowchart TD
+    subgraph Portal ["Portal (Spring Boot)"]
+        PA["REST API"]
+        PB["SSE 스트리밍"]
+        PC["WebSocket"]
+    end
 
-┌─────────────────┐        REST + SSE + WS       ┌──────────────────┐
-│  Browser        │  ◄─────────────────────────► │  Portal Backend  │
-│  (SvelteKit)    │   /api/agent/*               │                  │
-│  - 3패널 레이아웃 │   EventSource (SSE)          │  SSE → gRPC 브릿지│
-│  - @xyflow 캔버스│   WebSocket (screen)         │  WS → WS 프록시   │
-└─────────────────┘                              └──────────────────┘
+    subgraph GoAgent ["Go Agent Server"]
+        GA["ADB 제어"]
+        GB["fio/iozone"]
+        GC["ftrace 수집"]
+        GD["scrcpy 화면"]
+        GE["Tesseract OCR"]
+    end
+
+    Portal <-->|"gRPC (50051)\nblocking + async stubs"| GoAgent
+    Portal <-->|"WebSocket (screen proxy)\nH.264 비디오 릴레이"| GoAgent
+
+    Portal -->|JPA| MySQL["MySQL 3307 (portal DB)\n6개 테이블:\nagent_servers, job_executions,\nscheduled_jobs, scenario_templates,\nbenchmark_presets, app_macros"]
+    GoAgent -->|"ADB / USB"| Android["Android Devices\nGalaxy 시리즈, 개발 보드"]
+
+    Browser["Browser (SvelteKit)\n3패널 레이아웃, @xyflow 캔버스"] <-->|"REST + SSE + WS\n/api/agent/*"| Portal
 ```
 
 ### 데이터 흐름
 
-```
-[사용자 벤치마크 실행 요청]
-     │
-     ▼
-Browser ──POST /api/agent/benchmark/run──► AgentController
-     │                                         │
-     │                                    gRPC RunBenchmark()
-     │                                         │
-     │                                         ▼
-     │                                    Go Agent Server
-     │                                         │
-     │                                    ADB push fio → 실행
-     │                                         │
-     │  SSE /api/agent/benchmark/progress       │
-     ◄──────────────────────────────────── gRPC SubscribeJobProgress (stream)
-     │                                         │
-     │  GET /api/agent/benchmark/result         │
-     ◄──────────────────────────────────── gRPC GetBenchmarkResult()
+```mermaid
+sequenceDiagram
+    participant B as Browser
+    participant C as AgentController
+    participant G as Go Agent Server
+
+    B->>C: POST /api/agent/benchmark/run
+    C->>G: gRPC RunBenchmark()
+    G->>G: ADB push fio → 실행
+    G-->>C: gRPC SubscribeJobProgress (stream)
+    C-->>B: SSE /api/agent/benchmark/progress
+    B->>C: GET /api/agent/benchmark/result
+    C->>G: gRPC GetBenchmarkResult()
+    G-->>C: 결과 반환
+    C-->>B: 결과 응답
 ```
 
 ---
@@ -165,10 +151,11 @@ com.samsung.portal.agent
 
 ### 2.4 AgentScreenEndpoint.java — WebSocket 화면 프록시
 
-```
-Browser ◄── WS ──► AgentScreenEndpoint ◄── WS ──► Go Agent ◄── scrcpy ──► Android
-         (@ServerEndpoint                   (/ws/screen/{deviceId})
-          "/api/agent/screen/{deviceId}")
+```mermaid
+flowchart LR
+    A["Browser"] <-->|WS| B["AgentScreenEndpoint\n(@ServerEndpoint\n/api/agent/screen/{deviceId})"]
+    B <-->|WS| C["Go Agent\n(/ws/screen/{deviceId})"]
+    C <-->|scrcpy| D["Android"]
 ```
 
 - `@ServerEndpoint("/api/agent/screen/{deviceId}")` — Spring WebSocket이 아닌 Jakarta WebSocket API 사용
@@ -348,12 +335,18 @@ message ConditionalBranch {
 
 **DAG 실행 모드** (`has_branching = true`):
 
-```
-순차 모드 (기본):        DAG 모드 (has_branching = true):
-Step 0 → 1 → 2 → 3      Step 0 ──true──► Step 1
-                                 ──false─► Step 2
-                          Step 1 ─────────► Step 3
-                          Step 2 ─────────► Step 3
+```mermaid
+flowchart LR
+    subgraph SEQ ["순차 모드 (기본)"]
+        S0[Step 0] --> S1[Step 1] --> S2[Step 2] --> S3[Step 3]
+    end
+
+    subgraph DAG ["DAG 모드 (has_branching = true)"]
+        D0[Step 0] -->|true| D1[Step 1]
+        D0 -->|false| D2[Step 2]
+        D1 --> D3[Step 3]
+        D2 --> D3
+    end
 ```
 
 - `StepEdge { from_step, to_step, label }` — label: "true", "false", "" (순차)
@@ -525,18 +518,17 @@ public class AgentGrpcClient implements AutoCloseable {
 
 ### 채널 라이프사이클
 
-```
-[서버 등록/수정]                    [API 요청]                      [서버 삭제]
-     │                                │                                │
-     ▼                                ▼                                ▼
-DB에 host:port 저장        getOrCreate(serverId, host, port)    remove(serverId)
-                                      │                                │
-                           캐시에 있고 host:port 동일?             채널 shutdown
-                              │              │                    캐시에서 제거
-                             Yes            No
-                              │              │
-                         기존 client     기존 client close
-                           반환          + 새 client 생성
+```mermaid
+flowchart TD
+    A1["서버 등록/수정"] --> B1["DB에 host:port 저장"]
+
+    A2["API 요청"] --> B2["getOrCreate(serverId, host, port)"]
+    B2 --> C{캐시에 있고\nhost:port 동일?}
+    C -->|Yes| D1["기존 client 반환"]
+    C -->|No| D2["기존 client close\n+ 새 client 생성"]
+
+    A3["서버 삭제"] --> B3["remove(serverId)"]
+    B3 --> E["채널 shutdown\n캐시에서 제거"]
 ```
 
 ---
@@ -545,23 +537,24 @@ DB에 host:port 저장        getOrCreate(serverId, host, port)    remove(server
 
 ### 5.1 벤치마크 진행률 스트림
 
-```
-Browser                    AgentController              AgentGrpcClient           Go Agent
-   │                            │                            │                       │
-   │  GET /benchmark/progress   │                            │                       │
-   │  Accept: text/event-stream │                            │                       │
-   │ ──────────────────────────►│                            │                       │
-   │                            │  subscribeJobProgressAsync │                       │
-   │                            │ ──────────────────────────►│ gRPC server-stream    │
-   │                            │                            │ ─────────────────────►│
-   │                            │                            │                       │
-   │  SSE: data: {...}          │  StreamObserver.onNext()   │  JobProgress          │
-   │ ◄──────────────────────────│ ◄──────────────────────────│ ◄─────────────────────│
-   │  SSE: data: {...}          │  StreamObserver.onNext()   │  JobProgress          │
-   │ ◄──────────────────────────│ ◄──────────────────────────│ ◄─────────────────────│
-   │                            │                            │                       │
-   │  SSE: event: complete      │  StreamObserver.onCompleted│                       │
-   │ ◄──────────────────────────│ ◄──────────────────────────│                       │
+```mermaid
+sequenceDiagram
+    participant B as Browser
+    participant C as AgentController
+    participant G as AgentGrpcClient
+    participant A as Go Agent
+
+    B->>C: GET /benchmark/progress<br/>Accept: text/event-stream
+    C->>G: subscribeJobProgressAsync
+    G->>A: gRPC server-stream
+    A-->>G: JobProgress
+    G-->>C: StreamObserver.onNext()
+    C-->>B: SSE: data: {...}
+    A-->>G: JobProgress
+    G-->>C: StreamObserver.onNext()
+    C-->>B: SSE: data: {...}
+    G-->>C: StreamObserver.onCompleted
+    C-->>B: SSE: event: complete
 ```
 
 - `SseEmitter`에 무제한 타임아웃 설정 (`new SseEmitter(0L)`)
@@ -570,19 +563,21 @@ Browser                    AgentController              AgentGrpcClient         
 
 ### 5.2 모니터링 메트릭 스트림
 
-```
-Browser                    AgentController              AgentGrpcClient           Go Agent
-   │                            │                            │                       │
-   │  GET /monitoring/stream    │                            │                       │
-   │  ?deviceIds=dev1,dev2      │                            │                       │
-   │  &interval=2               │                            │                       │
-   │ ──────────────────────────►│                            │                       │
-   │                            │  monitorDevices(async)     │  gRPC server-stream   │
-   │                            │ ──────────────────────────►│ ─────────────────────►│
-   │                            │                            │                       │
-   │  SSE: data: {cpu, mem, ..} │  onNext(DeviceMetrics)     │  interval마다 push    │
-   │ ◄──────────────────────────│ ◄──────────────────────────│ ◄─────────────────────│
-   │        ...                 │        ...                 │        ...            │
+```mermaid
+sequenceDiagram
+    participant B as Browser
+    participant C as AgentController
+    participant G as AgentGrpcClient
+    participant A as Go Agent
+
+    B->>C: GET /monitoring/stream<br/>?deviceIds=dev1,dev2&interval=2
+    C->>G: monitorDevices(async)
+    G->>A: gRPC server-stream
+    loop interval마다 push
+        A-->>G: DeviceMetrics
+        G-->>C: onNext(DeviceMetrics)
+        C-->>B: SSE: data: {cpu, mem, ...}
+    end
 ```
 
 - **페이지 레벨 관리**: 모니터링 SSE 연결은 시트가 아닌 `+page.svelte`에서 관리 (시트를 닫아도 연결 유지)
@@ -741,30 +736,33 @@ frontend/src/routes/agent/
 
 ### 7.2 3패널 레이아웃
 
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│                          Agent 페이지                                │
-├──────────────┬───────────────────────────────────┬───────────────────┤
-│  LEFT (w-60) │  CENTER (flex-1)                  │  RIGHT (on-demand)│
-│              │                                   │                   │
-│ ┌──────────┐ │  ┌─────────────────────────────┐  │  ┌─────────────┐ │
-│ │ Server ▼ │ │  │  [Mode에 따른 컴포넌트]      │  │  │ Sheet 컴포넌트│ │
-│ ├──────────┤ │  │                             │  │  │             │ │
-│ │ Device 1☑│ │  │  benchmark → BenchmarkForm  │  │  │ ServerSheet │ │
-│ │ Device 2☐│ │  │  scenario → ScenarioBuilder │  │  │ Monitoring  │ │
-│ │ Device 3☑│ │  │  trace    → TraceForm       │  │  │ ResultDetail│ │
-│ ├──────────┤ │  │  results  → ResultsView     │  │  │ TraceResult │ │
-│ │Quick Acts│ │  │  schedule → ScheduleView    │  │  │ Screen      │ │
-│ │ Benchmark│ │  │  macro    → MacroRecorder   │  │  │             │ │
-│ │ Scenario │ │  │                             │  │  └─────────────┘ │
-│ │ Trace    │ │  └─────────────────────────────┘  │                   │
-│ │ Results  │ │                                   │                   │
-│ │ Schedule │ │                                   │                   │
-│ │ Macro    │ │                                   │                   │
-│ └──────────┘ │                                   │                   │
-├──────────────┴───────────────────────────────────┴───────────────────┤
-│                   AgentFloatingJobCard (fixed bottom-right)          │
-└──────────────────────────────────────────────────────────────────────┘
+```mermaid
+block-beta
+    columns 3
+
+    block:LEFT["LEFT (w-60)"]:1
+        columns 1
+        S["Server 선택"]
+        D["Device 체크리스트"]
+        Q["Quick Actions:\nBenchmark / Scenario\nTrace / Results\nSchedule / Macro"]
+    end
+
+    block:CENTER["CENTER (flex-1)"]:1
+        columns 1
+        M["Mode에 따른 컴포넌트"]
+        BF["benchmark → BenchmarkForm\nscenario → ScenarioBuilder\ntrace → TraceForm\nresults → ResultsView\nschedule → ScheduleView\nmacro → MacroRecorder"]
+    end
+
+    block:RIGHT["RIGHT (on-demand)"]:1
+        columns 1
+        SH["Sheet 컴포넌트:\nServerSheet\nMonitoring\nResultDetail\nTraceResult\nScreen"]
+    end
+
+    FJ["AgentFloatingJobCard (fixed bottom-right)"]:3
+
+    style LEFT fill:#f0f4ff,stroke:#4a6fa5
+    style CENTER fill:#f0fff4,stroke:#4a9f6a
+    style RIGHT fill:#fff8f0,stroke:#c48040
 ```
 
 ### 7.3 상태 관리 (Svelte 5 Runes)
@@ -794,32 +792,38 @@ let activeTraceJobId = $state(null);   // 활성 Trace Job ID
 
 `@xyflow/svelte` (React Flow의 Svelte 포트)를 사용한 비주얼 시나리오 편집기입니다.
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│ CanvasToolbar [Zoom+] [Zoom-] [Fit] [Export] [Template ▼]      │
-├───────────┬─────────────────────────────────────────────────────┤
-│           │                                                     │
-│ Node      │    ┌─────────┐     ┌─────────┐     ┌─────────┐    │
-│ Palette   │    │Benchmark│────►│Condition│──T──►│Benchmark│    │
-│           │    │ fio 4k  │     │iops>100k│      │ fio 128k│    │
-│ [Bench]   │    └─────────┘     └────┬────┘     └─────────┘    │
-│ [Shell]   │                         │F                         │
-│ [Cleanup] │                    ┌────▼────┐                     │
-│ [Sleep]   │                    │  Shell  │                     │
-│ [Trace]   │                    │echo fail│                     │
-│ [Cond]    │                    └─────────┘                     │
-│ [Macro]   │                                                     │
-│           │    ┌─── Loop (3x) ───────────────┐                 │
-│           │    │ ┌─────────┐  ┌─────────┐    │                 │
-│           │    │ │TraceStart│─►│Benchmark│    │                 │
-│           │    │ └─────────┘  └────┬────┘    │                 │
-│           │    │              ┌────▼────┐    │                 │
-│           │    │              │TraceStop│    │                 │
-│           │    │              └─────────┘    │                 │
-│           │    └─────────────────────────────┘                 │
-├───────────┴─────────────────────────────────────────────────────┤
-│ [Run Scenario]  Repeat: [3] ▼   Busy Policy: [reject] ▼       │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    subgraph Toolbar ["CanvasToolbar: Zoom+ / Zoom- / Fit / Export / Template"]
+        direction LR
+    end
+
+    subgraph Canvas ["Scenario Canvas"]
+        direction TD
+        B1["Benchmark\nfio 4k"] --> COND{"Condition\niops > 100k"}
+        COND -->|True| B2["Benchmark\nfio 128k"]
+        COND -->|False| SH["Shell\necho fail"]
+
+        subgraph LOOP ["Loop (3x)"]
+            TS["TraceStart"] --> B3["Benchmark"]
+            B3 --> TST["TraceStop"]
+        end
+    end
+
+    subgraph Palette ["Node Palette"]
+        direction TB
+        P1["Bench"]
+        P2["Shell"]
+        P3["Cleanup"]
+        P4["Sleep"]
+        P5["Trace"]
+        P6["Cond"]
+        P7["Macro"]
+    end
+
+    subgraph Footer ["Run Scenario | Repeat: 3 | Busy Policy: reject"]
+        direction LR
+    end
 ```
 
 **주요 컴포넌트**:
@@ -837,22 +841,28 @@ let activeTraceJobId = $state(null);   // 활성 Trace Job ID
 
 `TraceScatterChart.svelte` — ECharts 기반 대용량 scatter 차트:
 
-```
-┌─────────────────────────────────────────────┐
-│ [LBA] [QD] [DtoC] [CtoD] [CtoC]  (사이드바) │
-├─────────────────────────────────────────────┤
-│                                             │
-│    ·  ··    ·                               │
-│   · ···· · ··  ·    ← 파란점: Read          │
-│  ·· ·····  ···· ·   ← 주황점: Write         │
-│   · ··· ·· ·· ··                            │
-│    ·  · · ·                                 │
-│  [========]          ← brush 드래그 범위     │
-│                                             │
-│  Time (ms) →                                │
-├─────────────────────────────────────────────┤
-│ Legend: ● 0x28(Read) ● 0x2a(Write) ●Flush   │
-└─────────────────────────────────────────────┘
+```mermaid
+block-beta
+    columns 1
+
+    block:SIDEBAR
+        columns 5
+        LBA["LBA"] QD["QD"] DTOC["DtoC"] CTOD["CtoD"] CTOC["CtoC"]
+    end
+
+    block:CHART["Scatter Chart Area"]
+        columns 1
+        SCATTER["scatter points by CMD color\nRead (blue) / Write (orange)\n\nbrush drag → X(time) + Y(metric) range filter\n\nX axis: Time (ms)"]
+    end
+
+    block:LEGEND
+        columns 1
+        LEG["Legend: 0x28(Read) / 0x2a(Write) / Flush"]
+    end
+
+    style SIDEBAR fill:#f0f4ff,stroke:#4a6fa5
+    style CHART fill:#fafafa,stroke:#999
+    style LEGEND fill:#f8f8f8,stroke:#ccc
 ```
 
 **기능**:
@@ -876,14 +886,19 @@ let activeTraceJobId = $state(null);   // 활성 Trace Job ID
 
 실행 중인 Job의 진행률을 화면 우하단에 고정 표시하는 플로팅 카드입니다.
 
-```
-┌──────────────────────────────┐
-│ ▶ fio randread 4k            │  ← Job 이름
-│ ┃████████████░░░░░░░░░┃ 62%  │  ← 전체 진행률
-│ dev1: RUNNING (75%)          │  ← 디바이스별 상태
-│ dev2: RUNNING (50%)          │
-│ [Cancel]              2:34   │  ← 경과 시간
-└──────────────────────────────┘
+```mermaid
+block-beta
+    columns 1
+    block:CARD["AgentFloatingJobCard (fixed bottom-right)"]
+        columns 1
+        TITLE["Job: fio randread 4k"]
+        PROGRESS["Progress: 62%"]
+        DEV1["dev1: RUNNING (75%)"]
+        DEV2["dev2: RUNNING (50%)"]
+        FOOTER["Cancel | Elapsed: 2:34"]
+    end
+
+    style CARD fill:#f8f9fa,stroke:#dee2e6
 ```
 
 - `position: fixed; bottom: 1rem; right: 1rem`
@@ -969,20 +984,11 @@ onMount(() => {
 
 scrcpy로 캡처한 Android 화면을 브라우저까지 H.264 비디오로 릴레이합니다.
 
-```
-Browser (jMuxer H.264 → Canvas)
-    │
-    │ WebSocket (binary frames)
-    ▼
-AgentScreenEndpoint (@ServerEndpoint)
-    │
-    │ WebSocket (binary frames)
-    ▼
-Go Agent Server (/ws/screen/{deviceId})
-    │
-    │ scrcpy control protocol
-    ▼
-Android Device (scrcpy server)
+```mermaid
+flowchart TD
+    A["Browser\n(jMuxer H.264 → Canvas)"] <-->|"WebSocket (binary frames)"| B["AgentScreenEndpoint\n(@ServerEndpoint)"]
+    B <-->|"WebSocket (binary frames)"| C["Go Agent Server\n(/ws/screen/{deviceId})"]
+    C <-->|"scrcpy control protocol"| D["Android Device\n(scrcpy server)"]
 ```
 
 **키프레임 캐시 메커니즘**:

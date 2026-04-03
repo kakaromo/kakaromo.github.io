@@ -155,14 +155,16 @@ export const reparseStore = {
 
 ### 연결 관리 (reparse 스토어 예시)
 
-```
-init() → localStorage 확인
-   ├─ 활성 job 있음 → connect()
-   │     ├─ EventSource 생성
-   │     ├─ 'init' 이벤트 → 서버의 현재 job 목록으로 상태 동기화
-   │     ├─ 'update' 이벤트 → job 상태 업데이트
-   │     └─ onerror → disconnect() → 5초 후 재연결 (활성 job 있을 때만)
-   └─ 활성 job 없음 → 대기
+```mermaid
+flowchart TD
+    A["init()"] --> B{"localStorage\n활성 job 확인"}
+    B -->|"활성 job 있음"| C["connect()"]
+    B -->|"활성 job 없음"| D["대기"]
+    C --> E["EventSource 생성"]
+    E --> F["'init' 이벤트 → 서버 job 목록으로 상태 동기화"]
+    E --> G["'update' 이벤트 → job 상태 업데이트"]
+    E --> H["onerror → disconnect()"]
+    H --> I["5초 후 재연결\n(활성 job 있을 때만)"]
 ```
 
 ### 재연결 전략

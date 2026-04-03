@@ -27,39 +27,30 @@ Samsung Portal의 인프라 구성을 설명합니다.
 
 ## 네트워크 다이어그램
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      Browser (SvelteKit SPA)                 │
-│                                                              │
-│  REST API    SSE (slots)    WebSocket (Guacamole)           │
-└──────┬───────────┬──────────────┬────────────────────────────┘
-       │           │              │
-       ▼           ▼              ▼
-┌──────────────────────────────────────────────────────────────┐
-│                   Portal Server (:8080)                       │
-│                                                              │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌─────────────┐ │
-│  │ REST API │  │   SSE    │  │ WebSocket│  │ gRPC Client │ │
-│  │Controller│  │Controller│  │  Tunnel  │  │(Excel Export)│ │
-│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └──────┬──────┘ │
-│       │              │              │               │        │
-└───────┼──────────────┼──────────────┼───────────────┼────────┘
-        │              │              │               │
-   ┌────▼────┐   ┌─────▼─────┐  ┌────▼────┐   ┌─────▼──────┐
-   │  MySQL  │   │   Head    │  │  guacd  │   │ Go Excel   │
-   │:3306    │   │  Server   │  │  :4822  │   │  Service   │
-   │:3307    │   │:10001     │  │         │   │  :50052    │
-   └─────────┘   │:10030     │  └────┬────┘   └────────────┘
-                 └───────────┘       │
-   ┌─────────┐                  ┌────▼──────────────────────┐
-   │  Redis  │                  │   Tentacle / HEAD 서버     │
-   │  :6379  │                  │   T1~T4 (:22, :3389)      │
-   └─────────┘                  │   HEAD  (:22)             │
-                                └───────────────────────────┘
-   ┌─────────┐
-   │  MinIO  │
-   │  :9000  │
-   └─────────┘
+```mermaid
+flowchart TD
+    Browser["Browser (SvelteKit SPA)<br/>REST API / SSE / WebSocket"]
+    Portal["Portal Server (:8080)"]
+    REST["REST API Controller"]
+    SSE["SSE Controller"]
+    WS["WebSocket Tunnel"]
+    GRPC["gRPC Client<br/>(Excel Export)"]
+
+    Browser --> Portal
+    Portal --- REST
+    Portal --- SSE
+    Portal --- WS
+    Portal --- GRPC
+
+    REST --> MySQL["MySQL<br/>:3306 / :3307"]
+    SSE --> Head["Head Server<br/>:10001 / :10030"]
+    WS --> guacd["guacd<br/>:4822"]
+    GRPC --> Excel["Go Excel Service<br/>:50052"]
+
+    guacd --> Tentacle["Tentacle / HEAD 서버<br/>T1~T4 (:22, :3389)<br/>HEAD (:22)"]
+
+    Portal --> Redis["Redis<br/>:6379"]
+    Portal --> MinIO["MinIO<br/>:9000"]
 ```
 
 ---

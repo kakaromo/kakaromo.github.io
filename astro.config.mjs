@@ -1,9 +1,13 @@
 // @ts-check
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
+import rehypeMermaid from 'rehype-mermaid';
 
 export default defineConfig({
   site: 'https://kakaromo.github.io',
+  markdown: {
+    rehypePlugins: [[rehypeMermaid, { strategy: 'inline-svg' }]],
+  },
   integrations: [
     starlight({
       title: 'Portal Docs',
@@ -98,13 +102,35 @@ export default defineConfig({
           ],
         },
         {
+          label: '내부 동작',
+          items: [
+            { label: '요청의 생명주기', slug: 'internals/request-lifecycle' },
+            { label: '슬롯 모니터링 흐름', slug: 'internals/slot-monitoring-flow' },
+            { label: '벤치마크 실행 흐름', slug: 'internals/benchmark-execution-flow' },
+            { label: 'Excel Export 흐름', slug: 'internals/excel-export-flow' },
+            { label: '원격 접속 흐름', slug: 'internals/remote-session-flow' },
+          ],
+        },
+        {
           label: '개발자 가이드',
           items: [
             { label: '개발 환경 설정', slug: 'developer/setup' },
             { label: '코딩 컨벤션', slug: 'developer/conventions' },
             { label: '컴포넌트 가이드', slug: 'developer/components' },
-            { label: '새 파서 추가하기', slug: 'developer/adding-parser' },
             { label: 'UI 크기 조절', slug: 'developer/ui-sizing' },
+            {
+              label: '확장 가이드',
+              items: [
+                { label: '새 파서 추가하기', slug: 'developer/adding-parser' },
+                { label: 'Excel Generator 추가', slug: 'developer/adding-excel-generator' },
+                { label: '새 API 추가하기', slug: 'developer/adding-api-endpoint' },
+                { label: '새 gRPC RPC 추가하기', slug: 'developer/adding-grpc-rpc' },
+                { label: '새 페이지 추가하기', slug: 'developer/adding-frontend-route' },
+                { label: '새 SSE/WS 엔드포인트', slug: 'developer/adding-sse-endpoint' },
+                { label: '새 데이터소스 추가하기', slug: 'developer/adding-datasource' },
+              ],
+            },
+            { label: '문제 해결', slug: 'developer/troubleshooting' },
           ],
         },
         {

@@ -218,57 +218,7 @@ Proto 파일을 수정할 때는 반드시 Go와 Java 양쪽 모두 업데이트
 
 ## Agent gRPC 서비스 추가 패턴
 
-새로운 Agent gRPC RPC를 추가할 때의 전체 워크플로우입니다.
-
-### 1. Proto 정의 추가
-
-`agent.proto`에 새 RPC와 메시지를 정의합니다 (Go/Java 양쪽 동일).
-
-```protobuf
-service DeviceAgent {
-  rpc NewMethod(NewRequest) returns (NewResponse);
-}
-
-message NewRequest { ... }
-message NewResponse { ... }
-```
-
-### 2. Go 서버 구현
-
-Go Agent 서버에서 RPC 핸들러를 구현합니다.
-
-```go
-func (s *server) NewMethod(ctx context.Context, req *pb.NewRequest) (*pb.NewResponse, error) {
-    // 구현
-}
-```
-
-### 3. Java gRPC Client 추가
-
-`AgentGrpcClient.java`에 새 메서드를 추가합니다.
-
-```java
-public NewResponse newMethod(String host, int port, NewRequest request) {
-    var channel = connectionManager.getChannel(host, port);
-    var stub = DeviceAgentGrpc.newBlockingStub(channel);
-    return stub.newMethod(request);
-}
-```
-
-### 4. Controller 엔드포인트 추가
-
-`AgentController.java`에 REST API를 추가합니다.
-
-```java
-@PostMapping("/new-method")
-public ResponseEntity<?> newMethod(@RequestBody NewMethodDto dto) {
-    // AgentGrpcClient 호출
-}
-```
-
-### 5. 프론트엔드 연동
-
-SvelteKit에서 API를 호출하고 UI를 구현합니다.
+새로운 gRPC RPC를 추가하는 상세 가이드는 **[새 gRPC RPC 추가하기](/developer/adding-grpc-rpc)** 문서를 참조하세요. Proto 정의, Go 서버 구현, Java 클라이언트, SSE 브릿지 패턴까지 전체 워크플로우를 다룹니다.
 
 ---
 

@@ -11,15 +11,20 @@ Head 서버는 UFS 하드웨어 테스트를 제어하는 서버입니다. Sprin
 
 Head 프로토콜은 두 개의 소켓을 사용합니다:
 
-```
-┌──────────────────┐          ┌──────────────────┐
-│   Spring Boot    │          │   Head Server     │
-│                  │          │                   │
-│  HeadTcpClient   │─outSocket──>  명령 수신      │
-│                  │          │                   │
-│  ServerSocket    │<─inSocket──  상태 전송       │
-│  (listenPort)    │          │                   │
-└──────────────────┘          └──────────────────┘
+```mermaid
+flowchart LR
+    subgraph SB ["Spring Boot"]
+        A[HeadTcpClient]
+        B["ServerSocket\n(listenPort)"]
+    end
+
+    subgraph HS ["Head Server"]
+        C[명령 수신]
+        D[상태 전송]
+    end
+
+    A -->|outSocket| C
+    D -->|inSocket| B
 ```
 
 1. **outSocket (명령 소켓)**: Spring Boot → Head. 명령 전송용

@@ -9,16 +9,10 @@ description: xterm.js SSH 터미널과 Guacamole RDP 원격 접속 아키텍처,
 
 ### SSH 터미널 (xterm.js) -- 기본
 
-```
-Browser (XtermClient.svelte / xterm.js)
-    |
-    WebSocket (/api/terminal/ssh)
-    |
-Spring Boot (SshTerminalEndpoint)
-    |
-    JSch SSH session
-    |
-Tentacle Server (T1, T2, T3, T4, HEAD)
+```mermaid
+flowchart TD
+    A["Browser\n(XtermClient.svelte / xterm.js)"] <-->|"WebSocket\n(/api/terminal/ssh)"| B["Spring Boot\n(SshTerminalEndpoint)"]
+    B <-->|"JSch SSH session"| C["Tentacle Server\n(T1, T2, T3, T4, HEAD)"]
 ```
 
 - 브라우저 네이티브 텍스트 선택 + Cmd+C/V 복사/붙여넣기
@@ -27,20 +21,11 @@ Tentacle Server (T1, T2, T3, T4, HEAD)
 
 ### RDP (Guacamole) -- GUI 데스크톱
 
-```
-Browser (GuacamoleClient.svelte)
-    |
-    WebSocket (/api/guacamole/tunnel)
-    |
-Spring Boot (GuacamoleTunnelEndpoint)
-    |
-    Guacamole Protocol (TCP)
-    |
-guacd (4822)
-    |
-    RDP
-    |
-Tentacle Server
+```mermaid
+flowchart TD
+    A["Browser\n(GuacamoleClient.svelte)"] <-->|"WebSocket\n(/api/guacamole/tunnel)"| B["Spring Boot\n(GuacamoleTunnelEndpoint)"]
+    B <-->|"Guacamole Protocol (TCP)"| C["guacd (4822)"]
+    C <-->|RDP| D["Tentacle Server"]
 ```
 
 ### 구성 요소
@@ -184,18 +169,14 @@ ConcurrentHashMap<String, List<AttemptInfo>> attempts;  // vmName → 시도 목
 
 ### Lock 획득 흐름
 
-```
-tryAcquire(vm, userB, rdp)
-    │
-    ├─ Lock 없음 → LockInfo 생성, 반환 null (성공)
-    │
-    ├─ Lock 있음, 같은 사용자 → LockInfo 갱신, 반환 null (성공)
-    │
-    └─ Lock 있음, 다른 사용자
-         │
-         ├─ Lock 만료 (lastHeartbeat > 5분) → 자동 해제 후 새 Lock 획득
-         │
-         └─ Lock 유효 → attempts 큐에 기록, 기존 LockInfo 반환 (거부)
+```mermaid
+flowchart TD
+    A["tryAcquire(vm, userB, rdp)"] --> B{Lock 상태 확인}
+    B -->|"Lock 없음"| C["LockInfo 생성\n반환 null (성공)"]
+    B -->|"Lock 있음\n같은 사용자"| D["LockInfo 갱신\n반환 null (성공)"]
+    B -->|"Lock 있음\n다른 사용자"| E{Lock 만료 여부}
+    E -->|"lastHeartbeat > 5분"| F["자동 해제 후\n새 Lock 획득"]
+    E -->|"Lock 유효"| G["attempts 큐에 기록\n기존 LockInfo 반환 (거부)"]
 ```
 
 ### 자동 정리 (Auto-Cleanup)

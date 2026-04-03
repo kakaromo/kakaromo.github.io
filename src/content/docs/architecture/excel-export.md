@@ -18,20 +18,17 @@ description: 프론트엔드(ExcelJS) 및 백엔드(Go gRPC) 두 가지 Excel Ex
 
 ### 아키텍처
 
-```
-Perf Content Component (15개)
-  |
-  +-- chartRef.getImageDataURL()   # ECharts PNG 캡처
-  +-- build sheets/sections
-  +-- call exportToExcel()
-        |
-        v
-excel-export.ts (공유 유틸리티)
-  +-- dynamic import('exceljs')
-  +-- image sections -> workbook.addImage()
-  +-- table sections -> styled rows/cells
-  +-- workbook.xlsx.writeBuffer()
-  +-- Blob -> download
+```mermaid
+flowchart TD
+    A["Perf Content Component (15개)"] --> B["chartRef.getImageDataURL()\nECharts PNG 캡처"]
+    A --> C["build sheets/sections"]
+    A --> D["call exportToExcel()"]
+    D --> E["excel-export.ts (공유 유틸리티)"]
+    E --> F["dynamic import('exceljs')"]
+    E --> G["image sections → workbook.addImage()"]
+    E --> H["table sections → styled rows/cells"]
+    E --> I["workbook.xlsx.writeBuffer()"]
+    I --> J["Blob → download"]
 ```
 
 ### 핵심 요구사항
