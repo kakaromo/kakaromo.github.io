@@ -1,22 +1,15 @@
 // @ts-check
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
-import rehypeMermaid from 'rehype-mermaid';
+import { rehypeMermaid } from '@beoe/rehype-mermaid';
 
 export default defineConfig({
   site: 'https://kakaromo.github.io',
   markdown: {
-    rehypePlugins: [[rehypeMermaid, { strategy: 'pre-mermaid' }]],
+    rehypePlugins: [[rehypeMermaid, { class: 'not-content' }]],
   },
   integrations: [
     starlight({
-      head: [
-        {
-          tag: 'script',
-          attrs: { type: 'module' },
-          content: `import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs'; mermaid.initialize({ startOnLoad: true, theme: 'default' });`,
-        },
-      ],
       title: 'Portal Docs',
       defaultLocale: 'root',
       locales: {

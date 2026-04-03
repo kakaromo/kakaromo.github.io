@@ -13,9 +13,8 @@
   },
   "dependencies": {
     "@astrojs/starlight": "^0.38.1",
+    "@beoe/rehype-mermaid": "^0.4.2",
     "astro": "^6.0.4",
-    "mermaid": "^11.14.0",
-    "playwright": "^1.59.1",
-    "rehype-mermaid": "^3.0.0"
+    "playwright": "^1.59.1"
   }
 }
