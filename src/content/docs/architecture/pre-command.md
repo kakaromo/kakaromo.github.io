@@ -210,6 +210,15 @@ if (m.find()) {
 | 타임아웃 | exit code -1, `[TIMEOUT]` 메시지 |
 | SSE 연결 끊김 | 서버 측 실행은 계속됨 (fire-and-forget) |
 
+### 동시성 제한
+
+| 풀 | 최대 스레드 | 대상 |
+|----|------------|------|
+| `PreCommandService` | **8** | 즉시 실행 (사용자 요청) |
+| `PreCommandAutoExecutor` | **4** | 자동 실행 (init 감지) |
+
+20명 동시 사용 기준. 초과 시 대기열에서 순서를 기다립니다 (에러 아님).
+
 ---
 
 ## 6. 자동 실행 메커니즘 (PreCommandAutoExecutor)
@@ -254,12 +263,27 @@ public HeadSlotStateStore(@Lazy PreCommandAutoExecutor preCommandAutoExecutor) {
 ```
 +page.svelte (slots)
 ├── PreCommandSheet.svelte        # 통합 시트 (등록/실행/관리)
-│   ├── main 뷰: 슬롯 상태 + 템플릿 목록
-│   ├── manage 뷰: 편집/삭제
+│   ├── main 뷰: 슬롯 상태 + 템플릿 목록 + 등록/즉시 실행
+│   ├── manage 뷰: 편집/삭제 (hover 시 액션 노출)
 │   └── edit 뷰: 생성/수정 폼
 ├── PreCommandFloatingCard.svelte # 실행 진행 표시 (순수 표시 컴포넌트)
-└── SlotCard.svelte               # ⚡ 뱃지 (hasPreCommand prop)
+│   ├── 프로그레스 바 (실행 중: 파랑, 성공: 초록, 실패: 빨강)
+│   ├── 실패 슬롯 자동 펼침
+│   └── 닫기 시 토스트 요약
+└── SlotCard.svelte               # ⚡ 뱃지 + 툴팁 Pre-Cmd 이름
 ```
+
+### UX 설계 (토스 철학)
+
+| 원칙 | 적용 |
+|------|------|
+| 한 화면 한 목적 | 시트 3단 뷰 전환 (main → manage → edit) |
+| 맥락 유지 | 시트 상단에 선택 슬롯 표시, 등록 상태 체크 |
+| 즉시 결과 | ⚡ 뱃지, 프로그레스 바, 실패 자동 펼침, 토스트 |
+| 선택지 최소화 | 메뉴 1개 → 시트에서 전부 처리, adb -s 자동 |
+| 빈 상태 안내 | 예시 명령어 + "첫 명령어 만들기" CTA |
+
+자세한 UX 설계 원칙은 [UX 설계 철학](/developer/ux-philosophy) 참조.
 
 ### 상태 관리
 
