@@ -298,6 +298,22 @@ MinIO 버킷 가시성 관리.
 | bucket_name | varchar(255) | 버킷 이름 (UNIQUE, NOT NULL) |
 | is_visible | boolean | 가시성 여부 (NOT NULL, DEFAULT TRUE) |
 
+### portal_pre_commands
+
+사전 명령어 템플릿. TC 시작 전 슬롯에 실행할 명령어(adb push, shell 등)를 저장.
+
+| 컬럼명 | 타입 | 설명 |
+|--------|------|------|
+| id | bigint (PK, AUTO) | 고유 ID |
+| name | varchar(100) | 템플릿 이름 (NOT NULL) |
+| description | varchar(500) | 설명 (선택) |
+| commands | text | 명령어 목록 (JSON 배열, NOT NULL) |
+| created_at | datetime | 생성 시간 |
+| updated_at | datetime | 수정 시간 |
+
+- `commands` 예시: `["adb push tiotest /dev", "adb shell chmod +x /dev/tiotest"]`
+- `adb` 명령어는 실행 시 자동으로 `-s {usbId}`가 삽입됨
+
 ### tc_groups
 
 TC 그룹 정의. SetTC 시 자주 사용하는 TC 조합을 저장.
@@ -580,6 +596,7 @@ portal_users (독립)
 portal_servers (독립 — guacd_host/port로 VM별 guacd 지정 가능)
 portal_head_connections (독립 — head_type으로 호환성/성능 구분)
 portal_bucket_visibility (독립)
+portal_pre_commands (독립 — TC 시작 전 사전 명령어 템플릿)
 
 tc_groups (1) ---- (N) tc_group_items
   |                    |
