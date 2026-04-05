@@ -27,7 +27,8 @@ Base path: `/api/bitbucket`
   "projectKey": "FW",
   "repoSlug": "firmware-code",
   "pat": "NzM2...",
-  "targetPath": "/mnt/head/FW_Code",
+  "controller": "Savona",
+  "targetPath": "/appdata/samsung/OCTO_HEAD/FW_Code",
   "enabled": true
 }
 ```
@@ -42,7 +43,8 @@ Base path: `/api/bitbucket`
   "projectKey": "FW",
   "repoSlug": "firmware-code",
   "pat": "NzM2...",
-  "targetPath": "/mnt/head/FW_Code",
+  "controller": "Savona",
+  "targetPath": "/appdata/samsung/OCTO_HEAD/FW_Code",
   "enabled": true,
   "createdAt": "2026-04-04T10:00:00",
   "updatedAt": "2026-04-04T10:00:00",
@@ -162,7 +164,7 @@ Portal이 내부적으로 호출하는 Bitbucket Server API:
 
 | 용도 | Bitbucket API |
 |------|--------------|
-| 브랜치 목록 | `GET /rest/api/1.0/projects/{proj}/repos/{repo}/branches?start={n}&limit=100` |
-| ZIP 다운로드 | `GET /rest/api/1.0/projects/{proj}/repos/{repo}/archive?at=refs/heads/{branch}&format=zip` |
+| 브랜치 목록 | `GET /rest/api/latest/projects/{proj}/repos/{repo}/branches?start={n}&limit=100` |
+| ZIP 다운로드 | `GET /rest/api/latest/projects/{proj}/repos/{repo}/archive?at=refs/heads/{branch}&format=zip` |
 
 인증은 `Authorization: Bearer {PAT}` 헤더를 사용합니다. 브랜치 목록은 페이지네이션(`isLastPage`, `nextPageStart`)을 처리합니다.
