@@ -124,6 +124,7 @@ export default defineConfig({
             { label: '개발 환경 설정', slug: 'developer/setup' },
             { label: '코딩 컨벤션', slug: 'developer/conventions' },
             { label: '컴포넌트 가이드', slug: 'developer/components' },
+            { label: 'DataTable 가이드', slug: 'developer/datatable-guide' },
             { label: 'UI 크기 조절', slug: 'developer/ui-sizing' },
             {
               label: '확장 가이드',
