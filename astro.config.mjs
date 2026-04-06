@@ -16,6 +16,29 @@ export default defineConfig({
         root: { label: '한국어', lang: 'ko-KR' },
       },
       customCss: ['./src/styles/custom.css'],
+      head: [
+        {
+          tag: 'script',
+          content: `
+(function(){
+  var KEY = 'portal_docs_auth';
+  var HASH = '79a04eeefd2f97d1695c4d86cb0624715eff182b35deda3b5c71e4f431f5390d';
+  if (sessionStorage.getItem(KEY) === HASH) return;
+  async function sha256(msg) {
+    var buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(msg));
+    return Array.from(new Uint8Array(buf)).map(function(b){return b.toString(16).padStart(2,'0')}).join('');
+  }
+  document.documentElement.style.display = 'none';
+  var pw = prompt('Portal Docs 비밀번호를 입력하세요');
+  if (!pw) { document.body.innerHTML = '<h2 style="text-align:center;margin-top:20vh">접근이 거부되었습니다</h2>'; document.documentElement.style.display=''; return; }
+  sha256(pw).then(function(h){
+    if (h === HASH) { sessionStorage.setItem(KEY, HASH); document.documentElement.style.display=''; }
+    else { document.body.innerHTML = '<h2 style="text-align:center;margin-top:20vh">비밀번호가 틀렸습니다</h2>'; document.documentElement.style.display=''; }
+  });
+})();
+`,
+        },
+      ],
       sidebar: [
         {
           label: '시작하기',

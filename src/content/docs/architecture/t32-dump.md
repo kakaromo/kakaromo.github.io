@@ -74,6 +74,10 @@ CREATE TABLE portal_t32_configs (
     jtagSuccessPattern VARCHAR(500),      -- regex
     t32PortCheckCommand VARCHAR(500),
     dumpCommand VARCHAR(500),
+    fwCodeLinuxBase VARCHAR(500),         -- Linux FW 코드 경로
+    fwCodeWindowsBase VARCHAR(500),       -- Windows FW 코드 경로
+    resultBasePath VARCHAR(500),          -- Linux 결과 저장 경로
+    resultWindowsBasePath VARCHAR(500),   -- Windows 결과 저장 경로
     description VARCHAR(500),
     enabled BOOLEAN NOT NULL DEFAULT TRUE,
     createdAt DATETIME,

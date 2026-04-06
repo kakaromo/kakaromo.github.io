@@ -3,6 +3,64 @@ title: 변경 이력
 description: Samsung Portal의 주요 변경 사항 및 기능 추가 이력
 ---
 
+## 2026-04-07
+
+### Bitbucket 브랜치 커밋 날짜 표시
+
+브랜치 이력에 Bitbucket 커밋 날짜(`commitDate`)를 표시합니다. Bitbucket API의 `authorTimestamp`를 DB에 저장하며, metadata에 없으면 `/commits?until={branchId}&limit=1`로 fallback 조회합니다.
+
+### Bitbucket 다운로드 플로팅 카드
+
+DETECTED 브랜치의 개별 다운로드 시 우하단에 플로팅 카드로 실시간 진행률을 표시합니다. 여러 브랜치 동시 다운로드를 지원하며, 삭제 시 `downloadedAt`을 초기화합니다.
+
+### Bitbucket SSE 다운로드 + 파일/DB 분리 삭제
+
+- `POST /branches/{branchId}/download` (SSE): 진행률 스트리밍 (1MB마다 이벤트)
+- `POST /branches/{branchId}/delete-files`: 파일만 삭제 (DB 유지, 상태→DETECTED)
+- `DELETE /branches/{branchId}`: DB 기록 삭제
+
+### Bitbucket autoDownload 토글
+
+저장소별 `autoDownload` 옵션 추가. OFF 시 새 브랜치를 `DETECTED` 상태로만 기록하고 자동 다운로드하지 않습니다. 디스크 용량 관리 시 유용합니다.
+
+### Bitbucket 저장 전 연결 테스트
+
+`POST /test-connection` 엔드포인트 추가. 저장소를 DB에 저장하기 전에 연결을 테스트하고 브랜치 목록 + 커밋 ID + 타임스탬프를 미리 확인합니다.
+
+---
+
+## 2026-04-05
+
+### T32 FW Code 경로 매핑
+
+T32Config에 4개 경로 매핑 필드 추가:
+- `fwCodeLinuxBase` / `fwCodeWindowsBase`: FW 코드 Linux↔Windows 경로 변환
+- `resultBasePath` / `resultWindowsBasePath`: 결과 저장 경로 Linux↔Windows 변환
+
+Dump 명령어에 `{result_path}`, `{branch_path}` 플레이스홀더가 추가되어 자동으로 Windows 경로로 변환됩니다.
+
+### T32 Dump 브랜치 폴더 선택
+
+Dump Dialog에서 Bitbucket 다운로드된 브랜치 폴더를 선택할 수 있습니다. 선택한 폴더 경로가 `{branch_path}`로 dump 명령어에 전달됩니다.
+
+### T32 결과 파일 미리보기 + 다운로드
+
+Dump 완료 후 결과 파일 목록을 미리 보고 개별 다운로드할 수 있습니다.
+
+---
+
+## 2026-04-04
+
+### 성능 TC/History DataTable Excel Export
+
+성능/호환성 TC 테이블과 History DataTable에 Excel 내보내기 버튼 추가. FW Name, TC Name, Parser Name 등 추가 필드 포함. 시트 이름에 Excel 예약어(History) 충돌 방지 처리.
+
+### perf-content 개별 Excel 제거 + testdb/ufsinfo 전체 Excel Export
+
+perf-content 컴포넌트의 개별 Excel 내보내기를 제거하고, testdb/ufsinfo 단위의 전체 Excel export로 통합했습니다.
+
+---
+
 ## 2026-04-03
 
 ### 성능 결과 재파싱 (Reparse) 기능

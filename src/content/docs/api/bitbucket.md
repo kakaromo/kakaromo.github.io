@@ -29,6 +29,7 @@ Base path: `/api/bitbucket`
   "pat": "NzM2...",
   "controller": "Savona",
   "targetPath": "/appdata/samsung/OCTO_HEAD/FW_Code",
+  "autoDownload": true,
   "enabled": true
 }
 ```
@@ -45,6 +46,7 @@ Base path: `/api/bitbucket`
   "pat": "NzM2...",
   "controller": "Savona",
   "targetPath": "/appdata/samsung/OCTO_HEAD/FW_Code",
+  "autoDownload": true,
   "enabled": true,
   "createdAt": "2026-04-04T10:00:00",
   "updatedAt": "2026-04-04T10:00:00",
@@ -70,8 +72,9 @@ Base path: `/api/bitbucket`
     "branchName": "feature/new-function",
     "latestCommitId": "a1b2c3d4e5f6",
     "status": "DOWNLOADED",
-    "filePath": "/mnt/head/FW_Code/feature_new-function.zip",
+    "filePath": "/mnt/head/FW_Code/SERRA/feature_new-function",
     "fileSizeBytes": 2048576,
+    "commitDate": "2026-04-01T14:30:00",
     "downloadedAt": "2026-04-04T10:05:30",
     "errorMessage": null
   }
@@ -82,6 +85,7 @@ Base path: `/api/bitbucket`
 
 | 값 | 설명 |
 |----|------|
+| `DETECTED` | 감지됨 (autoDownload=false 또는 파일 삭제 후) |
 | `DOWNLOADING` | 다운로드 진행 중 |
 | `DOWNLOADED` | 다운로드 + 압축 해제 완료 |
 | `FAILED` | 실패 (`errorMessage`에 원인 기록) |
@@ -123,7 +127,7 @@ POST /repos/{id}/download?branch={branchName}
 
 **응답**: BitbucketBranch 객체 (위 브랜치 이력 항목과 동일)
 
-### 연결 테스트
+### 연결 테스트 (저장소 기반)
 
 ```
 POST /repos/{id}/test
@@ -144,6 +148,93 @@ POST /repos/{id}/test
 ```json
 {
   "result": "FAIL: Bitbucket API 응답 오류: 401 - Unauthorized"
+}
+```
+
+### 연결 테스트 (저장 전 검증)
+
+```
+POST /test-connection
+```
+
+저장소를 DB에 저장하기 전에 연결을 테스트합니다. 성공 시 브랜치 목록과 커밋 정보를 반환합니다.
+
+**요청 본문**:
+```json
+{
+  "serverUrl": "https://bitbucket.mycompany.com",
+  "projectKey": "FW",
+  "repoSlug": "firmware-code",
+  "pat": "NzM2..."
+}
+```
+
+**응답**:
+```json
+{
+  "success": true,
+  "message": "15개 브랜치 발견",
+  "branches": [
+    { "name": "feature/new-func", "commitId": "a1b2c3d", "timestamp": "2026-04-01T14:30:00" }
+  ]
+}
+```
+
+---
+
+## Branch Actions
+
+### DETECTED 브랜치 다운로드 (SSE)
+
+```
+POST /branches/{branchId}/download
+→ text/event-stream
+```
+
+DETECTED 또는 FAILED 상태의 브랜치를 SSE 스트리밍으로 다운로드합니다. 진행률을 실시간으로 표시합니다.
+
+**SSE 이벤트**:
+
+| 이벤트 | 데이터 | 설명 |
+|--------|--------|------|
+| `download-progress` | `{bytes, mb}` | 1MB마다 진행률 |
+| `download-done` | `{bytes}` | 다운로드 완료 |
+| `extract-start` | `{}` | 압축 해제 시작 |
+| `extract-done` | `{}` | 압축 해제 완료 |
+| `done` | `{branchId, status}` | 전체 완료 |
+| `error` | `{message}` | 오류 |
+
+### 브랜치 파일 삭제
+
+```
+POST /branches/{branchId}/delete-files
+```
+
+다운로드된 브랜치의 파일 (ZIP + 폴더)을 삭제합니다. DB 기록은 유지되며 상태가 `DETECTED`로 변경됩니다.
+
+**응답**:
+```json
+{
+  "success": true,
+  "message": "파일 삭제 완료"
+}
+```
+
+상태 변경: `DOWNLOADED` → `DETECTED` (`downloadedAt=null`, `filePath=null`)
+
+### 브랜치 DB 기록 삭제
+
+```
+DELETE /branches/{branchId}
+```
+
+브랜치의 DB 기록을 완전히 삭제합니다.
+
+**응답**:
+```json
+{
+  "success": true,
+  "message": "브랜치 기록 삭제 완료"
 }
 ```
 

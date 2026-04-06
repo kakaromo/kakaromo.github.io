@@ -97,6 +97,7 @@ CREATE TABLE portal_bitbucket_repos (
     controller VARCHAR(100),              -- UFS Controller (수동/자동)
     targetPath VARCHAR(500) NOT NULL
         DEFAULT '/appdata/samsung/OCTO_HEAD/FW_Code',
+    autoDownload BOOLEAN NOT NULL DEFAULT TRUE,  -- false면 DETECTED만
     enabled BOOLEAN NOT NULL DEFAULT TRUE,
     createdAt DATETIME,
     updatedAt DATETIME,
@@ -115,6 +116,7 @@ CREATE TABLE portal_bitbucket_branches (
     status VARCHAR(20) NOT NULL DEFAULT 'DOWNLOADING',
     filePath VARCHAR(500),
     fileSizeBytes BIGINT DEFAULT 0,
+    commitDate DATETIME,                  -- Bitbucket 커밋 타임스탬프
     downloadedAt DATETIME,
     errorMessage TEXT,
     FOREIGN KEY (repoId) REFERENCES portal_bitbucket_repos(id) ON DELETE CASCADE
@@ -123,7 +125,32 @@ CREATE TABLE portal_bitbucket_branches (
 
 ---
 
-## 5. 보안
+## 5. autoDownload 동작 흐름
+
+```mermaid
+flowchart TD
+    POLL["폴링: 새 브랜치 감지"] --> CHECK{autoDownload?}
+    CHECK -->|true| DL["downloadBranch()\nZIP 다운로드 + 압축 해제"]
+    CHECK -->|false| DET["DETECTED 상태로 DB 저장\n(커밋 날짜만 기록)"]
+    DET --> MANUAL["사용자 수동 다운로드\nPOST /branches/{id}/download (SSE)"]
+    MANUAL --> DL
+    DL --> DONE["DOWNLOADED 상태"]
+    DL --> FAIL["FAILED 상태"]
+    DONE --> DEL_FILE["파일 삭제\nPOST /branches/{id}/delete-files"]
+    DEL_FILE --> DET2["DETECTED 상태\ndownloadedAt=null, filePath=null"]
+```
+
+### 커밋 날짜(commitDate) 조회
+
+브랜치의 커밋 타임스탬프를 다음 순서로 해석합니다:
+
+1. 브랜치 목록 API의 `metadata.latestCommit.authorTimestamp` → `LocalDateTime` 변환
+2. metadata가 없으면 → `GET /commits?until={branchId}&limit=1`로 fallback 조회
+3. 응답의 `authorTimestamp` (epoch ms) → `LocalDateTime` 변환
+
+---
+
+## 6. 보안
 
 - **PAT**: DB에 평문 저장 (기존 패턴과 동일)
 - **SSL**: 자체 서명 인증서 자동 무시
