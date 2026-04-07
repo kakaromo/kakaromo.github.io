@@ -87,7 +87,7 @@ export default defineConfig({
             },
             { label: 'Bitbucket 브랜치 모니터', slug: 'guide/bitbucket-monitor' },
             { label: 'T32 Dump (JTAG 디버깅)', slug: 'guide/t32-dump' },
-            { label: 'TC별 Pre-Command', slug: 'guide/tc-pre-command' },
+            { label: 'Pre-Command (사전 명령어)', slug: 'guide/pre-command' },
             { label: 'Binary Struct Mapper', slug: 'guide/bin-mapper' },
             { label: '관리자 대시보드', slug: 'guide/admin' },
           ],
@@ -110,6 +110,7 @@ export default defineConfig({
             { label: 'Bitbucket 모니터', slug: 'architecture/bitbucket-monitor' },
             { label: 'T32 Dump', slug: 'architecture/t32-dump' },
             { label: 'BinMapper 엔진', slug: 'architecture/bin-mapper' },
+            { label: 'Pre-Command', slug: 'architecture/pre-command' },
           ],
         },
         {
@@ -129,6 +130,7 @@ export default defineConfig({
             { label: 'Bitbucket API', slug: 'api/bitbucket' },
             { label: 'T32 API', slug: 'api/t32' },
             { label: 'Auth & Admin API', slug: 'api/auth-admin' },
+            { label: 'Pre-Command API', slug: 'api/pre-command' },
           ],
         },
         {
@@ -139,6 +141,7 @@ export default defineConfig({
             { label: '벤치마크 실행 흐름', slug: 'internals/benchmark-execution-flow' },
             { label: 'Excel Export 흐름', slug: 'internals/excel-export-flow' },
             { label: '원격 접속 흐름', slug: 'internals/remote-session-flow' },
+            { label: 'Pre-Command 실행 흐름', slug: 'internals/pre-command-execution-flow' },
           ],
         },
         {
