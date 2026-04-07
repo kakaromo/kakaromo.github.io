@@ -21,9 +21,9 @@ sequenceDiagram
     U->>Sheet: "즉시 실행" 클릭
     Sheet->>Page: onExecute(preCommand)
     Page->>Card: visible=true
-    Page->>API: executePreCommand(id, source, slots)
+    Page->>API: executePreCommand(id, setLocations)
     API->>CTRL: POST /api/pre-commands/execute
-    CTRL->>SVC: execute(id, source, slotNumbers)
+    CTRL->>SVC: execute(id, setLocations)
     SVC-->>API: SSE stream
 
     loop 각 슬롯
@@ -58,7 +58,7 @@ sequenceDiagram
     AUTO->>AUTO: testState includes "init" ?
     AUTO->>AUTO: 이전 상태가 init 아님 ?
 
-    AUTO->>DB: SlotPreCommand 조회 (source, slotIndex)
+    AUTO->>DB: SlotPreCommand 조회 (setLocation)
     Note over AUTO: tcPreCommandIds: "3,0,5"
 
     AUTO->>AUTO: setLocation "T3-0" → tentacleName=T3, slotNumber=0
@@ -71,12 +71,12 @@ sequenceDiagram
     AUTO->>DB: TC id=35 조회 → name="iozone"
 
     alt testToolName 일치 + tc_pre_command_ids[1] > 0
-        AUTO->>SVC: executeSync(preCommandId, source, [slotIndex])
+        AUTO->>SVC: executeSync(preCommandId, [setLocation])
         SVC->>SSH: SSH 명령어 실행
         Note over AUTO: TC Pre-Command 실행됨
     else tc_pre_command_ids[1] == 0
         alt 슬롯 Pre-Command 있음
-            AUTO->>SVC: executeSync(slotPreCommandId, source, [slotIndex])
+            AUTO->>SVC: executeSync(slotPreCommandId, [setLocation])
             Note over AUTO: 슬롯 Pre-Command fallback
         end
     end
@@ -96,7 +96,7 @@ portal_pre_commands:
   id=5: "fio 설치"       commands=["adb push fio /dev", "adb shell chmod +x /dev/fio"]
 
 portal_slot_pre_commands:
-  source=compatibility, slot_index=0, pre_command_id=NULL, tc_pre_command_ids="3,0,5"
+  set_location='T3-0', pre_command_id=NULL, tc_pre_command_ids="3,0,5"
 
 SlotInfomation (T3, 0):
   testcaseIds: "12/35/12"    testcaseStatus: "0/0/0"
@@ -164,8 +164,8 @@ sequenceDiagram
     Note over FE: 변경 전: testcaseIds "12/35/12"<br/>tc_pre_command_ids "3,0,5"
     Note over FE: 변경 후: testcaseIds "35/12/12"<br/>tc_pre_command_ids "0,3,5"
 
-    FE->>API: POST /tc/sync {tcPreCommandIds: "0,3,5"}
-    API->>DB: UPDATE tc_pre_command_ids = "0,3,5"
+    FE->>API: POST /tc/sync {setLocation: "T3-0", tcPreCommandIds: "0,3,5"}
+    API->>DB: UPDATE tc_pre_command_ids = "0,3,5" WHERE set_location = "T3-0"
 ```
 
 ---
