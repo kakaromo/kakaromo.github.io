@@ -150,7 +150,7 @@ flowchart TD
     J -->|불일치| C
     J -->|일치| K{"tc_pre_command_ids[N]\n> 0 ?"}
     K -->|등록됨| L["TC Pre-Command 실행"]
-    K -->|미등록 (0)| M{"슬롯 Pre-Command\n있음?"}
+    K -->|"미등록(0)"| M{"슬롯 Pre-Command\n있음?"}
     M -->|있음| N["슬롯 Pre-Command 실행"]
     M -->|없음| C
 ```

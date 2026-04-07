@@ -370,7 +370,7 @@ flowchart TD
     E -->|position N| F{"testToolName ==\nTC[N].name ?"}
     F -->|불일치| Z3["실행 안 함"]
     F -->|일치| G{"tc_pre_command_ids[N]\n> 0 ?"}
-    G -->|0 (미등록)| H{"슬롯 Pre-Command\n있음?"}
+    G -->|"미등록(0)"| H{"슬롯 Pre-Command\n있음?"}
     H -->|있음| I["슬롯 Pre-Command 실행"]
     H -->|없음| Z4["실행 없음"]
     G -->|"preCommandId"| J["TC Pre-Command 실행\n(슬롯 것 건너뜀)"]
