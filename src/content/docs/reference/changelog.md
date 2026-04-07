@@ -5,6 +5,46 @@ description: Samsung Portal의 주요 변경 사항 및 기능 추가 이력
 
 ## 2026-04-07
 
+### T32 Dump UX 종합 개선
+
+**실행 전 확인 다이얼로그**: "Dump 시작" 클릭 시 ConfirmDialog에서 슬롯, FW 폴더(Windows 경로), JTAG/T32 PC 정보를 확인 후 실행. 잘못된 브랜치 선택 시 5분 낭비 방지.
+
+**Stepper 경과 시간**: 각 Step 옆에 타이머 아이콘 + 경과 시간 표시 (`3s`, `1:47` 등). Step 3(최대 5분)의 진행 상황 가늠 가능.
+
+**브랜치 선택 리스트 개선**:
+- Bitbucket 브랜치 드롭다운으로 교체 (Browse 파일 탐색기 → 직접 찾기 fallback으로 이동)
+- DOWNLOADED 브랜치: 클릭 즉시 선택, hover 시 초록 배경
+- DETECTED 브랜치: 인라인 "다운로드" 버튼, SSE 진행률, 완료 후 자동 선택
+- 브랜치 검색: 실시간 필터링
+- 긴 브랜치명 자동 줄바꿈, filePath는 Windows 경로로 변환 표시
+
+**Step별 실패 힌트**: 실패 시 Step 번호 + 구체적 해결 안내 (JTAG 케이블/Hang 명령어/fail 키워드 등)
+
+**Step 3 fail 키워드 감지**: exitCode=0이어도 stdout에 "fail"(대소문자 무시) 포함 시 실패 처리.
+
+**전체 다운로드 버튼**: Dump 완료 시 결과 폴더 ZIP 다운로드 동작 연결.
+
+### T32 Dump result path 형식 변경
+
+결과 폴더명을 `{date}_{setLocation}_{testToolName}_{testTrName}` 형식으로 변경. 예: `20260407_T10-1_randwrite_Savona_V8_TLC_512Gb_512GB_P00RC28`. DumpRequest에 `setLocation`, `testToolName`, `testTrName` 파라미터 추가.
+
+### T32 Admin 명령어 필드 textarea 변경
+
+JTAG Command, T32 Port Check Command, Dump Command 입력 필드를 `input` → `textarea`로 변경. 긴 명령어 전체 확인 가능, 세로 리사이즈 지원.
+
+### ConfirmDialog children snippet 지원
+
+ConfirmDialog에 `children` snippet prop 추가. title/description 외에 커스텀 콘텐츠를 삽입할 수 있음 (T32 Dump 실행 확인에서 활용).
+
+### Bitbucket Admin targetPath 표시 개선
+
+- 테이블: truncate + tooltip (TruncateCell)
+- Add/Edit 다이얼로그: `col-span-2`로 전체 너비 표시
+
+### Bitbucket 파일 삭제 Samba 마운트 대응
+
+Java `Files.walk` + `Files.delete` → OS `rm -rf` (ProcessBuilder)로 교체. Samba 마운트에서 `directory not empty` 오류 방지. 3회 리트라이 (2초 간격).
+
 ### Bitbucket 브랜치 커밋 날짜 표시
 
 브랜치 이력에 Bitbucket 커밋 날짜(`commitDate`)를 표시합니다. Bitbucket API의 `authorTimestamp`를 DB에 저장하며, metadata에 없으면 `/commits?until={branchId}&limit=1`로 fallback 조회합니다.
