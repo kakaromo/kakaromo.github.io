@@ -99,106 +99,50 @@ flowchart TD
 
 ---
 
-## Nginx 리버스 프록시
+## 외부 접속 설정 (포트 포워딩)
 
-외부에서 `http://move.samsungds.net` (포트 없이) 접속 시 Spring Boot(:8080)로 프록시합니다. WebSocket, SSE 모두 지원.
+외부에서 `http://move.samsungds.net` (포트 없이) 접속 시 Spring Boot(:8080)로 연결합니다.
 
-### 설정 파일
+### iptables 포트 포워딩 (권장)
 
-`/etc/nginx/sites-available/portal.conf`:
-
-```nginx
-server {
-    listen 80;
-    server_name move.samsungds.net;
-
-    # 요청 크기 제한 해제 (파일 업로드 대응)
-    client_max_body_size 0;
-
-    # 프록시 타임아웃 (SSE/장시간 연결 대응)
-    proxy_read_timeout 300s;
-    proxy_send_timeout 300s;
-    proxy_connect_timeout 10s;
-
-    # WebSocket 엔드포인트 (Guacamole, SSH Terminal, Agent Screen)
-    location ~ ^/api/(guacamole/tunnel|guacamole/ws|terminal/ssh|agent/screen/) {
-        proxy_pass http://127.0.0.1:8080;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 3600s;
-    }
-
-    # SSE 엔드포인트 (Head slots stream, Pre-Command execute 등)
-    location ~ ^/api/.*/stream {
-        proxy_pass http://127.0.0.1:8080;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_buffering off;
-        proxy_cache off;
-        proxy_read_timeout 300s;
-    }
-
-    # 나머지 전체 (REST API + 정적 파일)
-    location / {
-        proxy_pass http://127.0.0.1:8080;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
-```
-
-### 적용 방법
+Nginx 리버스 프록시 대신 **iptables**로 80 → 8080 직접 포워딩합니다. 중간 프록시가 없으므로 WebSocket, SSE(timeout 0/무한)에 영향 없음.
 
 ```bash
-# 1. 설정 파일 복사 + 심볼릭 링크
-sudo cp portal.conf /etc/nginx/sites-available/portal.conf
-sudo ln -sf /etc/nginx/sites-available/portal.conf /etc/nginx/sites-enabled/portal.conf
+# 80 → 8080 포워딩 추가
+sudo iptables -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-port 8080
 
-# 2. 기본 설정 비활성화 (충돌 방지)
-sudo rm -f /etc/nginx/sites-enabled/default
-
-# 3. 문법 확인
-sudo nginx -t
-
-# 4. 적용
-sudo systemctl reload nginx
+# 확인
+sudo iptables -t nat -L PREROUTING -n --line-numbers
 ```
 
-### 프록시 경로 요약
+### 영구 적용 (재부팅 후에도 유지)
 
-| 경로 패턴 | 프록시 대상 | 특수 처리 |
-|-----------|-------------|-----------|
-| `/api/guacamole/tunnel` | `:8080` | WebSocket Upgrade |
-| `/api/guacamole/ws` | `:8080` | WebSocket Upgrade |
-| `/api/terminal/ssh` | `:8080` | WebSocket Upgrade |
-| `/api/agent/screen/*` | `:8080` | WebSocket Upgrade |
-| `/api/*/stream` | `:8080` | SSE (buffering off) |
-| `/*` (나머지) | `:8080` | 일반 HTTP |
+```bash
+# Ubuntu/Debian
+sudo apt install iptables-persistent
+sudo netfilter-persistent save
 
-### 주요 설정 설명
+# 또는 수동 저장/복원
+sudo iptables-save > /etc/iptables.rules
+# /etc/rc.local 또는 systemd service에 추가:
+# iptables-restore < /etc/iptables.rules
+```
 
-| 설정 | 값 | 이유 |
-|------|-----|------|
-| `client_max_body_size 0` | 무제한 | 파일 업로드 (MinIO, FW 바이너리) |
-| `proxy_read_timeout 3600s` | 1시간 | WebSocket 장시간 연결 유지 |
-| `proxy_buffering off` | SSE 경로 | SSE 이벤트 즉시 전달 |
-| `Upgrade / Connection` | WebSocket 경로 | HTTP → WebSocket 프로토콜 전환 |
+### 삭제 (원복)
+
+```bash
+# 규칙 번호 확인
+sudo iptables -t nat -L PREROUTING -n --line-numbers
+
+# 해당 번호 삭제 (예: 1번)
+sudo iptables -t nat -D PREROUTING 1
+```
 
 ### 확인
 
 ```bash
-# Nginx 상태 확인
-sudo systemctl status nginx
+# 포트 포워딩 확인
+curl http://move.samsungds.net/api/pre-commands
 
 # WebSocket 연결 테스트
 curl -i -N \
@@ -207,11 +151,8 @@ curl -i -N \
   -H "Sec-WebSocket-Version: 13" \
   -H "Sec-WebSocket-Key: test" \
   http://move.samsungds.net/api/guacamole/tunnel
-
-# 일반 API 테스트
-curl http://move.samsungds.net/api/pre-commands
 ```
 
 :::tip
-Nginx 로그 확인: `sudo tail -f /var/log/nginx/error.log /var/log/nginx/access.log`
+Nginx 리버스 프록시는 SSE timeout(0=무한)과 충돌하므로 사용하지 않습니다. iptables는 L4 포워딩이라 프로토콜에 영향 없음.
 :::
