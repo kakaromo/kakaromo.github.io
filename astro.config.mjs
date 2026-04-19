@@ -90,6 +90,10 @@ export default defineConfig({
                   label: 'UFS Metadata 모니터링 (Scheduled + adb)',
                   autogenerate: { directory: 'learn/l2-metadata' },
                 },
+                {
+                  label: 'T32 Dump (Stepper + SSH × 2)',
+                  autogenerate: { directory: 'learn/l2-t32' },
+                },
               ],
             },
             {
