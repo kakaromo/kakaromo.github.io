@@ -1,7 +1,42 @@
 // @source src/main/java/com/samsung/move/testdb/service/PerformanceResultDataService.java
-// @lines 36-161
-// @note fetchResultData — History/TC/Parser DB 조합 + LogBrowser JSON 읽기 + 불완전 JSON 복구
-// @synced 2026-04-19T08:48:08.178Z
+// @lines 1-161
+// @note fetchResultData — history→TC→parser 경로 해석 + COLLECTING + ResultData record
+// @synced 2026-04-19T09:04:03.517Z
+
+package com.samsung.move.testdb.service;
+
+import com.samsung.move.logbrowser.service.LogBrowserService;
+import com.samsung.move.testdb.entity.PerformanceHistory;
+import com.samsung.move.testdb.entity.PerformanceParser;
+import com.samsung.move.testdb.entity.PerformanceTestCase;
+import com.samsung.move.testdb.entity.PerformanceTestRequest;
+import com.samsung.move.testdb.entity.SetInfomation;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
+
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class PerformanceResultDataService {
+
+    private final PerformanceHistoryService historyService;
+    private final PerformanceTestCaseService testCaseService;
+    private final PerformanceParserService parserService;
+    private final PerformanceTestRequestService testRequestService;
+    private final SetInfomationService setInfomationService;
+    private final LogBrowserService logBrowserService;
+    private final ObjectMapper objectMapper = new ObjectMapper();
+
+    @Value("${tentacle.log-prefix:/home/octo/tentacle}")
+    private String logPrefix;
+
+    @Value("${tentacle.head.log-path:/home/octo/nas}")
+    private String headLogPath;
+
+    public record ResultData(Long parserId, String parserName, String tcName, String fw, String setName, String fileSystem, String rawJson, boolean partial) {}
 
     public ResultData fetchResultData(Long historyId) throws Exception {
         PerformanceHistory history = historyService.findById(historyId);

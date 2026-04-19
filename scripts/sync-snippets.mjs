@@ -547,6 +547,78 @@ const manifest = [
     language: 'java',
     note: 'URL + HTTP method → DB ActionPermission 매칭 + 권한 체크 + 403 응답',
   },
+
+  // ── TestDB 결과 모델 (L2 testdb) ──
+  {
+    id: 'PerformanceTestRequest-entity',
+    source: 'src/main/java/com/samsung/move/testdb/entity/PerformanceTestRequest.java',
+    lines: [1, 70],
+    language: 'java',
+    note: 'FW 메타(컨트롤러·NAND·CS 버전) + getFw() @Transient + Redis setFw 무시',
+  },
+  {
+    id: 'PerformanceTestCase-entity',
+    source: 'src/main/java/com/samsung/move/testdb/entity/PerformanceTestCase.java',
+    lines: [1, 57],
+    language: 'java',
+    note: '성능 시나리오 정의 — name / fileName / parserId / category / ioType',
+  },
+  {
+    id: 'PerformanceHistory-entity',
+    source: 'src/main/java/com/samsung/move/testdb/entity/PerformanceHistory.java',
+    lines: [1, 68],
+    language: 'java',
+    note: '실행 결과 스냅샷 — logPath(원격 JSON 포인터) + result + ManyToOne TR/TC',
+  },
+  {
+    id: 'CompatibilityHistory-entity',
+    source: 'src/main/java/com/samsung/move/testdb/entity/CompatibilityHistory.java',
+    lines: [1, 60],
+    language: 'java',
+    note: '호환성 실행 결과 — LocalDateTime 기반 + failCause + setProductName',
+  },
+  {
+    id: 'PerformanceHistoryRepository',
+    source: 'src/main/java/com/samsung/move/testdb/repository/PerformanceHistoryRepository.java',
+    lines: [1, 54],
+    language: 'java',
+    note: 'JpaSpecificationExecutor + @Query 대시보드 집계 (countByTr/TcAndResult)',
+  },
+  {
+    id: 'PerformanceResultDataService-fetch',
+    source: 'src/main/java/com/samsung/move/testdb/service/PerformanceResultDataService.java',
+    lines: [1, 161],
+    language: 'java',
+    note: 'fetchResultData — history→TC→parser 경로 해석 + COLLECTING + ResultData record',
+  },
+  {
+    id: 'PerformanceResultDataService-repair',
+    source: 'src/main/java/com/samsung/move/testdb/service/PerformanceResultDataService.java',
+    lines: [163, 218],
+    language: 'java',
+    note: 'tryRepairJson — trailing comma + 닫히지 않은 bracket/문자열 복구',
+  },
+  {
+    id: 'ReparseJob',
+    source: 'src/main/java/com/samsung/move/testdb/reparse/ReparseJob.java',
+    lines: [1, 56],
+    language: 'java',
+    note: '비동기 리파싱 Job 상태 머신 — preparing/running/completed/failed',
+  },
+  {
+    id: 'PerformanceReparseService-start',
+    source: 'src/main/java/com/samsung/move/testdb/reparse/PerformanceReparseService.java',
+    lines: [28, 132],
+    language: 'java',
+    note: 'FixedThreadPool(4) + jobs Map + historyJobMap 중복 방어 + startReparse',
+  },
+  {
+    id: 'DashboardController-stats',
+    source: 'src/main/java/com/samsung/move/testdb/controller/DashboardController.java',
+    lines: [1, 119],
+    language: 'java',
+    note: '/api/dashboard/stats — 두 도메인 공통 집계 (trCount/passFail/byFw/byTc/recent)',
+  },
 ];
 
 async function extractLines(text, lines) {

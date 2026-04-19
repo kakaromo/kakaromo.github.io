@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/auth/service/UserPermissionService.java
 // @lines 1-55
 // @note ALL_PERMISSIONS 17개 정의 (메뉴 8 + 액션 9)
-// @synced 2026-04-19T08:48:08.185Z
+// @synced 2026-04-19T09:04:03.511Z
 
 package com.samsung.move.auth.service;
 
