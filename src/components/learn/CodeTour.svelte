@@ -35,11 +35,78 @@
   const activeStep = $derived(steps.find((s) => s.id === activeStepId) ?? steps[0]);
   const lines = $derived(code.split('\n'));
 
+  // Shiki 하이라이팅 — 런타임 lazy load로 초기 번들 가볍게, 하이드레이션 후 교체.
+  // 하이라이트된 라인별 HTML 배열. 로드 실패/미완료 시 null → 원문 fallback.
+  let highlightedLines = $state<string[] | null>(null);
+
+  async function runHighlight() {
+    try {
+      const shiki = await import('shiki');
+      const lang = mapLanguage(language);
+      const highlighter = await shiki.createHighlighter({
+        themes: ['github-light', 'github-dark'],
+        langs: [lang],
+      });
+      // codeToTokens 로 듀얼 테마 토큰 얻기
+      const result = highlighter.codeToHtml(code, {
+        lang,
+        themes: { light: 'github-light', dark: 'github-dark' },
+        defaultColor: false,
+      });
+      // result는 <pre><code>...</code></pre> 한 덩어리. 라인별로 잘라낸다.
+      const lineHtmls = extractLineHtmls(result);
+      if (lineHtmls.length === lines.length) {
+        highlightedLines = lineHtmls;
+      }
+      highlighter.dispose();
+    } catch (e) {
+      // 하이라이터 실패 시 원문 유지 — 치명적이지 않음
+      console.warn('[CodeTour] shiki highlight failed:', e);
+    }
+  }
+
+  function mapLanguage(lang: string): string {
+    // MDX에서 받는 언어명을 Shiki가 이해하는 이름으로 매핑
+    const table: Record<string, string> = {
+      ts: 'ts',
+      typescript: 'ts',
+      js: 'js',
+      javascript: 'js',
+      java: 'java',
+      yaml: 'yaml',
+      yml: 'yaml',
+      svelte: 'svelte',
+      html: 'html',
+      css: 'css',
+      json: 'json',
+      text: 'text',
+    };
+    return table[lang.toLowerCase()] ?? 'text';
+  }
+
+  function extractLineHtmls(shikiHtml: string): string[] {
+    // shiki 결과에서 <span class="line">...</span> 덩어리만 추출
+    const m = shikiHtml.match(/<code[^>]*>([\s\S]*)<\/code>/);
+    if (!m) return [];
+    const inner = m[1];
+    // 각 line은 <span class="line">...</span><br>? 또는 \n 구분
+    // shiki v4는 <span class="line">로 감싼다. 그렇지 않으면 \n으로 split.
+    const lineMatches = inner.match(/<span class="line">[\s\S]*?<\/span>/g);
+    if (lineMatches && lineMatches.length > 0) {
+      return lineMatches.map((s) =>
+        s.replace(/^<span class="line">/, '').replace(/<\/span>$/, ''),
+      );
+    }
+    // fallback: 줄바꿈 기준 split
+    return inner.split('\n');
+  }
+
   function setRef(el: HTMLElement | null, id: string) {
     if (el) stepEls[id] = el;
   }
 
   onMount(() => {
+    runHighlight();
     if (typeof IntersectionObserver === 'undefined') return;
     const obs = new IntersectionObserver(
       (entries) => {
@@ -134,13 +201,14 @@
       role="region"
       aria-label="코드"
     >
-      <pre><code>{#each lines as line, i}{@const ln = i + 1}<span
+      <pre><code>{#each lines as line, i}{@const ln = i + 1}{@const hl = highlightedLines?.[i]}<span
               class="learn-tour__line"
               class:learn-tour__line--hl={isLineHighlighted(ln)}
               bind:this={lineRefs[i]}
-            ><span class="learn-tour__gutter">{ln}</span><span class="learn-tour__linecode"
-              >{line || ' '}</span
-            ></span>{/each}</code></pre>
+            ><span class="learn-tour__gutter">{ln}</span>{#if hl}<span
+                class="learn-tour__linecode"
+              >{@html hl || '&nbsp;'}</span>{:else}<span class="learn-tour__linecode"
+              >{line || ' '}</span>{/if}</span>{/each}</code></pre>
     </div>
   </aside>
 </div>
@@ -293,6 +361,15 @@
     white-space: pre;
     flex: 1;
   }
+
+  /* Shiki 듀얼 테마 — defaultColor: false가 남긴 --shiki-light / --shiki-dark를 테마별로 스위치 */
+  .learn-tour__linecode :global(span) {
+    color: var(--shiki-light);
+  }
+  :root[data-theme='dark'] .learn-tour__linecode :global(span) {
+    color: var(--shiki-dark);
+  }
+  /* Shiki가 style에 박은 색은 우선 적용되므로 별도 오버라이드 불필요 */
 
   @media (prefers-reduced-motion: reduce) {
     .learn-tour__step,
