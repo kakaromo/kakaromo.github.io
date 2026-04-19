@@ -1,21 +1,81 @@
 ---
-title: "원격 터미널 & 로그 (예정)"
-description: guacd 경유 RDP/SSH 터미널과 SSH 로그 조회
+title: 원격 터미널 — 4단계 여정
+description: 브라우저 WebSocket ↔ guacd ↔ RDP/SSH 장비를 잇는 양방향 릴레이
 sidebar:
   order: 0
 ---
 
-:::caution[아직 작성되지 않았습니다]
-이 L2 모듈은 다음 작업자의 진입점입니다. L1 [key-flows #3](/learn/l1-overview/key-flows/#3-원격-터미널--websocket-양방향-바이너리)의 그림을 확장해 다음 항목을 다룰 예정입니다.
+import ArchitectureDiagram from '../../../../components/learn/ArchitectureDiagram.svelte';
 
-- 세션 인증·생성 (Spring)
-- guacd 터널 생성 + WebSocket 연결
-- 브라우저와 guacd 직결 이후 Spring 경유 없음
-- 로그 조회: `com.samsung.move.logbrowser` — SSH 모드 vs Local 모드
-- `tentacle.*` yaml 설정이 이 흐름에서 어떻게 쓰이는지
-- **핵심 소스**: `com.samsung.move.guacamole.*`, `com.samsung.move.logbrowser.*`, `frontend/src/routes/remote/`
-:::
+## 이 모듈에서 배울 것
 
-## 작성할 때의 템플릿
+"사용자가 포털에서 서버 카드를 고르고 **RDP** 또는 **SSH** 버튼을 누르면, 브라우저 안에서 **실제 디바이스 화면·터미널**이 열리기까지 어떤 계층을 거치는가?"
 
-[슬롯 모니터링 L2](/learn/l2-slots/)와 동일 구조. 새로 등장할 L3 개념은 `@ServerEndpoint`, WebSocket, JSch 등.
+세 번째 L2입니다. [슬롯](/learn/l2-slots/)·[벤치마크](/learn/l2-benchmark/)와 달리 이 모듈의 핵심은 **WebSocket 양방향 릴레이**와 **guacd라는 외부 데몬**입니다. Spring은 "시작 단계에서만" 관여하고 이후 데이터 릴레이에 충실합니다.
+
+## 여정 한눈에
+
+<ArchitectureDiagram
+  client:visible
+  height={320}
+  caption="WebSocket 한 연결 안에서 브라우저 ↔ guacd 양방향 바이너리 프레임"
+  altText="브라우저가 /api/guacamole/tunnel에 WebSocket으로 붙으면 Spring의 GuacamoleTunnelEndpoint가 onOpen에서 PortalServer DB를 조회해 guacd 호스트·포트를 결정하고, InetGuacamoleSocket으로 guacd에 TCP 연결합니다. 이후 두 리더/라이터 스레드가 양방향으로 프레임을 릴레이하고, onClose에서 세션과 Lock을 정리합니다."
+  nodes={[
+    { id: 's1', label: '1. 서버 DB',       sublabel: 'PortalServer',          layer: 'state', x: 0,    y: 80,  href: '/learn/l2-remote/01-server-db/' },
+    { id: 's2', label: '2. WebSocket 연결', sublabel: '@ServerEndpoint',       layer: 'be',    x: 200,  y: 80,  href: '/learn/l2-remote/02-websocket/' },
+    { id: 's3', label: '3. guacd 터널',     sublabel: 'InetGuacamoleSocket',   layer: 'tx',    x: 400,  y: 0,   href: '/learn/l2-remote/03-guacd-tunnel/' },
+    { id: 's4', label: '4. 양방향 릴레이',  sublabel: 'reader · writer 스레드', layer: 'tx',    x: 400,  y: 160, href: '/learn/l2-remote/04-relay/' },
+    { id: 's5', label: '5. 프론트 Client',  sublabel: 'guacamole-common-js',   layer: 'fe',    x: 600,  y: 80,  href: '/learn/l2-remote/05-frontend/' },
+  ]}
+  edges={[
+    { from: 's1', to: 's2', label: 'read',  kind: 'sync' },
+    { from: 's2', to: 's3', label: 'dial',  kind: 'sync' },
+    { from: 's3', to: 's4', label: 'bind',  kind: 'sync' },
+    { from: 's4', to: 's5', label: 'WS',    kind: 'async' },
+  ]}
+/>
+
+## 앞 두 L2와의 차이
+
+| 축 | 슬롯 / 벤치마크 | 원격 터미널 |
+|---|---|---|
+| 프로토콜 | SSE (서버→클라) | WebSocket (양방향) |
+| Spring 역할 | 지속 중계 또는 이벤트 발신 | **연결 시점에만** 중계, 이후 무한 릴레이 |
+| 외부 시스템 | Head TCP / Go Agent gRPC | guacd (별도 데몬, TCP 4822) |
+| 데이터 | JSON 이벤트 | Guacamole 프로토콜 프레임 (텍스트 + 바이너리) |
+| 세션 수명 | 초~시간 | 세션 단위 (사용자 창이 열려 있는 동안) |
+| 다중 접속 | 언제나 | **RDP/VNC는 Lock**으로 1명 제한 (공유 모드 옵션) |
+
+이 차이 때문에 코드에서 새로 만나는 것:
+- **`@ServerEndpoint`**: Spring MVC가 아니라 Jakarta WebSocket API 직접 사용
+- **`InetGuacamoleSocket`**: guacd와 대화하기 위한 apache-guacamole 라이브러리
+- **reader/writer 스레드**: SSE처럼 한 방향이 아니라 두 방향 각자 스레드 필요
+
+## 왜 Spring 없이 브라우저 ↔ guacd 직접이 아닌가
+
+guacd는 **내부망 전용** TCP 데몬이고, 브라우저는 **외부망** 또는 WebSocket만 말할 수 있습니다. Spring이 **인증 + 세션 Lock + WebSocket → TCP 게이트웨이** 역할을 해야만 합니다.
+
+Spring이 "없으면 안 되는 이유"를 정리하면:
+
+1. **인증**: 브라우저가 인증된 사용자인지 `HttpSession`으로 검사
+2. **권한 있는 서버만 노출**: `PortalServer.visible=true` + Admin 플래그
+3. **Lock 조정**: RDP는 한 명만 들어가야 함 → `SessionLockManager`
+4. **네트워크 격리**: 브라우저가 guacd 4822에 직접 붙을 수 없음 (보안·방화벽)
+
+## 학습 순서와 예상 시간
+
+| 단계 | 제목 | 성격 | 시간 |
+|---|---|---|---|
+| 1 | 서버 DB 모델 (PortalServer) | 읽기 | 5분 |
+| 2 | WebSocket 엔드포인트 열기 (onOpen) | 코드 투어 | 12분 |
+| 3 | guacd 터널 만들기 (buildConfig + connect) | 코드 투어 | 15분 |
+| 4 | 양방향 릴레이 (reader/writer + onMessage) | 코드 투어 + 시퀀스 | 15분 |
+| 5 | 프론트 client (Guacamole.Client + WebSocket) | 읽기 + 의사코드 | 8분 |
+
+총 약 **55분**. 슬롯·벤치마크 L2를 먼저 읽었다면 반복 개념(예: Spring 생성자 주입, `@Component`)은 빠르게 넘기세요.
+
+## 새로 등장할 L3 개념
+
+- [Jakarta WebSocket — @ServerEndpoint](/learn/l3-concepts/spring/server-endpoint/) — 어노테이션 기반 WebSocket endpoint, Spring과 통합 지점
+
+다음: [1. 서버 DB 모델 (PortalServer)](/learn/l2-remote/01-server-db/) →

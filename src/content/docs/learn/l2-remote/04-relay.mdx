@@ -1,0 +1,146 @@
+---
+title: 4. 양방향 릴레이 — reader · writer · onClose
+description: guacd 프레임과 사용자 입력을 양 방향으로 중계하고 세션 정리
+sidebar:
+  order: 4
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import SequenceTimeline from '../../../../components/learn/SequenceTimeline.svelte';
+import connectRaw from '../../../../snippets/GuacamoleTunnelEndpoint-connect.java?raw';
+import msgCloseRaw from '../../../../snippets/GuacamoleTunnelEndpoint-onmessage-close.java?raw';
+
+## 30초 요약
+
+터널이 열리고 나면 **두 방향**의 트래픽이 각자 다른 경로로 흐릅니다.
+
+- **guacd → 브라우저**: reader 스레드(`readFromTunnel`)에서 `tunnel.acquireReader().read()` 루프 → `session.sendText()`
+- **브라우저 → guacd**: WebSocket `@OnMessage` 콜백 → `tunnel.acquireWriter().write()`
+
+종료는 세 가지 경로 중 하나로 옵니다 — 브라우저가 창 닫기 / guacd가 세션 끊기 / 예외. 어느 경로든 `onClose`가 최종 정리(Lock 해제·tunnel close)를 수행합니다.
+
+## 양방향 타이밍
+
+<SequenceTimeline
+  client:visible
+  height={380}
+  autoplay={true}
+  caption="연결 직후 핸드셰이크 프레임 → 사용자 입력 → 화면 업데이트 → 종료"
+  altText="브라우저가 /api/guacamole/tunnel로 WebSocket을 열면 Spring이 guacd에 TCP로 붙고 configured 핸드셰이크를 완료합니다. 이후 reader 스레드가 guacd에서 계속 프레임을 읽어 브라우저로 보내고, 브라우저의 사용자 입력은 onMessage에서 tunnel writer로 전달됩니다. 사용자가 창을 닫으면 onClose가 Lock 해제와 터널 close로 정리합니다."
+  lanes={[
+    { id: 'br',    label: 'Browser',       layer: 'fe',    sublabel: 'Guac.Client' },
+    { id: 'sp',    label: 'Spring',        layer: 'be',    sublabel: 'TunnelEndpoint' },
+    { id: 'gd',    label: 'guacd',         layer: 'tx',    sublabel: 'TCP 4822' },
+    { id: 'vm',    label: 'VM (RDP/SSH)',  layer: 'hw',    sublabel: '실제 장비' },
+  ]}
+  messages={[
+    { from: 'br', to: 'sp', label: 'WS connect',     t: 0,   kind: 'sync' },
+    { from: 'sp', to: 'gd', label: 'TCP dial',       t: 6,   kind: 'sync' },
+    { from: 'sp', to: 'gd', label: 'select rdp',     t: 14,  kind: 'sync' },
+    { from: 'gd', to: 'vm', label: 'RDP connect',    t: 20,  kind: 'async' },
+    { from: 'gd', to: 'sp', label: 'frame',          t: 40,  kind: 'async' },
+    { from: 'sp', to: 'br', label: 'WS send',        t: 45,  kind: 'async' },
+    { from: 'br', to: 'sp', label: 'key/mouse',      t: 60,  kind: 'async' },
+    { from: 'sp', to: 'gd', label: 'writer.write',   t: 65,  kind: 'async' },
+    { from: 'gd', to: 'sp', label: 'frame',          t: 80,  kind: 'async' },
+    { from: 'sp', to: 'br', label: 'WS send',        t: 85,  kind: 'async' },
+    { from: 'br', to: 'sp', label: 'WS close',       t: 110, kind: 'sync' },
+    { from: 'sp', to: 'gd', label: 'tunnel close',   t: 115, kind: 'sync' },
+  ]}
+/>
+
+## reader 스레드 — guacd → 브라우저
+
+<CodeTour
+  client:visible
+  language="java"
+  source="GuacamoleTunnelEndpoint.readFromTunnel"
+  height={440}
+  code={connectRaw}
+  steps={[
+    {
+      id: 'acquire-reader',
+      title: 'acquireReader + loop',
+      lines: [82, 89],
+      body: '<p><code>acquireReader()</code>로 한 스레드가 배타적으로 읽기 권한을 받음(다른 스레드는 블록). 이후 <code>reader.read()</code>가 char 배열을 돌려주면 <code>safeSendText</code>로 WebSocket에 전송. session이 닫히면 루프 자연 종료.</p>',
+    },
+    {
+      id: 'error-handling',
+      title: '예외 처리 — 조용한 종료',
+      lines: [91, 94],
+      body: '<p>GuacamoleException은 guacd와의 규약 오류, 일반 Exception은 세션 상태 변화. 둘 다 <strong>warn 로그 + finally 진입</strong>으로 조용히 끝냅니다 — 이미 세션이 죽은 뒤 던지는 예외는 "정상"에 가까움.</p>',
+    },
+    {
+      id: 'finally',
+      title: 'finally — releaseReader + closeSshTunnel',
+      lines: [95, 98],
+      body: '<p><code>releaseReader()</code>는 acquire의 짝. <code>closeSshTunnel</code>이 <code>sshTunnels.remove</code> + <code>tunnel.close()</code> + 스레드 joining까지 담당해 자원이 남지 않게 함.</p>',
+    },
+  ]}
+/>
+
+## onMessage — 브라우저 → guacd
+
+<CodeTour
+  client:visible
+  language="java"
+  source="GuacamoleTunnelEndpoint.onMessage + onClose"
+  height={500}
+  code={msgCloseRaw}
+  steps={[
+    {
+      id: 'heartbeat',
+      title: 'heartbeat — Lock 타임아웃 갱신',
+      lines: [6, 17],
+      body: '<p>SessionLockManager는 <strong>5분 heartbeat 없으면 자동 해제</strong>하는 TTL. 사용자가 키보드·마우스를 움직이는 한 WebSocket 메시지가 계속 흐르니 이 훅이 자연스럽게 Lock을 연장.</p>',
+    },
+    {
+      id: 'rdp-shared',
+      title: 'RDP 공유 경로',
+      lines: [19, 24],
+      body: '<p><code>rdpSessions</code>에 해당 세션의 VM 이름이 있다면 공유 모드. <code>SharedTunnelManager</code>가 여러 viewer의 입력을 중앙 tunnel에 집약. <strong>기본 경로는 아니고 옵션 기능</strong>.</p>',
+    },
+    {
+      id: 'ssh-direct',
+      title: 'SSH/기본 1:1 경로',
+      lines: [26, 37],
+      body: '<p>대부분의 케이스. <code>acquireWriter()</code> → <code>write(chars)</code> → <code>releaseWriter()</code>. 실패 시 해당 세션의 터널을 닫아 루프 종료.</p>',
+    },
+    {
+      id: 'on-close',
+      title: '@OnClose — 최종 정리',
+      lines: [40, 52],
+      body: '<p>WebSocket이 닫히면 무조건 실행. <strong>순서가 중요</strong>: (1) writeLock 제거 (2) Lock 해제 (3) RDP 공유면 viewer 제거, 그렇지 않으면 SSH tunnel 닫기. 하나라도 빠지면 다음 사용자가 "세션 잠금 상태"를 보게 됨.</p>',
+    },
+  ]}
+/>
+
+## 왜 reader는 스레드, writer는 콜백인가
+
+이 비대칭이 혼란스러울 수 있습니다.
+
+- **guacd → 브라우저**: guacd가 "마음대로 밀어주는" 방향. **읽기는 blocking**이라 이걸 별도 스레드가 아니라 main 루프에서 돌리면 다른 메시지 처리가 멈춥니다.
+- **브라우저 → guacd**: 브라우저가 WebSocket 메시지를 보낼 때마다 **컨테이너가 콜백으로 `onMessage`를 부름**. 이미 이벤트 기반이라 별도 스레드가 필요 없음.
+
+즉, **blocking API → 스레드**, **콜백 API → 그대로** 라는 일관된 원칙입니다.
+
+## 종료 경로 정리
+
+| 종료 원인 | 감지 지점 | 정리 수행 |
+|---|---|---|
+| 브라우저가 WebSocket 종료 | `@OnClose` | Lock 해제 + tunnel close |
+| guacd가 TCP 종료 | reader의 `read() == null` | finally → `closeSshTunnel` → 옆 효과로 WS close |
+| reader 예외 | reader의 catch | 같음 |
+| send 예외 | `safeSendText` 내부 log + 다음 loop에서 session.isOpen() false |
+| writer 예외 | `onMessage`의 catch | `closeSshTunnel` |
+| 외부 종료 (서버 셧다운) | WebSocket 컨테이너가 @OnClose 호출 | 같음 |
+
+**어느 경로든 `@OnClose`에 수렴**하도록 설계되어 있어 청소 코드가 한 곳에 모입니다.
+
+## 직접 해보기
+
+- [ ] RDP 접속 중 브라우저 탭 닫기 → MOVE 로그에서 `WebSocket closed` 한 줄 + 즉시 Lock 해제되는지 확인
+- [ ] guacd를 도중에 킬 → reader 스레드가 `null` 받아 자연 종료, 브라우저에서 연결이 끊긴다는 상태 코드 확인
+- [ ] 메시지를 매우 빠르게 보내는 RDP 접속에서 `TEXT_FULL_WRITING` 에러 없이 동작 (write lock 효과)
+
+다음: [5. 프론트 Client — guacamole-common-js](/learn/l2-remote/05-frontend/) →

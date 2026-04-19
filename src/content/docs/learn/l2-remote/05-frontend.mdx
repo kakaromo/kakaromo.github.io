@@ -1,0 +1,152 @@
+---
+title: 5. 프론트 Client — guacamole-common-js
+description: Guacamole.Client + WebSocketTunnel로 받은 프레임을 canvas에 그리고 키·마우스를 돌려보냄
+sidebar:
+  order: 5
+---
+
+import ConceptPopover from '../../../../components/learn/ConceptPopover.svelte';
+
+## 30초 요약
+
+프론트는 **guacamole-common-js**가 제공하는 `Guacamole.WebSocketTunnel`로 WebSocket을 열고, `Guacamole.Client`가 그 터널에서 받은 프레임을 **canvas**에 그립니다. 키보드·마우스는 라이브러리의 `Keyboard`/`Mouse` 어댑터가 이벤트를 잡아 자동으로 터널로 송신.
+
+MOVE가 추가한 건 Svelte 래퍼(`GuacamoleClient.svelte`)와 연결/상태 UI — 라이브러리가 heavy lifting을 모두 담당.
+
+## 컴포넌트 구조 (의사코드)
+
+```svelte
+<!-- GuacamoleClient.svelte -->
+<script lang="ts">
+  import Guacamole from 'guacamole-common-js';
+
+  interface Props {
+    vm: string;
+    protocol: 'rdp' | 'ssh' | 'vnc';
+    user: string;
+    width?: number;
+    height?: number;
+  }
+  let { vm, protocol, user, width = 1920, height = 1080 }: Props = $props();
+
+  let displayEl: HTMLDivElement | null = $state(null);
+  let state = $state<'connecting' | 'connected' | 'disconnected' | 'error'>('connecting');
+  let errorMessage = $state<string | null>(null);
+  let client: Guacamole.Client | null = null;
+
+  function getWebSocketUrl() {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const params = new URLSearchParams({ vm, protocol, user, width: String(width), height: String(height) });
+    return `${proto}//${location.host}/api/guacamole/tunnel?${params}`;
+  }
+
+  $effect(() => {
+    const tunnel = new Guacamole.WebSocketTunnel(getWebSocketUrl());
+    client = new Guacamole.Client(tunnel);
+
+    // 프레임 → canvas
+    displayEl?.appendChild(client.getDisplay().getElement());
+
+    // 상태 변화
+    client.onstatechange = (s) => {
+      if (s === Guacamole.Client.State.CONNECTED) state = 'connected';
+      else if (s === Guacamole.Client.State.DISCONNECTED) state = 'disconnected';
+    };
+    client.onerror = (e) => { state = 'error'; errorMessage = e.message; };
+
+    client.connect();
+
+    // 키보드·마우스 어댑터 설치
+    const keyboard = new Guacamole.Keyboard(document);
+    keyboard.onkeydown = (keysym) => client?.sendKeyEvent(1, keysym);
+    keyboard.onkeyup = (keysym) => client?.sendKeyEvent(0, keysym);
+
+    const mouse = new Guacamole.Mouse(client.getDisplay().getElement());
+    mouse.onEach(['mousedown', 'mouseup', 'mousemove'], (e) => {
+      client?.sendMouseState(e.state);
+    });
+
+    return () => {
+      client?.disconnect();
+      keyboard.reset();
+    };
+  });
+</script>
+
+<div bind:this={displayEl} class="guac-display" />
+{#if state === 'connecting'}
+  <div class="overlay">연결 중…</div>
+{:else if state === 'error'}
+  <div class="overlay error">{errorMessage}</div>
+{/if}
+```
+
+핵심:
+
+- **`$effect` 안에서 connect + cleanup** — 슬롯·벤치마크와 동일한 생명주기 패턴
+- **라이브러리가 canvas·이벤트 어댑터 제공** — MOVE 코드에 WebSocket raw 전송 코드가 없음
+- **상태 변화는 rune에 반영** — connecting/connected/disconnected/error 네 상태로 UI가 반응
+
+## SSH는 왜 XTerm 쪽이 별도인가
+
+MOVE는 SSH 경우 `GuacamoleClient` 대신 **`XtermClient.svelte` + xterm.js**를 씁니다. 이유:
+
+- **텍스트-only**: Guacamole SSH도 돌지만 canvas 기반이라 과한 오버헤드
+- **복사/붙여넣기 자연스러움**: xterm.js가 브라우저 텍스트 선택 UI를 그대로 지원
+- **작은 번들**: guacamole-common-js RDP 대비 훨씬 가벼움
+
+백엔드도 SSH는 별도 WebSocket 엔드포인트(`/api/terminal/ssh`)로 분기해 JSch로 연결합니다. **이 L2 튜토리얼은 guacd 경로에 집중**하니 자세한 xterm 경로는 별도 문서로.
+
+## Connection 추상화
+
+`+page.svelte`에서는 Tab 여러 개를 관리하기 위해 각 연결을 `Connection` 객체로 감쌉니다.
+
+```ts
+interface Connection {
+  id: string;        // UUID
+  vm: string;
+  protocol: 'rdp' | 'ssh' | 'vnc';
+  startedAt: number;
+  // Svelte 컴포넌트는 {#each connections as c}로 마운트
+}
+```
+
+Tab UI는 이 배열을 순회하며 `<GuacamoleClient>`나 `<XtermClient>`를 마운트. 사용자가 탭을 닫으면 배열에서 제거되고 컴포넌트의 `$effect` cleanup이 WebSocket disconnect를 수행.
+
+## <ConceptPopover client:visible term="$effect" concept="svelte/effect"><p>Svelte 5의 부작용 rune. 반응형 의존성이 바뀔 때 실행되고, return한 함수는 cleanup으로 이전 실행을 정리합니다.</p></ConceptPopover> 의 전형적 사용
+
+이 L2의 프론트 패턴이 Svelte 5의 `$effect` 활용에서 **교과서적 예시**입니다.
+
+- 외부 리소스(WebSocket + keyboard listener + canvas) 획득
+- 상태는 $state로 노출
+- cleanup에서 모든 리소스 해제
+
+슬롯 store의 `connect`/`disconnect`도 같은 뼈대입니다. 다음 L2를 만들 때도 이 패턴이 출발점이 됩니다.
+
+## 여기까지의 종합
+
+L2 3개(슬롯·벤치마크·원격)를 관통하는 **브라우저 실시간 패턴**:
+
+| 축 | 슬롯 | 벤치마크 | 원격 |
+|---|---|---|---|
+| 브라우저 전송층 | EventSource | EventSource | WebSocket |
+| 방향 | 서버→클라 | 서버→클라 | 양방향 |
+| 프론트 lifecycle | `$effect` + connect | `$effect` + EventSource | `$effect` + client.connect |
+| 데이터 포맷 | JSON | JSON | Guacamole 프레임 |
+| 백엔드 재사용 | SseEmitter | SseEmitter | 없음 (WebSocket 직결) |
+
+**"어떤 실시간 문제든 `$effect` + 리소스 + cleanup" 패턴**이 재사용 가능하다는 사실이 세 L2의 공통 교훈입니다.
+
+## 직접 해보기
+
+- [ ] RDP 연결 중 브라우저 DevTools → Network → WS 탭 → 메시지 흐름이 초당 수십 개인지 관찰
+- [ ] `Guacamole.Client.State` enum 값을 로그에 출력해 CONNECTING(3) → WAITING(4) → CONNECTED(5) 전이 확인
+- [ ] 탭 닫기 대신 페이지 reload 시 WebSocket close code가 정상(1001)인지 확인
+
+---
+
+**L2 원격 터미널 튜토리얼 완료**. 다른 모듈을 살피고 싶다면:
+
+- [다시 L1 아키텍처로](/learn/l1-overview/architecture/)
+- [슬롯 L2](/learn/l2-slots/) · [벤치마크 L2](/learn/l2-benchmark/)
+- [L3 언어·프레임워크 개념](/learn/l3-concepts/spring/at-component/)

@@ -1,0 +1,164 @@
+---
+title: 3. guacd 터널 만들기
+description: apache-guacamole 라이브러리로 TCP 소켓을 열고 프로토콜별 파라미터를 주입
+sidebar:
+  order: 3
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import DataFlowPath from '../../../../components/learn/DataFlowPath.svelte';
+import connectRaw from '../../../../snippets/GuacamoleTunnelEndpoint-connect.java?raw';
+
+## 30초 요약
+
+`connectDirect`가 핵심입니다. **세 줄**의 라이브러리 호출로:
+
+1. `InetGuacamoleSocket(guacdHost, guacdPort)` — guacd에 **TCP 연결**
+2. `ConfiguredGuacamoleSocket(socket, guacConfig)` — **프로토콜 핸드셰이크** 수행 (SSH/RDP/VNC 선택 + 파라미터 전달)
+3. `SimpleGuacamoleTunnel(socket)` — 양방향 **tunnel 추상화** 감싸기
+
+이후 별도 스레드에서 guacd → 브라우저 방향을 읽는 `readFromTunnel`이 돌고, 브라우저 → guacd 방향은 `onMessage`에서 처리합니다(다음 단계).
+
+## 연결 데이터 흐름
+
+<DataFlowPath
+  client:visible
+  caption="PortalServer + 파라미터가 guacd TCP 소켓 + 활성 터널까지 변환되는 과정"
+  altText="PortalServer의 ip/username/password/port가 GuacamoleConfiguration에 파라미터로 담기고, guacdHost/Port로 InetGuacamoleSocket을 열면, ConfiguredGuacamoleSocket이 핸드셰이크를 수행해 SimpleGuacamoleTunnel로 감싸집니다."
+  stages={[
+    {
+      id: 's1',
+      label: 'PortalServer + 파라미터',
+      layer: 'state',
+      language: 'text',
+      sample: 'ip=192.168.1.10\nusername=admin\npassword=***\nrdpPort=3389\nwidth=1920 height=1080',
+      note: 'DB 행 + 쿼리 파라미터',
+    },
+    {
+      id: 's2',
+      label: 'GuacamoleConfiguration',
+      layer: 'be',
+      language: 'java',
+      sample: 'guacConfig.setProtocol("rdp");\nsetParameter("hostname", ...);\nsetParameter("port", "3389");\nsetParameter("width", "1920");\nsetParameter("security", "any");',
+      note: 'protocol + key/value 맵',
+    },
+    {
+      id: 's3',
+      label: 'InetGuacamoleSocket',
+      layer: 'tx',
+      language: 'text',
+      sample: 'TCP → guacd:4822\n(raw 연결 — 프로토콜 협상 X)',
+      note: '순수 소켓',
+    },
+    {
+      id: 's4',
+      label: 'ConfiguredGuacamoleSocket',
+      layer: 'tx',
+      language: 'text',
+      sample: 'Sends SELECT + CONNECT ops\nReceives client instructions\n→ guacd는 실제 RDP/SSH 연결 시작',
+      note: 'Guacamole 핸드셰이크',
+    },
+    {
+      id: 's5',
+      label: 'SimpleGuacamoleTunnel',
+      layer: 'tx',
+      language: 'java',
+      sample: 'tunnel.acquireReader()\ntunnel.acquireWriter()\ntunnel.getUUID()',
+      note: '양방향 추상화',
+    },
+  ]}
+  transforms={[
+    { label: 'build' },
+    { label: 'dial' },
+    { label: 'handshake' },
+    { label: 'wrap' },
+  ]}
+/>
+
+## 코드 투어
+
+<CodeTour
+  client:visible
+  language="java"
+  source="GuacamoleTunnelEndpoint (connect + buildConfig)"
+  height={660}
+  code={connectRaw}
+  steps={[
+    {
+      id: 'connect-start',
+      title: 'connectDirect 시그니처',
+      lines: [6, 12],
+      body: '<p>SSH/VNC/RDP 모두 이 함수로 들어옵니다(RDP 공유 모드는 별도 함수지만 MOVE 기본 경로는 1:1). 전달된 <code>guacConfig</code>는 이미 buildConfig에서 완성된 상태.</p>',
+    },
+    {
+      id: 'socket-dial',
+      title: 'InetGuacamoleSocket — 실제 TCP 연결',
+      lines: [14, 17],
+      body: '<p><code>new InetGuacamoleSocket(host, port)</code>는 <strong>생성자 안에서 connect 시도</strong>. guacd가 죽어 있으면 여기서 예외가 나고, onOpen의 catch로 전파되어 Lock 해제 + 에러 리포트.</p>',
+    },
+    {
+      id: 'configured',
+      title: 'ConfiguredGuacamoleSocket — 핸드셰이크',
+      lines: [14, 17],
+      body: '<p>같은 줄을 다시 봅니다. <strong>Configured 래퍼는 생성 중에 Guacamole 프로토콜 "select rdp; connect hostname=... port=..."를 보냅니다</strong>. 이 시점에 guacd가 실제 RDP 연결을 개시. 실패 시 역시 예외 → Lock 해제.</p>',
+    },
+    {
+      id: 'tunnel',
+      title: 'SimpleGuacamoleTunnel + 저장',
+      lines: [19, 22],
+      body: '<p><code>acquireReader()</code>/<code>acquireWriter()</code>를 제공하는 추상화. <code>sshTunnels Map</code>에 <code>session → tunnel</code>로 저장해 onClose·onMessage에서 찾을 수 있게 함.</p>',
+    },
+    {
+      id: 'reader-thread',
+      title: 'reader 스레드 — guacd → 브라우저',
+      lines: [24, 26],
+      body: '<p>별도 스레드에서 <code>readFromTunnel</code>. <strong>WebSocket의 onOpen은 빨리 반환해야 하므로</strong> 읽기 루프를 메인 스레드에서 돌리면 안 됩니다. 스레드 이름에 session.id를 넣어 로그 추적 용이.</p>',
+    },
+    {
+      id: 'build-ssh',
+      title: 'buildConfig SSH 파라미터',
+      lines: [36, 46],
+      body: '<p>한글 폰트·컬러 스키마·xterm-256color 등 터미널 기본값을 MOVE가 지정. <code>disable-copy/paste=false</code>로 기본 복사·붙여넣기 허용.</p>',
+    },
+    {
+      id: 'build-rdp',
+      title: 'buildConfig RDP 파라미터',
+      lines: [47, 67],
+      body: '<p><strong>가장 많은 설정이 필요한 프로토콜</strong>. <code>ignore-cert=true</code> 자체 서명 인증서 허용, <code>security=any</code> 자동 선택, <code>server-layout=ko-kr-qwerty</code> 한국어 키보드. <code>enable-wallpaper/theming=false</code>로 <strong>대역폭 절약</strong>.</p>',
+    },
+    {
+      id: 'build-vnc',
+      title: 'buildConfig VNC 파라미터',
+      lines: [68, 77],
+      body: '<p>VNC는 가장 간단. <code>color-depth=24</code> + <code>cursor=remote</code>(서버 측 커서 렌더링)가 표준.</p>',
+    },
+  ]}
+/>
+
+## 왜 소켓이 세 겹인가
+
+Apache Guacamole의 **데코레이터 패턴**:
+
+- **`InetGuacamoleSocket`** — 순수 TCP (raw bytes)
+- **`ConfiguredGuacamoleSocket`** — 위에 "Guacamole 프로토콜 핸드셰이크" 한 층 올림
+- **`SimpleGuacamoleTunnel`** — 위에 "reader/writer acquire/release" 추상화
+
+각 층은 책임이 분리되어 있어 테스트하기 쉽습니다. MOVE가 이 패턴을 바꾸는 일은 거의 없고, 라이브러리가 제공하는 조립만 따라가면 됩니다.
+
+## 파라미터 맵 vs DTO
+
+`GuacamoleConfiguration`은 `Map<String, String>` 기반입니다. 타입 안전성은 떨어지지만:
+
+- **라이브러리 API라 바꿀 수 없음**
+- **프로토콜별 파라미터 이름이 너무 많음** (SSH 40개+, RDP 80개+) → 각각 DTO 만들면 유지보수 비용
+- **문자열 값도 guacd가 파싱** — 숫자도 string으로
+
+타입 안전성이 필요한 케이스는 없어 지금 구조로 충분합니다.
+
+## 직접 해보기
+
+- [ ] Admin에서 어떤 PortalServer의 `ignore-cert`를 바꿨다고 가정하고 코드상에서 적용 지점 찾기 — (현재는 하드코딩, 필요하면 엔티티 필드 추가 + buildConfig 분기 추가)
+- [ ] MOVE 로그에서 `Connecting RDP tunnel [vm=..., guacd=...]` 와 `Connected to guacd, tunnel UUID: ...` 두 줄이 한 쌍으로 나오는지 확인
+- [ ] guacd를 잠깐 중지 후 접속 시도 → `InetGuacamoleSocket` 실패 로그와 함께 WebSocket이 에러로 닫히는지 관찰
+
+다음: [4. 양방향 릴레이 (reader + writer)](/learn/l2-remote/04-relay/) →

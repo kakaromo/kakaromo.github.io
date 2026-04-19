@@ -1,0 +1,132 @@
+---
+title: 1. 서버 DB 모델 (PortalServer)
+description: 접속 가능한 서버 한 대를 표현하는 JPA 엔티티 + guacd 호스트 오버라이드
+sidebar:
+  order: 1
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import serverRaw from '../../../../snippets/PortalServer-entity.java?raw';
+import propsRaw from '../../../../snippets/GuacamoleProperties.java?raw';
+
+## 30초 요약
+
+`PortalServer`는 포털 관리자가 등록한 **접속 대상 서버 한 대**입니다. 프로토콜별 포트(SSH/RDP/VNC)와 인증 정보 외에도 **guacd 호스트·포트를 서버별로 오버라이드**할 수 있는 필드가 있어, 장비가 여러 네트워크 세그먼트에 걸쳐 있을 때도 적절한 guacd로 연결됩니다.
+
+전역 guacd 기본값은 `GuacamoleProperties`(yaml)에서 옵니다. **서버별 설정이 있으면 그걸 쓰고, 없으면 전역 fallback**.
+
+## PortalServer — 코드 투어
+
+<CodeTour
+  client:visible
+  language="java"
+  source="PortalServer.java"
+  height={560}
+  code={serverRaw}
+  steps={[
+    {
+      id: 'annotations',
+      title: '@Entity portal_servers',
+      lines: [16, 22],
+      body: '<p>Head·Agent 엔티티와 동일한 Lombok 조합. 테이블 이름 <code>portal_servers</code>는 &quot;한 물리·가상 장비 = 한 행&quot;.</p>',
+    },
+    {
+      id: 'name-group',
+      title: 'name · serverGroupId',
+      lines: [24, 32],
+      body: '<p><code>name</code>은 UI 표시·WebSocket 파라미터 키 모두로 사용(UK). <code>serverGroupId</code>로 관리자 편의상 그룹을 묶어 필터링.</p>',
+    },
+    {
+      id: 'ip-creds',
+      title: 'ip + username + password',
+      lines: [34, 40],
+      body: '<p>접속 정보. <strong>비밀번호가 평문 컬럼</strong>에 들어가는 것은 내부망 전제. 외부 배포 시에는 별도 secrets 저장소가 필요합니다.</p>',
+    },
+    {
+      id: 'ports',
+      title: 'sshPort · rdpPort · vncPort',
+      lines: [42, 52],
+      body: '<p>프로토콜별 표준 포트(22/3389/5901) 기본값. 한 서버가 여러 프로토콜을 지원하면 이 세 필드가 다 의미 있고, SSH 전용 장비면 <code>rdpPort</code>는 무시되는 식.</p>',
+    },
+    {
+      id: 'flags',
+      title: 'connectionType · visible',
+      lines: [54, 60],
+      body: '<p><code>visible=false</code>이면 사용자 UI에서 숨김 — 관리자만 볼 수 있음. 장비 교체 중인 서버를 일시적으로 감출 때.</p>',
+    },
+    {
+      id: 'guacd-override',
+      title: 'guacdHost · guacdPort — 서버별 오버라이드',
+      lines: [62, 66],
+      body: '<p><strong>이 튜토리얼의 핵심 필드</strong>. 일반적으로 guacd는 한 대지만, 망이 분리된 환경에서는 대상 장비와 같은 망의 guacd에 먼저 붙여야 성능·보안이 좋습니다. 두 필드가 <code>null</code>이면 전역 <code>GuacamoleProperties</code>로 fallback.</p>',
+    },
+    {
+      id: 'timestamps',
+      title: 'timestamps — 자동 갱신',
+      lines: [68, 83],
+      body: '<p>다른 엔티티와 동일한 <code>@PrePersist</code>/<code>@PreUpdate</code> 패턴.</p>',
+    },
+  ]}
+/>
+
+## 전역 fallback — GuacamoleProperties
+
+<CodeTour
+  client:visible
+  language="java"
+  source="GuacamoleProperties.java"
+  height={260}
+  code={propsRaw}
+  steps={[
+    {
+      id: 'config-properties',
+      title: '@ConfigurationProperties 바인딩',
+      lines: [12, 26],
+      body: '<p><code>guacamole.*</code> yaml 값을 자동 바인딩. 기본값 <code>localhost:4822</code>가 있어 개발 환경에서는 별도 설정 없이 동작. prod에서는 <code>application-prod.yaml</code>의 값으로 오버라이드.</p>',
+    },
+  ]}
+/>
+
+예시 yaml (프로파일별):
+
+```yaml title="application-dev.yaml"
+guacamole:
+  guacd-host: 192.168.1.248
+  guacd-port: 4822
+  web-url: http://192.168.1.248:9005/guacamole
+  username: guacadmin
+  password: guacadmin
+```
+
+## 연결 시점의 선택 로직 (미리보기)
+
+단계 3에서 상세히 볼 코드지만, 핵심은 이 한 줄입니다:
+
+```java
+String guacdHost = vmConfig.getGuacdHost() != null
+    ? vmConfig.getGuacdHost()
+    : properties.getGuacdHost();
+int guacdPort = vmConfig.getGuacdPort() != null
+    ? vmConfig.getGuacdPort()
+    : properties.getGuacdPort();
+```
+
+**서버별 > 전역**. 이 패턴은 MOVE 전반에서 반복됩니다(예: 테스트 실행 시 실행자 옵션 > 슬롯 기본값 > 시스템 기본값).
+
+## 왜 guacd를 여러 대 둘 수 있어야 하나
+
+실운영에서 흔한 시나리오:
+
+- **대규모 테스트 장비 랜드**: 장비들이 물리적으로 여러 랙에 분산. 한 guacd가 모두 보려면 네트워크 routing + 지연
+- **보안 구역 분리**: 외부 WAN 접속 필요한 장비 vs 분리망 장비
+- **장애 격리**: guacd 하나가 죽어도 다른 영역은 살아 있도록
+
+오버라이드 필드 하나가 이 운영 유연성을 만듭니다. 작은 데이터 모델 결정이 긴 수명을 가집니다.
+
+## 직접 해보기
+
+- [ ] Admin 페이지에서 새 서버 추가 시 SSH/RDP 포트 기본값 확인
+- [ ] `guacdHost`/`guacdPort`를 비워두고 연결 → 전역 기본값 사용되는지 로그 확인
+- [ ] 같은 IP의 장비에 `guacdHost`를 다르게 지정 → 각 서버가 다른 guacd로 연결되는지 확인
+
+다음: [2. WebSocket 엔드포인트 열기 (onOpen)](/learn/l2-remote/02-websocket/) →
