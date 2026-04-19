@@ -1,7 +1,7 @@
 # @source src/main/resources/application.yaml
 # @lines 10-30
 # @note head.* + tentacle.* 설정
-# @synced 2026-04-19T09:49:20.666Z
+# @synced 2026-04-19T10:15:34.642Z
 
 head:
   reconnect-delay-ms: 5000

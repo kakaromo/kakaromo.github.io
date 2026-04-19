@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/auth/controller/AuthController.java
 // @lines 158-180
 // @note GET /adfs/login — nonce 생성 + authorize URL 조립 + redirect
-// @synced 2026-04-19T09:49:20.697Z
+// @synced 2026-04-19T10:15:34.666Z
 
     /**
      * ADFS 로그인 — authorize URL로 redirect

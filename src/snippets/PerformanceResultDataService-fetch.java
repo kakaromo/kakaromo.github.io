@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/testdb/service/PerformanceResultDataService.java
 // @lines 1-161
 // @note fetchResultData — history→TC→parser 경로 해석 + COLLECTING + ResultData record
-// @synced 2026-04-19T09:49:20.701Z
+// @synced 2026-04-19T10:15:34.668Z
 
 package com.samsung.move.testdb.service;
 

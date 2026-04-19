@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/logbrowser/controller/LogBrowserController.java
 // @lines 82-144
 // @note GET /download-dir — Local ZipOutputStream / SSH 원격 zip 후 SFTP
-// @synced 2026-04-19T09:49:20.690Z
+// @synced 2026-04-19T10:15:34.659Z
 
     @GetMapping("/download-dir")
     public ResponseEntity<byte[]> downloadDir(

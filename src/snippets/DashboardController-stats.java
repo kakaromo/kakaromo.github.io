@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/testdb/controller/DashboardController.java
 // @lines 1-119
 // @note /api/dashboard/stats — 두 도메인 공통 집계 (trCount/passFail/byFw/byTc/recent)
-// @synced 2026-04-19T09:49:20.702Z
+// @synced 2026-04-19T10:15:34.669Z
 
 package com.samsung.move.testdb.controller;
 

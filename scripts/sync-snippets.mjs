@@ -786,6 +786,103 @@ const manifest = [
     language: 'text',
     note: 'BenchmarkTool enum(IOTEST=4) + RunBenchmarkRequest(params map) + JobProgress(stream용)',
   },
+
+  // ── Scenario Canvas (L2 scenario · Orchestration 축 개척) ──
+  {
+    id: 'ScenarioTemplate-entity',
+    source: 'src/main/java/com/samsung/move/agent/entity/ScenarioTemplate.java',
+    lines: [1, 58],
+    language: 'java',
+    note: 'portal_scenario_templates — name/description/repeatCount + stepsJson/loopsJson(TEXT) 이원 JSON',
+  },
+  {
+    id: 'scenario-types',
+    source: 'frontend/src/routes/agent/scenario-canvas/types.ts',
+    lines: [1, 84],
+    language: 'ts',
+    note: 'StepNodeData/ConditionNodeData/LoopGroupData + ScenarioNode 유니온 + STEP_TYPE_COLORS 8종 + stepSummary',
+  },
+  {
+    id: 'scenario-serializer-head',
+    source: 'frontend/src/routes/agent/scenario-canvas/serializer.ts',
+    lines: [1, 70],
+    language: 'ts',
+    note: 'canvasToProto — Y좌표 정렬 vs 위상 정렬 분기 + hasCondition 판정 + nodeToIndex 매핑',
+  },
+  {
+    id: 'scenario-topo-sort',
+    source: 'frontend/src/routes/agent/scenario-canvas/serializer.ts',
+    lines: [371, 412],
+    language: 'ts',
+    note: 'topologicalSort — Kahn 알고리즘 + seenEdges 중복 방어 + 정렬 안 된 노드 뒤로',
+  },
+  {
+    id: 'scenario-palette',
+    source: 'frontend/src/routes/agent/scenario-canvas/NodePalette.svelte',
+    lines: [1, 76],
+    language: 'svelte',
+    note: '8 step types + 2 control(Loop/Condition) 드래그 팔레트 + HTML5 DnD API',
+  },
+  {
+    id: 'RunScenario-proto',
+    source: 'src/main/proto/device_agent.proto',
+    lines: [215, 285],
+    language: 'text',
+    note: 'ScenarioStep/ScenarioLoop/ConditionalBranch + RunScenarioRequest (has_branching + edges[])',
+  },
+
+  // ── Admin 대시보드 (L2 admin · 관리 UI 축 개척) ──
+  {
+    id: 'AdminController-head',
+    source: 'src/main/java/com/samsung/move/admin/controller/AdminController.java',
+    lines: [1, 58],
+    language: 'java',
+    note: 'AdminController 의존 15개 (health/cache/info/menu/vm/user/server/head/debug/permission/session/request 등)',
+  },
+  {
+    id: 'AdminController-permissions',
+    source: 'src/main/java/com/samsung/move/admin/controller/AdminController.java',
+    lines: [173, 216],
+    language: 'java',
+    note: '/users/{id}/permissions GET/PUT + /permissions/defaults + /users/{id}/head-access GET/PUT',
+  },
+  {
+    id: 'AdminController-approve',
+    source: 'src/main/java/com/samsung/move/admin/controller/AdminController.java',
+    lines: [568, 610],
+    language: 'java',
+    note: '/permission-requests/{id}/approve — findByIdForUpdate(비관적락) + 권한·Head access 저장 + 요청 상태 전이',
+  },
+  {
+    id: 'PermissionRequest-entity',
+    source: 'src/main/java/com/samsung/move/auth/entity/PermissionRequest.java',
+    lines: [1, 47],
+    language: 'java',
+    note: 'permission_requests — userId/reason/status(PENDING/APPROVED/REJECTED)/reviewedBy/reviewComment',
+  },
+  {
+    id: 'UserPermission-entity',
+    source: 'src/main/java/com/samsung/move/auth/entity/UserPermission.java',
+    lines: [1, 50],
+    language: 'java',
+    note: 'user_permissions — (userId, permissionKey) unique + granted boolean (17 key per user)',
+  },
+
+  // ── Server Admin (L2 serveradmin · 관리 UI 2종) ──
+  {
+    id: 'PortalServer-admin-entity',
+    source: 'src/main/java/com/samsung/move/admin/entity/PortalServer.java',
+    lines: [1, 79],
+    language: 'java',
+    note: 'portal_servers — name(unique) · ip · 3 포트(ssh/rdp/vnc) · connectionType 비트마스크 · visible · guacdHost/Port',
+  },
+  {
+    id: 'ServerGroup-entity',
+    source: 'src/main/java/com/samsung/move/admin/entity/ServerGroup.java',
+    lines: [1, 49],
+    language: 'java',
+    note: 'portal_server_groups — name(unique) · description · sortOrder',
+  },
 ];
 
 async function extractLines(text, lines) {

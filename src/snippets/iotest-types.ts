@@ -1,7 +1,7 @@
 // @source frontend/src/routes/agent/iotest/types.ts
 // @lines 1-79
 // @note IOTestConfig/Thread/Command 타입 · 재귀 commands (loop/if 중첩) · ProgressEvent · ThreadProgress
-// @synced 2026-04-19T09:49:20.709Z
+// @synced 2026-04-19T10:15:34.674Z
 
 /** I/O Test configuration types */
 

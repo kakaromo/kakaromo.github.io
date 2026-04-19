@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/binmapper/parser/CppStructLexer.java
 // @lines 1-80
 // @note KEYWORDS Set + tokenize 메인 루프 (#pragma / __attribute__ / ident / number 분기)
-// @synced 2026-04-19T09:49:20.703Z
+// @synced 2026-04-19T10:15:34.670Z
 
 package com.samsung.move.binmapper.parser;
 

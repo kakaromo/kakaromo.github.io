@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/agent/entity/IOTestPreset.java
 // @lines 1-38
 // @note portal_iotest_presets — name/description/category/configJson(MEDIUMTEXT) 단일 컬럼 DSL 저장
-// @synced 2026-04-19T09:49:20.709Z
+// @synced 2026-04-19T10:15:34.674Z
 
 package com.samsung.move.agent.entity;
 

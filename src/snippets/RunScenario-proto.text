@@ -1,0 +1,76 @@
+// @source src/main/proto/device_agent.proto
+// @lines 215-285
+// @note ScenarioStep/ScenarioLoop/ConditionalBranch + RunScenarioRequest (has_branching + edges[])
+// @synced 2026-04-19T10:15:34.677Z
+
+message ScenarioStep {
+  string type = 1;                    // "benchmark", "shell", "cleanup", "sleep", "trace_start", "trace_stop", "condition", "app_macro"
+  BenchmarkTool tool = 2;            // benchmark일 때 사용
+  map<string, string> params = 3;
+  ConditionalBranch condition = 4;   // type="condition"일 때만 사용
+  AppMacroConfig macro = 5;          // type="app_macro"일 때 사용
+}
+
+message AppMacroConfig {
+  int64 macro_id = 1;                 // DB에 저장된 매크로 ID
+  string macro_name = 2;
+  repeated MacroEvent events = 3;     // 인라인 이벤트 (macro_id 없을 때)
+  int32 source_width = 4;
+  int32 source_height = 5;
+  string package_name = 6;            // 앱 패키지명
+  string clear_mode = 7;             // "none"(기본), "force_stop", "clear" (pm clear)
+}
+
+message ConditionalBranch {
+  string metric_key = 1;             // 이전 step의 metrics 키 (예: "iops_read", "bw_write")
+  string operator = 2;               // ">", "<", ">=", "<=", "==", "!=", "contains", "!contains"
+  double threshold = 3;              // 숫자 비교 값 (예: 100000)
+  int32 true_branch_step = 4;        // 조건 참일 때 이동할 step index
+  int32 false_branch_step = 5;       // 거짓일 때 이동할 step index
+  string source = 6;                 // "metric"(기본) 또는 "shell"
+  string shell_command = 7;          // source="shell"일 때 실행할 명령어
+  string extract_pattern = 8;        // 정규식으로 결과에서 값 추출 (예: "(\d+)%")
+  string threshold_string = 9;       // 문자열 비교 값 (contains/!contains용)
+  repeated ConditionRule rules = 10; // 복합 조건: 여러 규칙 AND/OR
+  string logic = 11;                 // "and"(기본) 또는 "or"
+}
+
+message ConditionRule {
+  string source = 1;                 // "metric" 또는 "shell"
+  string metric_key = 2;
+  string operator = 3;
+  double threshold = 4;
+  string threshold_string = 5;
+  string shell_command = 6;
+  string extract_pattern = 7;
+}
+
+message StepEdge {
+  int32 from_step = 1;
+  int32 to_step = 2;
+  string label = 3;                  // "true", "false", "" (순차)
+}
+
+message ScenarioLoop {
+  int32 start_step = 1;              // 시작 step index (0-based)
+  int32 end_step = 2;                // 끝 step index (inclusive)
+  int32 count = 3;                   // 반복 횟수
+}
+
+message RunScenarioRequest {
+  repeated string device_ids = 1;
+  string scenario_name = 2;
+  repeated ScenarioStep steps = 3;
+  repeated ScenarioLoop loops = 4;
+  int32 repeat = 5;                  // 전체 시나리오 반복 (기본 1)
+  string busy_policy = 6;           // "reject"(default), "wait", "force"
+  int32 retry_count = 7;            // 실패 시 재시도 횟수 (0=재시도 없음)
+  int32 retry_delay_seconds = 8;    // 재시도 간격 (기본 60초)
+  bool has_branching = 9;            // true면 DAG 실행 모드 (edges 사용)
+  repeated StepEdge edges = 10;      // DAG 모드용 엣지 목록
+}
+
+message RunScenarioResponse {
+  string job_id = 1;
+}
+

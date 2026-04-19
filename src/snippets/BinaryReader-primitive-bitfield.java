@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/binmapper/service/BinaryReaderService.java
 // @lines 189-265
 // @note readPrimitiveField (ASCII 힌트 + enum 라벨) + mapBitfield (storage unit + bit mask)
-// @synced 2026-04-19T09:49:20.705Z
+// @synced 2026-04-19T10:15:34.671Z
 
     private MappedField readPrimitiveField(String name, StructField field, byte[] data,
                                            int offset, ByteOrder byteOrder) {

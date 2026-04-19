@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/auth/config/AdfsProperties.java
 // @lines 1-20
 // @note @ConfigurationProperties portal.adfs — enabled/clientId/authorizeUrl/redirectUrl/logoutUrl/scope
-// @synced 2026-04-19T09:49:20.696Z
+// @synced 2026-04-19T10:15:34.665Z
 
 package com.samsung.move.auth.config;
 

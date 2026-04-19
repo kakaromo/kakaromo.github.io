@@ -1,7 +1,7 @@
 // @source src/main/proto/device_agent.proto
 // @lines 96-164
 // @note BenchmarkTool enum(IOTEST=4) + RunBenchmarkRequest(params map) + JobProgress(stream용)
-// @synced 2026-04-19T09:49:20.710Z
+// @synced 2026-04-19T10:15:34.675Z
 
   BENCHMARK_TOOL_UNSPECIFIED = 0;
   BENCHMARK_TOOL_FIO = 1;

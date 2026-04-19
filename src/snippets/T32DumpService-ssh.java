@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/t32/service/T32DumpService.java
 // @lines 332-391
 // @note JSch SSH 실행 — stdout/stderr 실시간 step-output 전송 + timeout
-// @synced 2026-04-19T09:49:20.686Z
+// @synced 2026-04-19T10:15:34.655Z
 
     private CommandResult executeSshCommand(PortalServer server, String command, long timeoutSeconds,
                                             SseEmitter emitter, int step) throws Exception {

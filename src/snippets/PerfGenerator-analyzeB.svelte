@@ -1,7 +1,7 @@
 // @source frontend/src/lib/components/PerfGenerator.svelte
 // @lines 135-220
 // @note analyzeJson Case 2 — array-of-objects 분기 (top fields + nested tabs + 빈 tabKeys fallback)
-// @synced 2026-04-19T09:49:20.707Z
+// @synced 2026-04-19T10:15:34.673Z
 
 		// Case 2: Top-level array → each item's object-valued keys become tabs
 		if (Array.isArray(parsed)) {
