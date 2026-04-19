@@ -225,6 +225,50 @@ const manifest = [
     language: 'java',
     note: 'REST API — types / for-tr / slot 상태 / slot 데이터',
   },
+
+  // ── T32 Dump (L2 t32) ──
+  {
+    id: 'T32Config-entity',
+    source: 'src/main/java/com/samsung/move/t32/entity/T32Config.java',
+    lines: [1, 88],
+    language: 'java',
+    note: 'portal_t32_configs — 서버 그룹·JTAG/T32PC·명령 템플릿·경로 매핑',
+  },
+  {
+    id: 'T32DumpController',
+    source: 'src/main/java/com/samsung/move/t32/controller/T32DumpController.java',
+    lines: [1, 52],
+    language: 'java',
+    note: 'POST /api/t32/dump/execute — SSE 반환 + DumpRequest record',
+  },
+  {
+    id: 'T32DumpService-executeDump',
+    source: 'src/main/java/com/samsung/move/t32/service/T32DumpService.java',
+    lines: [78, 220],
+    language: 'java',
+    note: 'executeDump 오케스트레이션 — 4 Step 순차 + 경로 변환 + Canary ZIP',
+  },
+  {
+    id: 'T32DumpService-step1-2',
+    source: 'src/main/java/com/samsung/move/t32/service/T32DumpService.java',
+    lines: [222, 282],
+    language: 'java',
+    note: 'Step 1 JTAG (success pattern regex) + Step 2 Attach (Down 감지)',
+  },
+  {
+    id: 'T32DumpService-step3',
+    source: 'src/main/java/com/samsung/move/t32/service/T32DumpService.java',
+    lines: [284, 326],
+    language: 'java',
+    note: 'Step 3 Dump — {result_path}/{branch_path} 치환 + fail 키워드 감지',
+  },
+  {
+    id: 'T32DumpService-ssh',
+    source: 'src/main/java/com/samsung/move/t32/service/T32DumpService.java',
+    lines: [332, 391],
+    language: 'java',
+    note: 'JSch SSH 실행 — stdout/stderr 실시간 step-output 전송 + timeout',
+  },
 ];
 
 async function extractLines(text, lines) {

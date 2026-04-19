@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/metadata/config/MetadataMonitorProperties.java
 // @lines 1-21
 // @note metadata.monitor.* — enabled / pollInterval / collectionInterval
-// @synced 2026-04-19T06:17:28.820Z
+// @synced 2026-04-19T06:47:47.015Z
 
 package com.samsung.move.metadata.config;
 

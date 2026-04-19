@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/metadata/entity/UfsMetadataCommand.java
 // @lines 1-65
 // @note ufs_metadata_commands — commandType 4가지(tool/sysfs/raw/keyvalue)
-// @synced 2026-04-19T06:17:28.818Z
+// @synced 2026-04-19T06:47:47.014Z
 
 package com.samsung.move.metadata.entity;
 

@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/head/service/HeadMessageParser.java
 // @lines 15-170
 // @note 정규식 패턴 + parseMessage + parseSlotMatch 32필드
-// @synced 2026-04-19T06:17:28.810Z
+// @synced 2026-04-19T06:47:47.007Z
 
 public class HeadMessageParser {
 
