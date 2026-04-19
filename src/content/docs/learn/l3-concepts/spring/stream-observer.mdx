@@ -1,0 +1,101 @@
+---
+title: StreamObserver
+description: gRPC 비동기 콜백 인터페이스 — onNext/onError/onCompleted 3개 메서드
+sidebar:
+  order: 7
+---
+
+## 이 프로젝트에서의 용례
+
+- **`AgentController.subscribeJobProgress`** — Go Agent의 스트리밍 RPC로부터 벤치마크/시나리오/트레이스 진행률을 받는 곳에서 핵심적으로 등장.
+- **`ExcelGrpcClient`** (필요 시) — 긴 리포트 생성에도 동일 패턴 적용 가능.
+
+## 계약
+
+```java
+public interface StreamObserver<V> {
+  void onNext(V value);          // 메시지 하나씩 (0번 이상)
+  void onError(Throwable t);     // 에러 종료 (최대 1번)
+  void onCompleted();            // 정상 종료 (최대 1번)
+}
+```
+
+규칙:
+
+1. **onError 또는 onCompleted 중 정확히 하나**가 최종적으로 호출됩니다. 둘 다 불리는 경우는 없음.
+2. 종료 콜백 후 **onNext는 더 이상 불리지 않음**.
+3. 콜백 호출 스레드는 **gRPC 내부 스레드**. 즉, Spring의 요청 스레드가 아닙니다.
+
+## 최소 예시
+
+```java
+asyncStub.subscribeJobProgress(request, new StreamObserver<JobProgress>() {
+  @Override
+  public void onNext(JobProgress p) {
+    log.info("progress: {}% on {}", p.getProgressPercent(), p.getDeviceId());
+  }
+
+  @Override
+  public void onError(Throwable t) {
+    log.error("stream error", t);
+  }
+
+  @Override
+  public void onCompleted() {
+    log.info("stream complete");
+  }
+});
+```
+
+## SseEmitter와 조합 (MOVE 패턴)
+
+MOVE의 `AgentController.subscribeJobProgress`는 **StreamObserver 안에서 SseEmitter.send를 호출**해 gRPC → SSE 중계를 수행합니다.
+
+```java
+SseEmitter emitter = new SseEmitter(0L);
+final var completed = new AtomicBoolean(false);
+
+emitter.onCompletion(() -> completed.set(true));
+emitter.onTimeout(() -> completed.set(true));
+emitter.onError(e -> completed.set(true));
+
+client.subscribeJobProgressAsync(jobId, new StreamObserver<JobProgress>() {
+  public void onNext(JobProgress p) {
+    if (completed.get()) return;  // 프론트가 이미 끊었다면 스킵
+    try {
+      emitter.send(SseEmitter.event().name("progress").data(toJson(p)));
+    } catch (Exception e) { completed.set(true); }
+  }
+  public void onError(Throwable t) {
+    if (completed.get()) return;
+    try { emitter.send(SseEmitter.event().name("error").data(...)); emitter.complete(); }
+    catch (Exception ignored) {}
+  }
+  public void onCompleted() {
+    if (completed.get()) return;
+    try { emitter.send(SseEmitter.event().name("complete").data("{}")); emitter.complete(); }
+    catch (Exception ignored) {}
+  }
+});
+return emitter;
+```
+
+## 주의할 점
+
+- **onNext 안의 작업은 빠르게**. 긴 작업을 수행하면 gRPC가 backpressure를 적용하고 서버가 밀려납니다. 무거운 처리는 별도 큐/스레드풀로.
+- **onError 후 onCompleted 호출 금지** (계약 위반). AtomicBoolean 같은 플래그로 재진입 방지.
+- **콜백 호출 스레드는 request scope 밖**입니다. `HttpSession`·`RequestContextHolder` 접근 불가. 필요한 데이터는 구독 직전에 캡처.
+- **취소** — 서버 스트림을 구독한 클라이언트가 포기하려면 `Context.current().withCancellation()`으로 명시적 취소 Context를 써야 합니다. MOVE는 프론트가 EventSource를 닫으면 Spring이 감지해 `emitter.onCompletion` → `completed.set(true)`로 전파되고, 다음 onNext에서 send 실패로 자연 종료되는 패턴에 의존.
+
+## StreamObserver vs Reactive Streams (Flux/Mono)
+
+현대 Java 생태계에는 Project Reactor·RxJava 같은 대안도 있습니다.
+
+- **StreamObserver**는 gRPC Java의 "공식" 인터페이스. 의존성 없음.
+- **Reactive Streams로 감싸기**도 가능 (`reactor-grpc` 등), 하지만 MOVE는 MVC 스택이라 WebFlux 의존성 추가를 피함.
+- MOVE의 규모에서는 **StreamObserver 직사용 + SseEmitter 조합**이 가장 단순.
+
+## 공식 문서
+
+- [gRPC Java — StreamObserver](https://grpc.github.io/grpc-java/javadoc/io/grpc/stub/StreamObserver.html)
+- [gRPC Concepts — Streaming RPCs](https://grpc.io/docs/what-is-grpc/core-concepts/#server-streaming-rpc)

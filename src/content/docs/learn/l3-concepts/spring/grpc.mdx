@@ -1,0 +1,88 @@
+---
+title: gRPC (Protocol Buffers)
+description: 스키마 기반 RPC + HTTP/2 스트리밍 — MOVE의 Agent/Excel Service 통신
+sidebar:
+  order: 6
+---
+
+## 이 프로젝트에서의 용례
+
+- **Agent 모듈** — Android 디바이스 벤치마크/트레이스 (`src/main/proto/device_agent.proto`)
+- **Excel Service** — 성능 결과를 Go 서비스가 네이티브 xlsx로 내보내기 (`src/main/proto/excel_service.proto`)
+
+두 외부 서비스 모두 Go로 구현되어 있고 MOVE는 Spring gRPC 클라이언트로 붙습니다.
+
+## Proto 파일과 빌드
+
+Proto 파일은 `src/main/proto/*.proto`에 두고, `protobuf-maven-plugin`이 Maven 빌드 시 자동 컴파일해 `target/generated-sources/protobuf/`에 Java 코드를 생성합니다.
+
+```proto
+// device_agent.proto (요약)
+syntax = "proto3";
+option java_package = "com.samsung.move.agent.proto";
+
+service DeviceAgent {
+  rpc RunBenchmark(RunBenchmarkRequest) returns (RunBenchmarkResponse);
+  rpc SubscribeJobProgress(SubscribeJobProgressRequest) returns (stream JobProgress);
+}
+
+message RunBenchmarkRequest {
+  repeated string device_ids = 1;
+  BenchmarkTool tool = 2;
+  map<string, string> params = 3;
+}
+```
+
+생성된 Java 코드:
+- **Message 클래스** — `RunBenchmarkRequest.newBuilder()` 빌더 패턴
+- **Service stub** — `DeviceAgentGrpc.newBlockingStub(channel)` / `DeviceAgentGrpc.newStub(channel)`
+
+## 4가지 RPC 패턴
+
+| 패턴 | 요청 | 응답 | MOVE 사용처 |
+|---|---|---|---|
+| Unary | 1 | 1 | `RunBenchmark`, `ListDevices`, `GetJobStatus` |
+| Server Stream | 1 | N | **`SubscribeJobProgress`** (Agent L2 핵심) |
+| Client Stream | N | 1 | 미사용 |
+| Bidirectional | N | N | 미사용 |
+
+Server Stream 예시 — proto에서 `returns (stream X)`:
+
+```proto
+rpc SubscribeJobProgress(SubscribeJobProgressRequest) returns (stream JobProgress);
+```
+
+Java에서 받을 때:
+
+```java
+// 동기(blocking) — Iterator 순회
+Iterator<JobProgress> it = blockingStub.subscribeJobProgress(req);
+while (it.hasNext()) { handle(it.next()); }
+
+// 비동기 — StreamObserver 콜백 (MOVE 방식)
+asyncStub.subscribeJobProgress(req, new StreamObserver<JobProgress>() {
+  public void onNext(JobProgress p) { ... }
+  public void onError(Throwable t) { ... }
+  public void onCompleted() { ... }
+});
+```
+
+## Spring gRPC vs 순정 gRPC Java
+
+MOVE는 **Spring gRPC 1.0.2** (`spring-grpc-dependencies` BOM)을 씁니다. 다만 실제 컨트롤러 코드는 **순정 `ManagedChannel` API**를 사용해 채널을 수동 생성합니다 (`AgentGrpcClient.java`). Spring gRPC의 `@GrpcClient` 자동 주입은 **정적 주소일 때만** 유용한데, MOVE는 `AgentServer` DB 레코드로 host:port를 **런타임에 결정**해야 해서 직접 관리.
+
+이는 "선언적 DI가 더 좋을 줄 알았는데 실제 요구에는 수동 관리가 맞았다"는 현실적 선택. 새 프로젝트에서는 요구사항을 먼저 보고 결정하면 됩니다.
+
+## 주의할 점
+
+- **`ManagedChannel`은 리소스를 쥠** — 반드시 `shutdown()` 또는 `AutoCloseable`로 정리. 한 프로세스에서 수십 개가 누적되면 FD 누수.
+- **maxInboundMessageSize 기본 4MB** — trace 데이터처럼 크면 `.maxInboundMessageSize(256 * 1024 * 1024)` 같이 명시적으로 늘려야 함.
+- **keepAlive 없이 장시간 유휴 후 첫 RPC**가 실패할 수 있음. MOVE는 30초 keepAlive + `keepAliveWithoutCalls(true)`.
+- **proto 변경 시 양쪽 재빌드**. Go Agent 레포(`~/project/agent`)와 Portal 레포의 proto 파일이 같아야 함. 버전 동기화는 수동.
+- **plaintext vs TLS** — 내부망이면 `.usePlaintext()` 가능. 외부 노출 시 TLS 필수.
+
+## 공식 문서
+
+- [gRPC Documentation](https://grpc.io/docs/)
+- [Protocol Buffers — proto3 Language Guide](https://protobuf.dev/programming-guides/proto3/)
+- [Spring gRPC Reference](https://docs.spring.io/spring-grpc/reference/)
