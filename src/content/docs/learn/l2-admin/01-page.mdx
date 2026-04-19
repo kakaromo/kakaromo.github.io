@@ -1,0 +1,123 @@
+---
+title: 1. 18 탭 단일 페이지
+description: admin/+page.svelte 2652줄 · 탭 내비게이션 · AdminController 의존 15개
+sidebar:
+  order: 1
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import ctrlRaw from '../../../../snippets/AdminController-head.java?raw';
+
+## 30초 요약
+
+- **단일 페이지 18 탭** — SPA 네이티브 `<Tabs>` 컴포넌트로 탭 전환. 라우트 분할 안 함
+- **2652줄 한 파일** — 탭마다 조건부 렌더, 공유 상태는 상위 스코프
+- **AdminController 하나가 전체 백엔드** — 15+ Service 주입, 탭당 ~2 엔드포인트
+
+## 왜 18 탭 단일 페이지인가
+
+대안과의 비교:
+
+| 전략 | 장단점 |
+|---|---|
+| **단일 +page.svelte** (현재) | 전역 상태 공유 쉬움 · 검색/탭 전환 빠름 · **파일이 2652줄** |
+| `/admin/users`, `/admin/servers` 등 분리 | 파일 작음 · 전환 시 데이터 재로드 · URL 공유 가능 |
+| 각 탭이 별도 컴포넌트 | 파일 분할 · Props drilling · 컴포넌트 경계 설계 비용 |
+
+MOVE 선택 이유:
+
+- Admin 페이지는 **자주 쓰이는 탭 2-3개만** 실사용 (servers, users, permission-requests)
+- 한 세션에 여러 탭을 빠르게 오가는 워크플로 (서버 설정 후 유저 권한)
+- **Svelte 컴파일러가 조건부 렌더만 처리** — 런타임 비용 낮음
+- 대신 **maintainability 악화** — 2652줄 파일은 grep 없이 특정 탭 찾기 어려움
+
+**2652줄의 비용 인정**. 이 점이 후속 리팩토링 후보로 메모리에 있음.
+
+## AdminController — 15+ 의존성
+
+<CodeTour
+  client:visible
+  language="java"
+  source="AdminController.java — head"
+  height={580}
+  code={ctrlRaw}
+  steps={[
+    {
+      id: 'imports',
+      title: '30+ import — 책임 범위',
+      lines: [3, 26],
+      body: '<p>admin / auth / debug / head 네 패키지에서 엔티티 · 리포지토리 · 서비스 다 끌어옴. <strong>AdminController 하나가 네 도메인 접점</strong>.</p>',
+    },
+    {
+      id: 'lombok',
+      title: '@RequiredArgsConstructor — final 필드 자동 주입',
+      lines: [38, 41],
+      body: '<p>생성자 주입 boilerplate 제거. <strong>의존성이 많아도 선언만 하면 됨</strong> — 수작업 constructor 였으면 15줄 추가.</p>',
+    },
+    {
+      id: 'svc-list',
+      title: '의존 Service 15개',
+      lines: [43, 57],
+      body: '<p>healthService · cacheService · infoService · menuService · vmStatusService · userService · serverService · headConnectionService · headConnectionManager · debugToolService · serverGroupRepository · permissionService · userHeadAccessRepository · sessionConfigService · permissionRequestRepository. <strong>God Controller 안티패턴</strong>의 한 예 — 그러나 "관리 진입점은 하나" 는 장점.</p>',
+    },
+    {
+      id: 'endpoint-1',
+      title: '/health — 첫 엔드포인트',
+      lines: [59, 61],
+      body: '<p>GET/POST/PUT/DELETE 40+ 메서드가 뒤에 이어짐. <strong>각 메서드는 얇음</strong> — Service로 위임 1-2줄. Controller가 길어도 로직이 복잡하진 않음.</p>',
+    },
+  ]}
+/>
+
+## "God Controller"의 장단
+
+**Bad smell로 보일 수 있지만**:
+
+- 각 메서드 자체는 ~5줄로 간단
+- 의존성 주입만 많음(15개), 로직 결합 없음
+- REST 클라이언트에 `/api/admin/*` 네임스페이스 하나만 노출
+
+**"God Controller = 자동으로 나쁜 것" 아님**. 로직이 얇고 책임이 "관리 엔드포인트 라우팅"으로 단일하면 수용 가능. 이건 Controller 라기보다 **API facade**.
+
+## 18 탭 목록 (요약)
+
+| 카테고리 | 탭 | 주 엔드포인트 |
+|---|---|---|
+| System | Health | `/health` |
+| System | Connections | `/connections` (SSE/WS/SSH) |
+| System | Cache | `/cache/*` |
+| System | App Info | `/info` |
+| System | Config | `/config` |
+| Infra | Servers | `/servers` CRUD |
+| Infra | Server Groups | `/server-groups` |
+| Infra | Head TCP | `/head-connections` |
+| Infra | VM Status | `/vm-status` |
+| Auth | Users | `/users` CRUD · `/users/{id}/permissions` |
+| Auth | Sessions | `/session-config` |
+| Auth | Permission Requests | `/permission-requests` + `/approve`/`/reject` |
+| Data | Sets | TestDB 연관 |
+| Data | Slots | TestDB 연관 |
+| Data | UFS Info | `/ufs-info` |
+| Data | Debug | `/debug-*` |
+| Data | Metadata | `/metadata-commands` |
+| Data | Bitbucket/T32 | 설정 |
+| Menus | 메뉴 가시성 | `/menus` |
+
+## 거대 페이지의 실제 비용
+
+개발 중 마주치는 어려움:
+
+- **git blame**: 한 파일 blame이 너무 복잡해 어느 탭이 언제 추가됐는지 불명확
+- **PR 리뷰**: 파일 diff 100+ 줄이 여러 탭 섞여 있으면 리뷰 어려움
+- **충돌**: 다른 개발자가 다른 탭 수정 시 같은 파일 → rebase 충돌 빈번
+- **에디터 성능**: VS Code의 syntax highlighter가 2652줄을 파싱하면서 약간 느려짐
+
+**리팩토링 후보**: 탭별 컴포넌트 분리 (`AdminServersTab.svelte`, `AdminUsersTab.svelte`…). slots 페이지 리팩토링과 같은 패턴. 메모리에 이 의도가 기록됨.
+
+## 직접 해보기
+
+- [ ] Admin 페이지 로드 → Network 탭에서 초기 로드 시 호출되는 API 수 확인 (각 탭이 eager 로드인지 lazy인지)
+- [ ] 한 탭만 수정하는 PR → diff가 파일의 중간 어느 위치에 몰려 있는지
+- [ ] AdminController의 각 엔드포인트 메서드 길이 중앙값 — 대부분 5줄 이하인지
+
+다음: [2. 17 권한 그리드](/learn/l2-admin/02-permissions/) →

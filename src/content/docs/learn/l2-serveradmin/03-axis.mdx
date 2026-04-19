@@ -1,0 +1,109 @@
+---
+title: 3. 관리 UI 축 2종 비교 — 축 확정?
+description: Admin vs Server Admin · 공통 패턴 발견 · 축 확립 조건 · 18 L2 전체
+sidebar:
+  order: 3
+---
+
+## 30초 요약
+
+Admin 대시보드(전역)와 Server Admin(서버 국한) 두 관리 L2를 나란히 비교. **공통 패턴**을 드러내 "관리 UI 축"의 정의를 시도.
+
+## 공통 패턴 5종
+
+두 L2가 공유하는 속성:
+
+| # | 패턴 | Admin 대시보드 | Server Admin |
+|---|---|---|---|
+| 1 | CRUD 중심 | 유저/권한/세션 CRUD | 서버/그룹 CRUD |
+| 2 | 소프트 삭제 | 유저 enabled 플래그 | 서버 is_visible |
+| 3 | 대규모 단일 페이지 | 18 탭 2652줄 | Admin 1 탭 (전체 한 파일) |
+| 4 | 주 독자 관리자 | Admin 역할 필수 | Admin 역할 필수 |
+| 5 | `/api/admin/*` 네임스페이스 | ✓ | ✓ (통합) |
+
+**공통**이지만 경계 모호: Server Admin은 Admin 대시보드 **안의 한 탭**으로 구현됨. 별도 L2로 볼지, Admin의 세부인지 불명확.
+
+## 축 확립 판단 유보
+
+축이 확립되려면:
+
+1. **2 이상 독립 L2** — Server Admin이 Admin에 포함되면 독립성 약함
+2. **공통 패턴 명확** — CRUD · 소프트 삭제 · Admin 전용은 공통이지만 다른 CRUD 엔티티(예: IOTestPreset)도 같음
+3. **다른 축과 구별** — Auth/TestDB와 분리가 어려움 — Admin은 Auth의 UI 표면이기도
+
+**잠정 결론**: 관리 UI는 **패턴은 명확하지만 축 승격 보류**. 기존 크로스-컷/엔진/Orchestration 축처럼 **"L2가 아닌 다른 L2를 통과"** 하지는 않음.
+
+## "관리 UI 패턴"으로 수용
+
+축 대신 **패턴**으로 인식:
+
+- L2 작성 중 **"관리용 UI가 필요한가"** 라는 질문이 나오면 이 패턴 적용
+- 공통 레시피: Admin 경로 + CRUD + 소프트 삭제 + 관리자 권한 + 단일 페이지 탭
+- 하지만 축은 아니라 **"스타일 가이드"** 수준
+
+이는 **"축 후보가 항상 축이 되지는 않는다"** 는 예시. 패턴 발견이 축 확립보다 느슨한 기준.
+
+## Admin의 두 종속 해석
+
+| 해석 | 설명 |
+|---|---|
+| Admin = Auth/TestDB의 UI 표면 | 17 권한 편집 = Auth의 UI, Sets/Slots = TestDB의 UI |
+| Admin = 독립 관리 L2 | 자기만의 2652줄 코드 + /api/admin/* 경로 |
+
+**둘 다 유효**. Admin은 **축의 경계 문제**를 드러내는 사례 — 모든 L2가 깔끔하게 한 축에 속하지 않아도 괜찮음.
+
+## 18 L2 전체 지도
+
+```
+기능 축 (10):
+  슬롯 · Agent 벤치마크 · 원격 · Metadata · T32 · Pre-Command
+  Log Browser · Excel · Bitbucket · MinIO
+
+크로스-컷 축 (2):
+  🔐 Auth  ·  📊 TestDB
+
+엔진 축 (3):
+  🧬 BinMapper  ·  ⚙ Perf Generator  ·  🔬 iotest
+
+Orchestration 축 (1):
+  🕸 Scenario Canvas
+
+관리 UI 패턴 (축 미확립, 2종):
+  🛠 Admin 대시보드  ·  🖥 Server Admin
+```
+
+18 L2 = 6 축(미확립 포함). **완벽한 분류가 목적이 아님** — "L2마다 어디에 맞는지 대략 판정"이 목적.
+
+## L2 템플릿의 성숙
+
+18 L2 작성 후 템플릿 특성:
+
+- **페이지 수**: 최소 3 (Server Admin, Excel) ~ 최대 7 (Slots). 중앙값 5
+- **시각화**: ArchitectureDiagram은 거의 모든 L2에, CodeTour 대부분, 기타 컴포넌트 선택
+- **새 축 발견 시**: Orchestration(16), 관리 UI(17-18)처럼 점진 확장
+- **메모리 업데이트 주기**: 3 Phase(a/b/c)마다
+
+**새 L2 작성 비용**: 스니펫 추가 ~30분, 본문 작성 ~2시간, 비교 문서 업데이트 ~30분. 안정 페이스.
+
+## 향후 방향
+
+현재까지 18 L2로 **portal의 주요 기능 모두 커버**. 다음 단계는:
+
+| 후보 | 성격 |
+|---|---|
+| T32 Admin 탭 (Admin 안) | Server Admin과 유사 — 관리 UI 패턴 3번째 |
+| Agent trace 분석 (이미 L2 trace?) | 성능 분석 |
+| Debug Registry 확장 | Debug L2 첫 개척 |
+| 기존 L2 V2 (페이지 더 추가) | 깊이 확장 |
+
+**주 생산 라인 일단락** — 18 L2 상태에서 L1 강화(시스템 개요 업데이트), 또는 **"신규 개발자 온보딩 경로 최적화"** 등 메타 작업 우선 고려.
+
+## 직접 해보기
+
+- [ ] Admin + Server Admin 두 L2를 "크로스-컷"으로 보는 것과 "별도 축"으로 보는 것 중 본인이 어느 쪽 합리적인지 판단
+- [ ] 18 L2 중 가장 덜 문서화된 L2가 무엇인지, 18 L2 비교 문서에서 확인
+- [ ] 한 L2가 여러 축에 걸쳐 있다면(예: Admin이 Auth + TestDB 관리 UI) 학습 순서로 어느 쪽이 먼저 좋을지
+
+---
+
+**돌아가기**: [Server Admin 개요](/learn/l2-serveradmin/) · [L2 18종 비교](/learn/l2-compare/) · [학습 가이드](/learn/)

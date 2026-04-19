@@ -1,0 +1,153 @@
+---
+title: 2. 그룹·가시성·정렬
+description: ServerGroup 엔티티 · sortOrder 정렬 · is_visible 소프트 숨김 · UI 카드 뷰 필터링
+sidebar:
+  order: 2
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import sgRaw from '../../../../snippets/ServerGroup-entity.java?raw';
+
+## 30초 요약
+
+- **ServerGroup**: 이름 + 설명 + sortOrder. 서버를 논리적으로 묶음
+- **sortOrder**: UI 카드 배치 순서 (명시적 숫자, 드래그 재정렬은 별도 API)
+- **is_visible** (PortalServer): 소프트 숨김 — 삭제 안 하고 숨기기
+- **UI 표현**: Admin 서버 탭이 그룹별로 카드 묶음, 그룹 내 sortOrder 순
+
+## ServerGroup 엔티티
+
+<CodeTour
+  client:visible
+  language="java"
+  source="ServerGroup.java"
+  height={440}
+  code={sgRaw}
+  steps={[
+    {
+      id: 'table',
+      title: '@Table portal_server_groups',
+      lines: [11, 16],
+      body: '<p>PortalServer와 분리된 테이블. <strong>한 그룹이 여러 서버 소유, 관계는 PortalServer.server_group_id FK</strong>. ManyToOne 매핑 안 한 이유는 다른 L2 재사용 시 의존 줄이기.</p>',
+    },
+    {
+      id: 'id-name',
+      title: 'name unique',
+      lines: [18, 23],
+      body: '<p>100자 unique. <strong>"T10 Group" · "HEAD Cluster"</strong> 등. 사용자가 식별 가능한 이름.</p>',
+    },
+    {
+      id: 'description',
+      title: 'description 255',
+      lines: [25, 26],
+      body: '<p>선택적 설명. UI 호버/상세 보기용. <strong>null 허용</strong>.</p>',
+    },
+    {
+      id: 'sort-order',
+      title: 'sort_order 필수 + 기본 0',
+      lines: [28, 31],
+      body: '<p>int로 정렬. <strong>명시적 숫자</strong> — 드래그로 UI에서 재정렬하면 클라이언트가 새 숫자 할당해 PUT. 정렬 안 정했으면 0, 동률이면 name 보조.</p>',
+    },
+    {
+      id: 'ts',
+      title: 'created/updated — MOVE 규약',
+      lines: [33, 47],
+      body: '<p>동일 패턴. <strong>그룹 자체가 자주 바뀌지 않으므로 감사 용도</strong> — 누가 언제 만든 그룹인지.</p>',
+    },
+  ]}
+/>
+
+## 왜 sortOrder가 필요한가
+
+대안:
+
+- **name 알파벳 정렬** — 사용자 의도 반영 못 함 ("T10, T2, T3" 순서)
+- **생성 순서** — 오래된 그룹이 위로, 새 그룹 아래 — 역시 인위적
+- **프론트에서만 정렬** — 사용자마다 순서 다르면 혼란
+- **sortOrder int (현재)** — 사용자가 명시적 배치 가능
+
+**Samsung 운영상 "메인 디바이스 그룹은 맨 위"** 같은 관습이 있어 수동 정렬 필요. 숫자 할당이 단순하고 유연.
+
+## sortOrder 재정렬 방식
+
+드래그-드롭으로 UI에서 그룹 순서 바꿀 때:
+
+```
+기존: A(0), B(1), C(2), D(3)
+드래그: B를 맨 아래로
+새 배치: A(0), C(1), D(2), B(3)
+```
+
+**클라이언트가 새 배치 계산 후 모두 PUT**:
+
+```
+PUT /api/admin/server-groups/1 { sortOrder: 0 }  // A
+PUT /api/admin/server-groups/3 { sortOrder: 1 }  // C
+PUT /api/admin/server-groups/4 { sortOrder: 2 }  // D
+PUT /api/admin/server-groups/2 { sortOrder: 3 }  // B
+```
+
+**4개 PUT 일괄** — 트랜잭션으로 묶지 않아도 UI 최종 상태가 동일. "부분 실패 시 시각적 혼란" 은 있지만 데이터 일관성 유지.
+
+대안: `sortOrder` 간격 띄우기 (0, 10, 20, 30). 삽입 시 기존 값 두 번 사이에 (예: 15). **간격 관리 복잡** → MOVE는 단순하게 전부 재할당 선택.
+
+## is_visible — 소프트 숨김
+
+PortalServer에만 있는 플래그. 서버 삭제 vs 숨김 차이:
+
+| 작업 | DB | 다른 L2 참조 |
+|---|---|---|
+| 삭제 (DELETE) | row 제거 | **FK 깨짐** (HeadConnection이 server_id 보유한 경우) |
+| 숨김 (visible=false) | row 유지 | 참조 유효 · UI에서만 안 보임 |
+
+**왜 "숨기기"가 기본인가**:
+
+- 실험 중 잠시 비활성화
+- 실수 복구 쉬움 (다시 visible=true)
+- History · Log Browser 탐색 시 "과거 데이터 주인" 로컬 식별
+
+완전 삭제는 별도 "영구 삭제" 버튼 — 확인 다이얼로그 + FK 정리 안내.
+
+## UI 카드 뷰 — 그룹별 묶음
+
+프론트 Admin 서버 탭 구조:
+
+```
+┌─ T10 Group (sortOrder 0) ─────────────────────┐
+│  ┌─ T10-1 ┐  ┌─ T10-2 ┐  ┌─ T10-3 ┐          │
+│  │ SSH+   │  │ SSH    │  │ SSH+VNC│          │
+│  │ guacd:X│  │ global │  │ guacd:Y│          │
+│  └────────┘  └────────┘  └────────┘          │
+└────────────────────────────────────────────────┘
+
+┌─ HEAD Cluster (sortOrder 1) ──────────────────┐
+│  ┌─ HEAD-01 ┐  ┌─ HEAD-02 ┐                  │
+│  ...                                          │
+└────────────────────────────────────────────────┘
+
+┌─ 그룹 없음 (기본) ─────────────────────────────┐
+│  ┌─ dev-server ┐                              │
+│  ...                                          │
+└────────────────────────────────────────────────┘
+```
+
+**렌더 로직**:
+
+```pseudo
+const groups = await fetch('/api/admin/server-groups')  // sorted by sortOrder
+const servers = await fetch('/api/admin/servers')        // with is_visible=true filter
+for (group of groups + [{id: null, name: '그룹 없음'}]) {
+  const groupServers = servers.filter(s => s.serverGroupId === group.id)
+  renderCard(group, groupServers)
+}
+```
+
+**두 쿼리, 프론트 join**. 수십~수백 row 수준에서 성능 문제 없음.
+
+## 직접 해보기
+
+- [ ] 그룹을 하나 만들고 서버 3개를 그 그룹에 할당 → UI 카드 묶음 확인
+- [ ] 서버 하나 visible=false → 목록에서 사라지지만 DB row는 존재하는지 쿼리
+- [ ] sortOrder 동률(둘 다 0) → name 알파벳 순으로 안정 정렬되는지
+
+다음: [3. 관리 UI 축 2종 비교](/learn/l2-serveradmin/03-axis/) →

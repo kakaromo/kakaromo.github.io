@@ -1,0 +1,185 @@
+---
+title: 3. DAG 직렬화 — Y정렬 vs 위상 정렬
+description: canvasToProto · hasCondition 판정 · Kahn 알고리즘 · 선형 sequence로 축약
+sidebar:
+  order: 3
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import headRaw from '../../../../snippets/scenario-serializer-head.ts?raw';
+import topoRaw from '../../../../snippets/scenario-topo-sort.ts?raw';
+
+## 30초 요약
+
+DAG → 선형 step sequence 변환은 **조건 분기 유무로 두 갈래**:
+
+- **조건 없음** → `Y좌표 정렬` — 사용자가 위에서 아래로 배치한 직관 유지
+- **조건 있음** → `위상 정렬(Kahn 알고리즘)` — 의존성 그래프로 정확한 순서
+
+**왜 Y정렬이 기본인가**: 대부분 시나리오는 순차 — Y좌표만 봐도 의도가 맞음. 복잡한 DAG에서만 위상 정렬 필요.
+
+## canvasToProto — 진입부 + 분기
+
+<CodeTour
+  client:visible
+  language="ts"
+  source="serializer.ts — 진입부"
+  height={620}
+  code={headRaw}
+  steps={[
+    {
+      id: 'imports',
+      title: 'ScenarioStep / ScenarioLoop — proto 타입',
+      lines: [6, 6],
+      body: '<p><code>$lib/api/agent.js</code>에서 TS 타입 import — proto 생성 결과(또는 수동 정의)를 사용. <strong>Go Agent와 shape 합의</strong>.</p>',
+    },
+    {
+      id: 'edge-type',
+      title: 'StepEdge — DAG 모드 전용',
+      lines: [8, 12],
+      body: '<p>fromStep / toStep + label. <strong>step index 기반</strong>이지 node id 아님 — Agent가 index 배열에 접근하기 쉽게. label은 true/false (분기 라벨).</p>',
+    },
+    {
+      id: 'result',
+      title: 'CanvasProtoResult — 4 필드 반환',
+      lines: [14, 20],
+      body: '<p>steps + loops + <strong>hasBranching</strong>(Agent에 DAG 모드 알림) + edges. hasBranching이 true면 Agent가 edges로 실행 순서 결정.</p>',
+    },
+    {
+      id: 'exec-filter',
+      title: 'execNodes = step + condition만',
+      lines: [31, 33],
+      body: '<p>loopGroup은 실행 노드 아님(메타 정보만). <strong>실행 대상 노드</strong>만 모아 정렬/직렬화. 빈 시나리오는 즉시 빈 결과 반환.</p>',
+    },
+    {
+      id: 'has-cond',
+      title: 'hasCondition 판정',
+      lines: [35, 35],
+      body: '<p>condition 노드가 하나라도 있으면 분기 모드. <strong>단 한 개의 condition이라도 전체를 위상 정렬로</strong> — Y정렬 중에 분기가 섞이면 잘못된 순서.</p>',
+    },
+    {
+      id: 'sort-choose',
+      title: '정렬 전략 선택',
+      lines: [37, 45],
+      body: '<p>조건 없음: Y좌표 정렬(사용자 의도 반영). 조건 있음: 위상 정렬(그래프 의존성 기반). <strong>대부분 시나리오는 조건 없음</strong> → 빠른 경로.</p>',
+    },
+    {
+      id: 'index-map',
+      title: 'nodeId → index 매핑',
+      lines: [47, 49],
+      body: '<p>정렬 후 각 노드에 0-based index 부여. <strong>Edge와 condition 분기가 이 index를 참조</strong> → 앞으로 노드 id 없이도 실행 순서 복원 가능.</p>',
+    },
+    {
+      id: 'condition-step',
+      title: 'condition 노드 — trueBranch/falseBranch',
+      lines: [52, 63],
+      body: '<p>source/target + <strong>sourceHandle로 true/false 구분</strong>. 각 가지의 대상 노드의 index를 조회해 ConditionalBranch proto 필드에 저장.</p>',
+    },
+  ]}
+/>
+
+## Kahn 위상 정렬
+
+<CodeTour
+  client:visible
+  language="ts"
+  source="topologicalSort"
+  height={540}
+  code={topoRaw}
+  steps={[
+    {
+      id: 'init',
+      title: 'inDegree + adj 초기화',
+      lines: [5, 10],
+      body: '<p>각 노드 <strong>진입 차수(indegree) 0</strong>, 인접 리스트 빈 배열. Kahn 알고리즘 표준 세팅.</p>',
+    },
+    {
+      id: 'seen-edges',
+      title: 'seenEdges — 중복 edge 방어',
+      lines: [12, 20],
+      body: '<p>SvelteFlow은 같은 source→target에 여러 edge 가능. <strong><code>"a->b"</code> 키로 중복 차단</strong> — indegree가 잘못 부풀면 BFS가 영원히 끝나지 않음.</p>',
+    },
+    {
+      id: 'queue-init',
+      title: 'queue — indegree 0인 노드부터',
+      lines: [22, 23],
+      body: '<p>모든 source 노드(입력 없는)가 시작점. <strong>여러 시작점 동시 존재 가능</strong> — DAG라 괜찮음. 순서는 초기 배열 순.</p>',
+    },
+    {
+      id: 'bfs',
+      title: 'BFS loop — sorted에 push',
+      lines: [25, 32],
+      body: '<p>queue 꺼내 sorted에 추가 → 자식의 indegree 감소 → 0 되면 queue에 push. <strong>순환 참조가 있으면 sorted가 전체 노드 수보다 적어짐</strong> — 다음 단계가 보완.</p>',
+    },
+    {
+      id: 'fallback',
+      title: '정렬 안 된 노드 뒤로',
+      lines: [34, 37],
+      body: '<p>순환 참조(=사이클) 때문에 정렬에서 빠진 노드 끝에 그냥 추가. <strong>에러 던지지 않고 best-effort</strong> — Agent가 실행 시 사이클 감지하면 처리. 프론트는 관대.</p>',
+    },
+  ]}
+/>
+
+## "왜 Y좌표 정렬을 선호하나"
+
+기본값은 Y정렬 — 이유:
+
+1. **사용자 의도 반영** — 위에서 아래로 배치 = 순차 실행 기대
+2. **편집 중 예측 가능** — 노드를 어디 놓아야 순서가 어떻게 될지 눈으로 판단
+3. **단순함** — O(n log n) vs O(n+e)
+4. **실수 허용** — 엣지를 잘못 연결해도 Y 좌표는 유지
+
+위상 정렬은 **분기가 있을 때만 필요** — edges가 "이 노드는 이것 다음" 을 명시하지 않으면 실행 순서 불명. 분기 없는 시나리오는 edges가 사실상 시각적 장식.
+
+## 이중 전략의 UX
+
+사용자 경험 관점:
+
+| 상황 | 동작 |
+|---|---|
+| 5 benchmark step 일렬 | Y정렬 → 위치 조정으로 순서 변경 |
+| 같은 위에 condition 하나 추가 | **갑자기 위상 정렬로 전환** → edges 주의 필요 |
+| 사용자가 edges 잘못 연결 | Y정렬이면 자동 복원, 위상 정렬이면 실행 오류 |
+
+**전환이 암묵적**이라 디버깅 포인트 — condition 추가 시 사용자가 edges를 점검해야 함. UI에서 힌트로 완화 가능(현재 없음).
+
+## 특수: hasBranching 플래그
+
+canvasToProto 반환에 `hasBranching: boolean`. Agent에 전달돼:
+
+- `false` → Agent가 `steps[0], steps[1], …` 순차 실행
+- `true` → Agent가 `edges` 따라 실행 (multi-entry/multi-exit 지원)
+
+**Agent 코드 분기**: 단순 시나리오에 DAG 오버헤드 없음. 복잡 시나리오에만 엣지 처리. **"일반 경로는 가볍게, 특수 경로는 명시"**.
+
+## Condition 분기 직렬화 세부
+
+ConditionalBranch proto 메시지:
+
+```
+ConditionalBranch {
+  source: "metric" | "shell"
+  metric_key: string
+  operator: string
+  threshold: double
+  threshold_string: string  // 문자열 비교용
+  shell_command: string
+  extract_pattern: string
+  true_branch_step: int32   // 다음 실행할 step index
+  false_branch_step: int32  // 또는 -1 (분기 없음)
+  rules: [...]
+  logic: string
+}
+```
+
+- **true_branch_step이 -1**이면 분기 끝 (시나리오 종료)
+- **단일 규칙 + rules 둘 다** — 하위 호환
+- 구 버전 Agent가 rules 무시하고 평면 필드만 읽어도 동작 — **점진적 마이그레이션 지원**
+
+## 직접 해보기
+
+- [ ] 5 step Y정렬 배치 → canvasToProto 결과의 steps 배열 순서가 Y좌표 순인지 브라우저 console에서 확인
+- [ ] 같은 시나리오에 condition 하나 추가 → 결과 순서가 바뀌는지 (topologicalSort 효과)
+- [ ] 일부러 순환 참조 edge (A→B, B→A) 만들고 canvasToProto → fallback 동작 관찰
+
+다음: [4. RunScenario 실행](/learn/l2-scenario/04-execute/) →

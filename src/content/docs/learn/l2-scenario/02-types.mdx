@@ -1,0 +1,167 @@
+---
+title: 2. 타입과 DB 저장
+description: StepNodeData · ConditionRule · LoopGroupData · stepsJson vs loopsJson 이원 저장
+sidebar:
+  order: 2
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import typesRaw from '../../../../snippets/scenario-types.ts?raw';
+import entityRaw from '../../../../snippets/ScenarioTemplate-entity.java?raw';
+
+## 30초 요약
+
+- 프론트: 3 노드 데이터 타입 (Step/Condition/LoopGroup) + 유니온 `ScenarioNode`
+- DB: **`portal_scenario_templates`** — `stepsJson`(TEXT, 필수) + `loopsJson`(TEXT, 선택) + `repeatCount`(int)
+- 이원 저장: 노드/edge는 stepsJson에, 루프 그룹 메타는 loopsJson에 — 복원 시 구조 보존
+
+## 타입 정의 — 유니온으로 다형성
+
+<CodeTour
+  client:visible
+  language="ts"
+  source="types.ts"
+  height={660}
+  code={typesRaw}
+  steps={[
+    {
+      id: 'stepnode',
+      title: 'StepNodeData — 실행 step',
+      lines: [9, 18],
+      body: '<p>stepForm(AgentStepEditDialog StepForm 재사용) + label + stepType + <strong>5개 exec 필드</strong>(실행 중에만 채워짐). 정적 정의 + 동적 상태가 한 객체.</p>',
+    },
+    {
+      id: 'condition-rule',
+      title: 'ConditionRule — 단일 규칙',
+      lines: [20, 28],
+      body: '<p>source(metric/shell) · metricKey · operator · threshold · shellCommand · extractPattern. <strong>두 검출 방식을 한 구조체로 합침</strong> — 런타임이 source 값 보고 어느 필드 사용할지 결정.</p>',
+    },
+    {
+      id: 'conditiondata',
+      title: 'ConditionNodeData — 복합 조건 지원',
+      lines: [30, 42],
+      body: '<p>하위 호환(단일 조건 평면 필드) + 신형(<strong>rules[] + logic</strong>). 구형 데이터 로드시도 동작. logic="and"|"or"로 다중 조건 결합.</p>',
+    },
+    {
+      id: 'loopgroup',
+      title: 'LoopGroupData — 반복 컨테이너',
+      lines: [44, 47],
+      body: '<p>loopCount + label만. <strong>내부 자식 관계는 SvelteFlow `parentNode` 메타</strong>에 저장 → LoopGroupData 자체에는 없음. 관심사 분리.</p>',
+    },
+    {
+      id: 'union',
+      title: 'ScenarioNode — tagged union 3종',
+      lines: [49, 54],
+      body: '<p>SvelteFlow Node 타입을 <strong>discriminator(<code>type</code> 필드)로 3종 유니온</strong>. TypeScript 타입 좁히기 가능 — <code>if (n.type === "step") n.data.stepForm…</code>.</p>',
+    },
+    {
+      id: 'execstate',
+      title: 'NodeExecutionState — 실행 상태 독립 타입',
+      lines: [56, 64],
+      body: '<p>노드 데이터에도 exec 필드가 있지만 <strong>JobProgress → UI 갱신 경로에서 중간 표현</strong>. 이벤트 수신 → NodeExecutionState 계산 → 해당 노드 data에 merge.</p>',
+    },
+    {
+      id: 'colors',
+      title: 'STEP_TYPE_COLORS — UI 색상 맵',
+      lines: [66, 76],
+      body: '<p>8 step 각 배경/텍스트 색 쌍. <strong>팔레트 + 노드 + 대시보드 모두 이 맵 참조</strong> — 색상을 한 곳에서 관리. benchmark/iotest는 비슷한 blue/cyan 계열로 시각적 유사.</p>',
+    },
+    {
+      id: 'summary',
+      title: 'stepSummary — step → 한 줄 라벨',
+      lines: [78, 90],
+      body: '<p>노드 카드에 표시할 요약. <strong>type별 switch로 중요 파라미터 1-2개 뽑기</strong>. benchmark는 tool+rw+bs, cleanup은 모드, sleep은 초. 캔버스 노드가 빡빡해도 핵심 식별 가능.</p>',
+    },
+  ]}
+/>
+
+## ScenarioTemplate — DB 스키마
+
+<CodeTour
+  client:visible
+  language="java"
+  source="ScenarioTemplate.java"
+  height={460}
+  code={entityRaw}
+  steps={[
+    {
+      id: 'table',
+      title: '@Table portal_scenario_templates',
+      lines: [11, 17],
+      body: '<p>Lombok 풀 구성(@Data @Builder @NoArgsConstructor @AllArgsConstructor). IOTestPreset/PredefinedStruct와 같은 패턴.</p>',
+    },
+    {
+      id: 'identity',
+      title: 'meta 3 필드',
+      lines: [19, 27],
+      body: '<p>id(IDENTITY) · name(200, 필수) · description(500, 선택). 다른 preset 엔티티와 동일.</p>',
+    },
+    {
+      id: 'repeat',
+      title: 'repeat_count — 전역 반복',
+      lines: [29, 31],
+      body: '<p>기본 1. <strong>시나리오 전체를 N번 반복</strong> — loop는 특정 구간만, repeat은 모든 step. 두 반복이 중첩 가능(repeat × loop = 총 실행).</p>',
+    },
+    {
+      id: 'steps-json',
+      title: 'steps_json @Lob TEXT',
+      lines: [33, 35],
+      body: '<p>노드 + edge + exec order를 <strong>JSON 통째</strong>. TEXT(최대 64KB)로 충분 — 10-20 노드 시나리오가 전형. 중첩 iotest configJson이 포함되면 커질 수 있지만 드물.</p>',
+    },
+    {
+      id: 'loops-json',
+      title: 'loops_json — 선택 nullable',
+      lines: [36, 38],
+      body: '<p>Loop 그룹 없으면 null. <strong>별도 컬럼으로 분리한 이유</strong>: 시나리오 실행 시 Loop 정보만 필요한 경우(미리보기 등) stepsJson을 파싱하지 않고 접근 가능. Optional 최적화.</p>',
+    },
+    {
+      id: 'timestamps',
+      title: 'createdAt/updatedAt + hooks',
+      lines: [40, 56],
+      body: '<p>다른 엔티티와 동일 패턴. MOVE 전역 규약 — 모든 CRUD 엔티티가 이 2 필드 + @PrePersist/@PreUpdate.</p>',
+    },
+  ]}
+/>
+
+## "왜 stepsJson + loopsJson 이원인가"
+
+한 컬럼에 전부 담을 수 있지만 분리:
+
+| 축 | 단일 JSON | 이원 JSON |
+|---|---|---|
+| 스키마 | 1 컬럼 | 2 컬럼 |
+| 쿼리 | 전체 로드 | loops만 읽기 가능 |
+| 직렬화 | 한 번 | 두 번 |
+| 복원 | `JSON.parse` 한 번 | 두 번 파싱 후 merge |
+
+**트레이드오프**: 쓰기/읽기 효율 vs 전체 일관성. MOVE 선택: **loopsJson 미리보기 use case가 있어 분리**. 기본 SELECT도 2 컬럼만 읽으면 되니 비용 미미.
+
+**같은 패턴**: Bitbucket Branch 정보가 entity 필드 여러 개 / T32Config가 단일 JSON / ScenarioTemplate은 이원. **데이터의 구조와 접근 패턴**에 따라 결정.
+
+## 프론트 타입 ↔ DB 매핑
+
+```
+┌─ Frontend ──────────┐      ┌─ DB ──────────────────┐
+│ ScenarioNode[]      │──┐   │ portal_scenario_...    │
+│   (step/cond/loop)  │  ├─→ │   stepsJson  (nodes +  │
+│ Edge[]              │  │   │              edges)    │
+│ execOrder, type…    │──┘   │                        │
+│                     │      │   loopsJson  (loop     │
+│ LoopGroup nodes     │────→ │              groups)   │
+│                     │      │   repeatCount          │
+└─────────────────────┘      └───────────────────────┘
+```
+
+**편집 vs 실행 관점 분리**:
+- 편집: 노드/에지/레이아웃(위치 x,y) 모두 보존 → stepsJson
+- 실행: 노드 순서/타입/파라미터만 — canvasToProto가 새 구조체 생성
+
+**DB는 편집 관점만** 저장, 실행용 Proto는 매번 변환. DB에 실행 결과를 영속할 계획 없음 — JobProgress는 Agent 쪽에 저장.
+
+## 직접 해보기
+
+- [ ] 한 시나리오 save 후 DB에서 `stepsJson` 컬럼 raw JSON 확인 → nodes 배열 + edges 배열 구조
+- [ ] Loop 노드 1개 포함해 save → `loopsJson`에 그 loop만 있는지, `stepsJson`에도 type=loopGroup 노드가 있는지 중복 확인
+- [ ] `repeatCount=3`로 저장 → 실행 시 시나리오가 3회 실행되고 각 사이클이 별도 execOrder를 받는지
+
+다음: [3. DAG 직렬화](/learn/l2-scenario/03-serialize/) →

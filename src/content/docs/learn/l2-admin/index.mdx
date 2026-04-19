@@ -1,0 +1,73 @@
+---
+title: Admin 대시보드 — 18 탭 관리 UI
+description: 17번째 L2 · 관리 UI 축 개척 · 시스템/인프라/유저/데이터 관리 단일 페이지
+sidebar:
+  order: 0
+---
+
+import ArchitectureDiagram from '../../../../components/learn/ArchitectureDiagram.svelte';
+
+## 30초 요약
+
+Admin 대시보드는 **18 탭 단일 페이지**(`admin/+page.svelte` 2652줄):
+
+- **System**: Health · Connections · Cache · App Info · Config
+- **Infrastructure**: Servers · Server Groups · Head TCP · VM Status
+- **Users & Auth**: Users · Sessions · **Permission Requests**
+- **Data/Tools**: Sets · Slots · UFS Info · Debug · Metadata · Bitbucket · T32
+- **Menus**: 메뉴 가시성 토글
+
+백엔드는 **`AdminController`**(618줄)가 단일 진입점. `/api/admin/*` 네임스페이스에 ~40개 엔드포인트.
+
+**관리 UI 축 개척** — 기존 15 L2는 "한 기능"이었다면 Admin은 **"기능들을 관리하는 메타 UI"**. 다른 관리 UI 후보(Guacamole Admin, T32 Admin 등)와 패턴 비교 가능.
+
+## 4단계 구조
+
+<ArchitectureDiagram
+  client:visible
+  height={320}
+  caption="Admin page → AdminController → 여러 Service → 엔티티"
+  altText="Admin +page.svelte가 18 탭을 탭 컴포넌트로 구성합니다. 각 탭은 AdminController의 해당 엔드포인트를 호출해 데이터를 가져오거나 업데이트합니다. AdminController는 15개 이상의 Service를 주입받아 위임합니다 - AdminHealthService, AdminCacheService, PortalUserService, UserPermissionService, PermissionRequestRepository 등. 이들이 각자 담당 엔티티(PortalUser, UserPermission, ActionPermission, PermissionRequest, PortalServer, HeadConnection 등)에 접근합니다."
+  nodes={[
+    { id: 'page',   label: 'admin/+page.svelte', sublabel: '18 탭 단일 SPA',   layer: 'fe',    x: 0,   y: 100, href: '/learn/l2-admin/01-page/' },
+    { id: 'ctrl',   label: 'AdminController',    sublabel: '/api/admin/*',      layer: 'be',    x: 220, y: 100, href: '/learn/l2-admin/02-permissions/' },
+    { id: 'svc',    label: '여러 Service',        sublabel: '15+ 주입',          layer: 'be',    x: 440, y: 100, href: '/learn/l2-admin/02-permissions/' },
+    { id: 'user',   label: 'PortalUser + UserPermission', sublabel: '유저·권한 테이블', layer: 'state', x: 660, y: 40, href: '/learn/l2-admin/03-approval/' },
+    { id: 'req',    label: 'PermissionRequest',   sublabel: '승인 대기',         layer: 'state', x: 660, y: 160, href: '/learn/l2-admin/03-approval/' },
+  ]}
+  edges={[
+    { from: 'page', to: 'ctrl', label: 'REST',     kind: 'sync' },
+    { from: 'ctrl', to: 'svc',  label: '위임',     kind: 'sync' },
+    { from: 'svc',  to: 'user', label: '읽기/쓰기', kind: 'sync' },
+    { from: 'svc',  to: 'req',  label: '상태 전이', kind: 'sync' },
+  ]}
+/>
+
+## 관리 UI 축의 특징
+
+| 속성 | Admin 대시보드 | 기능 L2 (슬롯·벤치마크 등) |
+|---|---|---|
+| 타겟 | 다른 기능의 설정/상태 | 자기 도메인 |
+| 주 독자 | 운영자/관리자 | 일반 사용자 |
+| 실시간성 | 낮음 (폴링 위주) | 높음 (SSE 다수) |
+| 복잡도 분산 | 한 파일에 집중(2652줄) | 파일당 중간 |
+| 변경 빈도 | 낮음 | 중~높음 |
+
+**"운영자가 다른 L2를 관리하는 화면"** 이 공통 정체성. 향후 Guacamole Admin, T32 Admin 이 같은 패턴이면 축 확정.
+
+## 학습 순서
+
+| 순서 | 페이지 | 관찰 포인트 |
+|---|---|---|
+| 1 | [18 탭 단일 페이지](/learn/l2-admin/01-page/) | 거대 페이지의 탭 구조 · 2652줄의 부담 |
+| 2 | [17 권한 그리드](/learn/l2-admin/02-permissions/) | menu:/action: prefix 분리 · CRUD 엔드포인트 |
+| 3 | [Permission Request 승인](/learn/l2-admin/03-approval/) | 비관적 락 + 상태 머신 + 원자적 권한 부여 |
+| 4 | [관리 UI 축의 위치](/learn/l2-admin/04-axis/) | 다른 L2와의 경계 · Guacamole/T32 Admin 후보 |
+
+## 직접 해보기
+
+- [ ] Admin 페이지 접속 → 18 탭 전부 로딩 시간/쿼리 수 관찰 (큰 페이지의 비용)
+- [ ] 새 유저 생성 → 권한 0개 상태 → 권한 5개 부여 후 `user_permissions` 테이블 raw 확인
+- [ ] 권한 요청 생성 → Admin이 **승인** vs **거절** 각각 동작 확인
+
+다음: [1. 18 탭 단일 페이지](/learn/l2-admin/01-page/) →

@@ -1,0 +1,142 @@
+---
+title: 5. 진행률 + Orchestration 축 정리
+description: ExecutionMiniCanvas · per-step SSE · Orchestration 축 개척 · 16 L2 지도
+sidebar:
+  order: 5
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import topoRaw from '../../../../snippets/scenario-topo-sort.ts?raw';
+
+## 30초 요약
+
+- Go Agent가 step 시작/종료마다 **JobProgress** 이벤트 발행
+- Portal이 SSE로 중계 → 프론트 `ExecutionMiniCanvas`가 노드 `execStatus` 업데이트
+- 같은 SvelteFlow 캔버스가 **편집 도구 + 실행 대시보드 두 역할**
+- "Orchestration 축"이 이 L2로 개척됨 — 다음 Orchestration L2 나타나면 축 확정
+
+## 진행률 스트림 경로
+
+```
+Go Agent (step 실행)
+  │ (step 시작) → JobProgress{state: RUNNING, message: "step 2/5 benchmark"}
+  │ (step 종료) → JobProgress{state: COMPLETED, progress_percent: 40}
+  ↓
+Portal (gRPC stream receiver)
+  │ → SSE data
+  ↓
+Frontend (EventSource)
+  │ → onmessage → parse → updateNode(id, {execStatus: "running"})
+  ↓
+SvelteFlow rerender (노드 배경색 변화)
+```
+
+**노드 데이터의 mutation**이 리렌더 유발:
+
+```typescript
+function onProgress(event: JobProgress) {
+  const nodeId = findNodeByStepIndex(event.currentStep);
+  updateNodeData(nodeId, {
+    execStatus: mapState(event.state),
+    execProgress: event.progressPercent
+  });
+  // → SvelteFlow가 자동 rerender
+}
+```
+
+정적 편집기가 **동적 대시보드로 변신** — 새 UI 컴포넌트 없이도.
+
+## ExecutionMiniCanvas — 캔버스 분신
+
+편집 캔버스 옆에 축소판(미니 캔버스) 별도. 실행 중 상태를 **노드 색상 + 실행 순번**으로 간결 표시:
+
+```
+┌───────────────────┐    ┌──────────────┐
+│ Edit Canvas       │    │ Exec Mini    │
+│ (zoom, edit, save)│    │ (readonly,   │
+│                   │    │  colorful,   │
+│                   │    │  step order) │
+└───────────────────┘    └──────────────┘
+```
+
+- 같은 노드 레이아웃 공유 (좌표 동일)
+- execStatus에 따라 배경색: idle(회색) · running(파랑 깜박) · completed(녹색) · failed(빨강) · skipped(노랑)
+- **읽기 전용** — 실행 중 사용자가 실수로 편집 못 하도록
+
+## 편집-실행 듀얼 뷰의 의미
+
+한 컴포넌트가 두 모드를 가지는 대안들:
+
+| 방식 | 장단점 |
+|---|---|
+| **듀얼 캔버스 (현재)** | 동시 표시, 실행 중에도 다음 편집 준비 |
+| 단일 캔버스 + 모드 토글 | 공간 절약, 모드 전환 인지 필요 |
+| 완전 분리 페이지 | 맥락 잃음, 실행 결과 보려 이동 |
+
+**듀얼이 Orchestration 축 UX의 표준** — 시나리오가 길면 편집+관찰을 동시에 해야 유의미.
+
+## Orchestration 축의 정의 시도
+
+Scenario Canvas 하나로는 축이라 확정 어렵지만, **후보 속성**을 정리:
+
+| 속성 | Scenario Canvas | (기능 축의) T32 Stepper | 구분 |
+|---|---|---|---|
+| 여러 step 조합 | ✅ (사용자 구성) | ✅ (고정 4 step) | 전자가 Orchestration |
+| 실행 순서 제어 | DAG + 분기 | 순차 고정 | 전자가 Orchestration |
+| IR 형태 | 노드+엣지 그래프 | 상태 머신 | 전자가 Orchestration |
+| 실행 엔진 위임 | Go Agent | 포털 자체 | 전자가 Orchestration |
+| 사용자 편집 UX | 드래그/드롭 그래프 | 없음 (실행 버튼만) | 전자가 Orchestration |
+
+**Orchestration 축의 잠정 정의**:
+1. 사용자가 실행 흐름을 편집
+2. 여러 step이 그래프/트리 관계
+3. 실행 엔진은 별도
+4. IR이 노드/엣지 데이터
+
+다음 Orchestration 후보: **debug 페이지의 step 조합**, **compatibility 테스트 흐름 편집** 등이 있다면 축 확정.
+
+## 엔진 축과 Orchestration 축의 차이
+
+둘 다 사용자 구성을 IR로 변환해 실행 위임이지만:
+
+| 축 | Orchestration | Engine |
+|---|---|---|
+| IR 형태 | 그래프 (노드+엣지) | 선형 (토큰 스트림/field 트리) |
+| 제어 흐름 | 명시적 (Loop/Condition 노드) | 내포적 (Parser 재귀/루프) |
+| 편집 방식 | 드래그/드롭 | 텍스트/폼 |
+| 결과 | side effect (실행) | 값/코드 (계산) |
+
+**Orchestration은 "흐름 편집", Engine은 "데이터/코드 변환"**. 둘 다 DSL이지만 DSL의 성격이 다름.
+
+## 16 L2 지도
+
+```
+기능 축 (10):
+  실시간: 슬롯 · Metadata
+  Job: Agent 벤치마크
+  터미널: 원격
+  절차: T32 · Pre-Command
+  재사용 레이어: Log Browser · MinIO · Bitbucket
+  데이터 통합: Excel Export
+
+크로스-컷 축 (2):
+  🔐 Auth · 📊 TestDB
+
+엔진 축 (3):
+  🧬 BinMapper · ⚙ Perf Generator · 🔬 iotest
+
+Orchestration 축 (1, 개척):
+  🕸 Scenario Canvas
+```
+
+**"축 개척"의 의미**: 하나만으로는 "변주"일 수 있지만 **다른 축과 구별되는 속성**이 명확하면 가능성 열림. 두 번째 Orchestration L2가 나타나면 축 확정.
+
+## 직접 해보기
+
+- [ ] 실행 중 ExecutionMiniCanvas의 노드 색상이 JobProgress 이벤트 도착마다 바뀌는지 관찰
+- [ ] 같은 시나리오를 편집 캔버스에서 수정 → 실행 캔버스는 마지막 실행 상태 유지(stale 표시) 확인
+- [ ] repeat=2 설정 → 두 번째 사이클 시작 시 노드 상태가 리셋되는지 또는 누적되는지
+
+---
+
+**돌아가기**: [Scenario Canvas 개요](/learn/l2-scenario/) · [L2 16종 비교](/learn/l2-compare/) · [학습 가이드](/learn/)

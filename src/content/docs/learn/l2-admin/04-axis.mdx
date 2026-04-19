@@ -1,0 +1,113 @@
+---
+title: 4. 관리 UI 축의 위치
+description: Admin vs 기능 L2 · Guacamole Admin · T32 Admin 후보 · 관리 UI 축의 정의
+sidebar:
+  order: 4
+---
+
+## 30초 요약
+
+Admin 대시보드가 **관리 UI 축 첫 구성원**. 다른 후보(Guacamole Admin 탭, T32 Admin 탭)가 같은 패턴이면 축 확정.
+
+**관리 UI 축의 공통 속성**:
+
+1. **다른 L2의 설정/상태를 관리** (자기 도메인 아님)
+2. **주 독자가 관리자**
+3. **실시간성 낮음** (폴링 위주)
+4. **CRUD가 주 연산** (복잡 흐름 없음)
+5. **Admin 전용 엔드포인트** (`/api/admin/*` 또는 보호된 경로)
+
+## Admin 대시보드 · Guacamole Admin · T32 Admin 예상 비교
+
+| 축 | Admin 대시보드 | Guacamole Admin (후보) | T32 Admin (후보) |
+|---|---|---|---|
+| 관리 대상 | 유저 · 권한 · 서버 · 디버그 등 전역 | portal_servers의 guacd 설정 | T32Config · 서버 그룹 · 계정 |
+| 주 CRUD | User/Permission/Server 등 | guacd Host/Port 편집 | T32Config CRUD + 명령어 템플릿 |
+| 의존 L2 | 거의 모든 L2 | 원격 L2 | T32 Dump L2 |
+| UI 구조 | 단일 페이지 18 탭 | (원격 관리 내부 탭) | Admin 내부 "T32" 탭 |
+| 엔드포인트 수 | ~40 | ~5 | ~10 |
+
+**실제**: Guacamole Admin과 T32 Admin 설정은 **Admin 대시보드 안 탭**으로 이미 흡수됨. 완전 독립 L2는 아님.
+
+## 관리 UI 축이 "성립 가능한" 조건
+
+현재 Admin 대시보드는 **모든 관리를 한 페이지에** — 축이라기보다 **단일 허브**. 축이 되려면:
+
+- Guacamole Admin이 **별도 경로**로 분리됨 (`/admin/guacamole/*`)
+- T32 Admin도 **독립 페이지**로
+- 각 관리 UI가 **공통 패턴**(GenericCrudTable, PermissionGate 등)
+
+현재는 공통 패턴보다 "탭 안에 다 들어있음". 축이라기보단 **Admin 하나가 관리 UI 총본부**.
+
+**결론**: 축 확정 유보. 향후 관리 UI가 분리되면 재고.
+
+## Admin이 관통하는 15 L2
+
+Admin 탭이 건드리는 다른 L2:
+
+| Admin 탭 | 관통하는 L2 |
+|---|---|
+| Servers / Server Groups | 원격 L2의 PortalServer |
+| Head TCP | 슬롯 L2의 HeadConnection |
+| VM Status | 원격/슬롯 공용 |
+| Users + Permissions + Requests | **Auth L2 (크로스-컷)** |
+| Sets / Slots / UFS Info | **TestDB L2 (크로스-컷)** |
+| Debug | 디버그 도구 (debug L2 있다면) |
+| Metadata | Metadata L2 |
+| Bitbucket / T32 | Bitbucket L2, T32 L2 |
+
+**"15 L2 중 최소 8개와 연결"** — Admin이 크로스-컷의 관리 버전. Auth/TestDB가 **요청/데이터** 크로스-컷이라면 Admin은 **설정** 크로스-컷.
+
+## "설정 크로스-컷"의 가능성
+
+Admin이 세 번째 크로스-컷 축 후보일 수 있음:
+
+| 크로스-컷 | 가로지르는 관점 |
+|---|---|
+| 🔐 Auth | 요청 — "누가 접근 가능한가" |
+| 📊 TestDB | 데이터 — "결과가 어떻게 축적되는가" |
+| **🛠 Admin (후보)** | **설정 — "누가 무엇을 설정할 수 있는가"** |
+
+Auth와 겹치는 부분(유저/권한)이 많아 **완전 별개 축** 은 어려움 — Admin은 **Auth의 UI 표면**으로 해석 가능.
+
+**잠정 결론**: 관리 UI는 **기능 축의 변주** + **Auth/TestDB의 UI 진입점**. 고유 축으로 확정하기엔 경계 약함.
+
+## 17 L2 지도 (Admin 포함 가정)
+
+```
+기능 축 (10):
+  실시간 · Job · 터미널 · 절차 · 재사용 레이어 · 데이터 통합
+
+크로스-컷 축 (2):
+  🔐 Auth · 📊 TestDB
+
+엔진 축 (3):
+  🧬 BinMapper · ⚙ Perf Generator · 🔬 iotest
+
+Orchestration 축 (1):
+  🕸 Scenario Canvas
+
+관리 UI (?, 경계 모호):
+  🛠 Admin 대시보드
+```
+
+Admin이 축으로 확정 안 되지만 **다른 15 L2의 관리 인프라 + Auth/TestDB의 UI 앞단**으로 L2 학습 지도에 필요. 특정 축 없이 **"전역 관리 진입점"** 분류 정도 가능.
+
+## 이 L2가 증명하는 것
+
+- **L2 템플릿이 CRUD 중심 모듈에도 적합** (5페이지 아닌 4페이지로 적절히 축소)
+- **"2652줄 단일 파일"이라도 L2로 서술 가능** — 리팩토링 전의 자연 상태를 기록 가능
+- **축 분류의 경계가 모호한 경우도 있음** — 모든 L2가 명확한 한 축에 속하지 않아도 무방
+- **"God Controller"가 때로 적합** — 책임이 얇고 라우팅 중심이면 용인
+
+**현재 남은 작업**: Admin 대시보드를 2652줄에서 **탭별 컴포넌트 분리** 리팩토링. slots 리팩토링과 같은 패턴.
+
+## 직접 해보기
+
+- [ ] Admin 페이지에서 "Permission Requests" 탭 찾아 흐름 전체 따라가 보기
+- [ ] `/api/admin/*` 엔드포인트에 **Admin 역할 아닌 유저가** 접근 시 403 반환되는지 (Auth 인터셉터 효과)
+- [ ] Admin 대시보드의 한 탭(예: Server Groups)이 별도 컴포넌트로 분리된다고 가정하고 의존성 그래프 그려보기
+
+---
+
+**돌아가기**: [Admin 개요](/learn/l2-admin/) · [L2 17종 비교](/learn/l2-compare/) · [학습 가이드](/learn/)

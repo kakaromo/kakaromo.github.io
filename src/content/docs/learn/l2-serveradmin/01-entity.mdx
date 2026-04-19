@@ -1,0 +1,138 @@
+---
+title: 1. PortalServer 엔티티
+description: 10 컬럼 · 3 프로토콜 포트 · connectionType 비트마스크 · guacd 개별 설정
+sidebar:
+  order: 1
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import psRaw from '../../../../snippets/PortalServer-admin-entity.java?raw';
+
+## 30초 요약
+
+`portal_servers` 단일 테이블이 원격 접속·Head TCP·guacd 설정을 **한 row에 통합**:
+
+- 10 컬럼 (id + name + groupId + ip + username + password + ssh/rdp/vncPort + connectionType + visible + guacdHost + guacdPort + timestamps)
+- **포트 3개 동시 보유** — SSH 22, RDP 3389, VNC 5901 기본값
+- **connectionType 비트마스크** — SSH=1, RDP=2, VNC=4 조합
+- **guacd null fallback** — null이면 글로벌 guacamole.guacd-host 사용
+
+## CodeTour
+
+<CodeTour
+  client:visible
+  language="java"
+  source="PortalServer.java"
+  height={640}
+  code={psRaw}
+  steps={[
+    {
+      id: 'id-name',
+      title: 'name unique(100)',
+      lines: [19, 24],
+      body: '<p>이름이 식별자 역할 — <strong>"T10"</strong> 같은 tentacle 이름 또는 **"HEAD-01"** 같은 서버 식별자. Log Browser · Pre-Command 등 다른 L2가 이름으로 조회.</p>',
+    },
+    {
+      id: 'group',
+      title: 'server_group_id — FK null 허용',
+      lines: [25, 27],
+      body: '<p>그룹 미지정 서버 허용. <strong>ServerGroup이 삭제돼도 서버는 남음</strong> — 연쇄 삭제 방지. UI에서 "그룹 없음" 분류.</p>',
+    },
+    {
+      id: 'auth',
+      title: 'ip + username + password',
+      lines: [29, 35],
+      body: '<p>IP 필수(100자), username/password 선택. <strong>password 평문 저장</strong> — 내부망 신뢰 전제. 프로덕션에서 개선 후보(암호화/볼트).</p>',
+    },
+    {
+      id: 'ports',
+      title: '3 포트 기본값',
+      lines: [37, 47],
+      body: '<p>@Builder.Default로 표준 포트: SSH 22, RDP 3389, VNC 5901. <strong>비트마스크가 활성 프로토콜 지정</strong>하고 각 포트는 연결 시 참조.</p>',
+    },
+    {
+      id: 'conn-type',
+      title: 'connection_type 비트마스크',
+      lines: [49, 51],
+      body: '<p>int 비트: <strong>SSH=1, RDP=2, VNC=4</strong>. 값 5 = SSH+VNC. 7 = 모두. 0 = 비활성. <strong>하나의 필드로 3 프로토콜 on/off</strong>.</p>',
+    },
+    {
+      id: 'visible',
+      title: 'is_visible — 소프트 숨김',
+      lines: [53, 55],
+      body: '<p>삭제 대신 visible=false. <strong>다른 L2가 참조 중인 서버를 안전하게 "비활성화"</strong> — 원격 연결 시 목록에 안 뜨지만 row는 유지.</p>',
+    },
+    {
+      id: 'guacd',
+      title: 'guacd_host + guacd_port null',
+      lines: [57, 61],
+      body: '<p>서버별 guacd 주소 오버라이드. <strong>null이면 application.yaml의 guacamole.guacd-host 사용</strong>(원격 L2에서 확인한 패턴). 대부분 서버는 글로벌 fallback.</p>',
+    },
+    {
+      id: 'timestamps',
+      title: 'created/updated + hooks',
+      lines: [63, 79],
+      body: '<p>MOVE 전역 규약.</p>',
+    },
+  ]}
+/>
+
+## 비트마스크의 득실
+
+**이득**:
+- 한 컬럼으로 3 프로토콜 상태 표현 (3 boolean 컬럼 대신)
+- SQL 비트 연산 가능: `WHERE connection_type & 1 = 1` (SSH 지원 서버)
+- 미래 확장: 8=SPICE, 16=X11 등 8종 프로토콜까지
+
+**비용**:
+- 가독성: 5가 무엇인지 즉시 안 떠오름 (SSH+VNC)
+- 쿼리 복잡: 일반 개발자가 `& 1 = 1` 문법에 익숙해야
+- 실수 위험: 3(SSH+RDP) vs 5(SSH+VNC) 혼동
+
+**이 트레이드오프가 MOVE에서 받아들여진 이유**: 3-4 프로토콜 수준에서는 비트마스크가 깔끔. 2-3개면 boolean이 나음.
+
+## null guacd의 의미
+
+```java
+// 서버별 guacd (개별 IP 있는 경우)
+if (server.guacdHost != null && server.guacdPort != null) {
+    host = server.guacdHost;
+    port = server.guacdPort;
+} else {
+    // 글로벌 fallback
+    host = guacamoleProperties.getGuacdHost();
+    port = guacamoleProperties.getGuacdPort();
+}
+```
+
+**"Override 아니면 fallback"** 패턴이 여러 설정에서 반복:
+
+| L2 | Override | Fallback |
+|---|---|---|
+| Server Admin | PortalServer.guacdHost | application.yaml |
+| Log Browser | (Head) tentacle.head.log-path | tentacle.log-prefix |
+| Bitbucket | Repo PAT | Global PAT |
+| Pre-Command | Slot preCmd | TC preCmd |
+
+**"대부분은 공통, 일부는 특수"** 를 null-or-value로 표현. 코드가 간결.
+
+## 왜 "여러 프로토콜을 한 테이블에"
+
+대안: `ssh_servers`, `rdp_servers`, `vnc_servers` 3 테이블.
+
+| 축 | 통합 | 분리 |
+|---|---|---|
+| 동일 서버 여러 프로토콜 | 한 row | 3 row + 동기화 |
+| 새 프로토콜 추가 | int 비트 확장 | 새 테이블 |
+| 조회 JOIN | 필요 없음 | 여러 테이블 UNION |
+| 제약(unique name) | 자동 | 교차 제약 어려움 |
+
+**한 서버가 SSH + VNC 둘 다**인 경우가 흔해 통합이 자연스러움. Samsung 테스트 환경의 VM이 여러 프로토콜 지원하는 표준 패턴.
+
+## 직접 해보기
+
+- [ ] DB에서 `SELECT name, connection_type, connection_type & 1 AS ssh, connection_type & 2 AS rdp FROM portal_servers` 실행 → 각 서버의 프로토콜 상태 파악
+- [ ] 새 서버를 connectionType=7(모두)로 생성 → UI에서 3 버튼 모두 표시되는지
+- [ ] guacdHost=null인 서버에 원격 연결 → application.yaml의 guacamole.guacd-host로 라우트됨을 로그로 확인
+
+다음: [2. 그룹·가시성·정렬](/learn/l2-serveradmin/02-grouping/) →

@@ -1,0 +1,118 @@
+---
+title: 1. Canvas + 노드 팔레트
+description: "@xyflow/svelte 기반 캔버스 · 8 step + 2 control · HTML5 드래그드롭 · nodeTypes 매핑"
+sidebar:
+  order: 1
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import paletteRaw from '../../../../snippets/scenario-palette.svelte?raw';
+
+## 30초 요약
+
+- **캔버스**: `@xyflow/svelte` (React Flow의 Svelte 포트). 노드 ·에지 드래그 · 줌 · 미니맵 전부 라이브러리에서
+- **커스텀 노드 타입 3**: `step`(StepNode) · `condition`(ConditionNode) · `loopGroup`(LoopGroup) — SvelteFlow `nodeTypes` 맵에 등록
+- **팔레트**: 왼쪽 사이드바에 **8 step + 2 control** 총 10 노드를 드래그 가능 칸으로 나열
+- **드롭**: `ondragover` + `ondrop` 핸들러가 `application/step-type` 데이터를 받아 캔버스 좌표로 노드 생성
+
+## NodePalette.svelte — 드래그 시작점
+
+<CodeTour
+  client:visible
+  language="svelte"
+  source="NodePalette.svelte"
+  height={640}
+  code={paletteRaw}
+  steps={[
+    {
+      id: 'icons',
+      title: 'lucide 아이콘 10개 import',
+      lines: [7, 17],
+      body: '<p>각 step 타입마다 고유 아이콘 (play/terminal/trash 등). <strong>시각적으로 타입 즉시 식별</strong> — 텍스트 라벨 없이도 구분 가능.</p>',
+    },
+    {
+      id: 'steptypes',
+      title: 'stepTypes 배열 — 8 실행 타입',
+      lines: [19, 28],
+      body: '<p>benchmark(fio/iozone/tiotest 대표) · iotest(syscall DSL) · shell · cleanup · sleep · trace_start/stop · app_macro. <strong>iotest와 benchmark가 별도 타입</strong> — 같은 도구라도 편집 UX가 다르기 때문.</p>',
+    },
+    {
+      id: 'dragstart',
+      title: 'onDragStart — HTML5 DnD API',
+      lines: [30, 34],
+      body: '<p>DataTransfer에 <code>application/step-type</code> key로 타입 문자열. <strong>라이브러리 비의존</strong>으로 드롭 대상이 일반 HTML 엘리먼트여도 받을 수 있음. effectAllowed="move"로 커서 스타일.</p>',
+    },
+    {
+      id: 'control-section',
+      title: 'Control 섹션 — Loop / Condition',
+      lines: [39, 62],
+      body: '<p>Step과 분리된 섹션. <strong>특수 타입 prefix <code>__loop__</code>, <code>__condition__</code></strong>로 드롭 시 분기. 실제 노드 타입은 loopGroup/condition — palette 값과 다름.</p>',
+    },
+    {
+      id: 'step-loop',
+      title: '8 step 일괄 렌더 — STEP_TYPE_COLORS',
+      lines: [66, 80],
+      body: '<p><strong>for-each로 DRY</strong>. 색상은 <code>STEP_TYPE_COLORS</code> 맵에서 타입 키로 lookup — types.ts와 공유. 새 step 추가 = <code>stepTypes</code> 배열에 한 줄 + 색상 맵에 한 엔트리.</p>',
+    },
+  ]}
+/>
+
+## "왜 @xyflow을 선택했나"
+
+비주얼 DAG 편집기 후보:
+
+| 라이브러리 | Svelte 지원 | 복잡도 | MOVE 선택 |
+|---|---|---|---|
+| React Flow | Svelte 미지원 | 높음 | ✗ (React 필요) |
+| **@xyflow/svelte** | 공식 | 중간 | ✅ |
+| Drawflow | 공식 | 낮음 | ✗ (기능 부족) |
+| 자체 구현 | — | 높음 | ✗ (시간 대비 가치 없음) |
+
+@xyflow은 **"기능 풍부 + Svelte 네이티브"** 의 유일 옵션. 커스텀 노드 Svelte 컴포넌트로 직접 작성 가능 — `nodeTypes={ step: StepNode, condition: ConditionNode, loopGroup: LoopGroup }` 한 줄 매핑.
+
+## 특수 타입 prefix `__`의 이유
+
+팔레트에서 Loop/Condition을 드래그하면 데이터 값이 `__loop__`/`__condition__`:
+
+- step 타입(`benchmark`, `shell` …)과 **네임스페이스 분리** — 추후 step에 `loop`라는 이름이 추가돼도 충돌 없음
+- 드롭 핸들러가 `__` prefix 확인 후 **loopGroup 또는 condition 노드 생성** — 일반 step과 다른 경로
+- 팔레트와 실제 노드 타입 **1:1 아님** — UI 표현(step + control) vs 데이터 구조(step/condition/loopGroup) 분리
+
+**UI 분류와 데이터 분류를 섞지 않는** 작은 디자인 결정.
+
+## 커스텀 노드 3종 — 차이
+
+| 노드 | 시각 형태 | 데이터 | 특이점 |
+|---|---|---|---|
+| **StepNode** | 둥근 사각 + 색상 배지 | StepNodeData | stepForm 전체를 가짐 (AgentStepEditDialog 재사용) |
+| **ConditionNode** | 마름모 | ConditionNodeData | **소스 핸들 2개** (true=녹색/오른쪽, false=빨강/왼쪽) |
+| **LoopGroup** | 컨테이너 (부모-자식) | LoopGroupData | 내부에 step들이 들어감, loopCount |
+
+SvelteFlow의 `parentNode` 속성으로 LoopGroup이 자식 노드들을 "감싼" 레이아웃을 자동 처리.
+
+## 실시간 상태 반영 — execStatus
+
+각 노드 데이터가 `execStatus`, `execOrder`, `execLoopCurrent` 등 **실행 중 상태** 필드 보유:
+
+```typescript
+interface StepNodeData {
+  stepForm: StepForm;
+  label: string;
+  stepType: string;
+  execOrder?: number;       // 시나리오 내 실행 순번
+  execStatus?: 'idle'|'running'|'completed'|'failed'|'skipped';
+  execLoopCurrent?: number;
+  execLoopTotal?: number;
+  execProgress?: number;
+}
+```
+
+실행 중 JobProgress 스트림에서 받은 상태를 해당 노드에 write → SvelteFlow가 **rerender** → 노드 배경색이 상태 색상으로 바뀜. 정적 편집 UI가 동적 대시보드로 자연스럽게 전환.
+
+## 직접 해보기
+
+- [ ] 팔레트 드래그 시작 → 캔버스 드롭으로 새 노드 생성 — DataTransfer 데이터를 브라우저 devtools로 관찰
+- [ ] 같은 타입 step을 두 개 드롭하면 각 execOrder가 어떻게 매겨지는지 추적
+- [ ] ConditionNode의 true/false 핸들을 각각 다른 step에 연결 → serializer가 sourceHandle을 보고 분기하는지
+
+다음: [2. 타입과 DB 저장](/learn/l2-scenario/02-types/) →

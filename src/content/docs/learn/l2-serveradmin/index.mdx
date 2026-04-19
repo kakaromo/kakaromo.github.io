@@ -1,0 +1,80 @@
+---
+title: Server Admin — portal_servers · guacd · 연결 타입 비트마스크
+description: 18번째 L2 · 관리 UI 2번째 · PortalServer + ServerGroup + 다중 프로토콜 포트 관리
+sidebar:
+  order: 0
+---
+
+import ArchitectureDiagram from '../../../../components/learn/ArchitectureDiagram.svelte';
+
+## 30초 요약
+
+Server Admin은 Admin 대시보드의 **"Servers / Server Groups" 탭**이 담당. 원격 접속 서버(SSH/RDP/VNC), Head TCP 서버, guacd 서버 등 **여러 프로토콜과 역할**을 한 테이블(`portal_servers`)에 통합 관리.
+
+- **PortalServer**: 이름 · IP · 3 포트(ssh/rdp/vnc) · `connectionType`(비트마스크) · guacdHost/Port · visible
+- **ServerGroup**: 서버를 논리적으로 묶음 (sortOrder로 정렬)
+- **UI**: Admin 페이지 탭 — 그룹별 카드 뷰 + 서버별 편집 폼
+- **연결 타입 비트**: SSH=1, RDP=2, VNC=4 — 한 서버가 여러 프로토콜 동시 지원
+
+**관리 UI 축 확정 시도**: Admin 대시보드(첫 구성원)에 이어 Server Admin이 두 번째. 둘 다 관리 도메인이지만 **대상 범위**가 다름.
+
+## PortalServer와 ServerGroup의 역할
+
+| 엔티티 | 목적 |
+|---|---|
+| `portal_servers` | 개별 서버 — IP · 포트 · 프로토콜 · guacd 설정 |
+| `portal_server_groups` | 서버 그룹 — 이름 + 정렬 순서 |
+
+**"서버가 여러 L2에 쓰이는 공통 자원"**:
+
+- 원격 L2: WebSocket 경유 guacd 연결
+- Head TCP L2: 자체 TCP 프로토콜
+- Log Browser L2: SSH 세션 (tentacle)
+- Pre-Command L2: SSH 경유 adb
+- T32 Dump L2: JSch × 2 서버
+
+**한 서버 row = 여러 L2가 참조**. Admin UI가 이를 단일 진입점으로 관리.
+
+## 3 페이지 구조
+
+| 순서 | 페이지 | 관찰 포인트 |
+|---|---|---|
+| 1 | [PortalServer 엔티티](/learn/l2-serveradmin/01-entity/) | 10 컬럼 · 포트 3종 · 비트마스크 · guacd null fallback |
+| 2 | [그룹·가시성·정렬](/learn/l2-serveradmin/02-grouping/) | ServerGroup + sortOrder + is_visible · UI 필터링 |
+| 3 | [관리 UI 축 2종 비교](/learn/l2-serveradmin/03-axis/) | Admin vs Server Admin · 축 확정 여부 · 다음 후보 |
+
+## 관리 대상 범위
+
+Admin 대시보드와 Server Admin의 분담:
+
+<ArchitectureDiagram
+  client:visible
+  height={240}
+  caption="Admin(전역) vs Server Admin(서버에 국한)"
+  altText="Admin 대시보드가 18 탭으로 유저·권한·시스템·데이터 전역을 다루는 반면, Server Admin(서버 탭)은 portal_servers 테이블에만 집중합니다. Server Admin은 원격 L2, Head TCP L2, Log Browser L2, Pre-Command L2, T32 Dump L2 다섯 L2가 공용으로 참조하는 서버 row를 관리합니다."
+  nodes={[
+    { id: 'admin',  label: 'Admin 대시보드', sublabel: '18 탭 전역',          layer: 'fe',    x: 0,   y: 60 },
+    { id: 'sva',    label: 'Server Admin',   sublabel: 'portal_servers 전용', layer: 'fe',    x: 200, y: 60 },
+    { id: 'remote', label: '원격 L2',        sublabel: 'guacd 연결',          layer: 'be',    x: 400, y: 0 },
+    { id: 'head',   label: '슬롯 L2',        sublabel: 'Head TCP',            layer: 'be',    x: 400, y: 60 },
+    { id: 'log',    label: 'Log Browser',    sublabel: 'SSH 세션',            layer: 'be',    x: 400, y: 120 },
+    { id: 'precmd', label: 'Pre-Command',    sublabel: 'SSH→adb',             layer: 'be',    x: 400, y: 180 },
+    { id: 't32',    label: 'T32 Dump',       sublabel: 'JSch×2',              layer: 'be',    x: 400, y: 240 },
+  ]}
+  edges={[
+    { from: 'admin',  to: 'sva',    label: '포함',   kind: 'sync' },
+    { from: 'sva',    to: 'remote', label: '서버 row', kind: 'sync' },
+    { from: 'sva',    to: 'head',   label: '서버 row', kind: 'sync' },
+    { from: 'sva',    to: 'log',    label: '서버 row', kind: 'sync' },
+    { from: 'sva',    to: 'precmd', label: '서버 row', kind: 'sync' },
+    { from: 'sva',    to: 't32',    label: '서버 row', kind: 'sync' },
+  ]}
+/>
+
+## 직접 해보기
+
+- [ ] Admin 페이지 → Servers 탭 → 한 서버에 guacdHost만 null로 두고 저장 → 원격 연결 시 글로벌 fallback 동작 확인
+- [ ] connectionType=5(SSH+VNC, RDP 제외)로 저장 → UI에 SSH/VNC 버튼만 표시되는지
+- [ ] 여러 ServerGroup 만들고 sortOrder 변경 → UI 카드 순서 즉시 반영
+
+다음: [1. PortalServer 엔티티](/learn/l2-serveradmin/01-entity/) →

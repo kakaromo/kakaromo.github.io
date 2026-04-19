@@ -1,0 +1,164 @@
+---
+title: 2. 17 권한 그리드 CRUD
+description: "menu: / action: prefix 분리 · getPermissionMap · updatePermissions · UserPermission 엔티티"
+sidebar:
+  order: 2
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import permRaw from '../../../../snippets/AdminController-permissions.java?raw';
+import upRaw from '../../../../snippets/UserPermission-entity.java?raw';
+
+## 30초 요약
+
+- **17 권한 = 8 menu + 9 action** 키를 **평면 Map으로** 관리 (Auth L2의 `ALL_PERMISSIONS` 사전)
+- **엔티티**: `user_permissions` 테이블, `(userId, permissionKey)` unique + `granted: boolean`
+- **CRUD 4 엔드포인트**: 조회(Map 형식) · 일괄 업데이트(Map) · 기본 권한 정의 · Head access GET/PUT
+
+## 엔드포인트 4종
+
+<CodeTour
+  client:visible
+  language="java"
+  source="AdminController — 권한 관련"
+  height={540}
+  code={permRaw}
+  steps={[
+    {
+      id: 'get-perm',
+      title: 'GET /users/{id}/permissions — Map 반환',
+      lines: [1, 4],
+      body: '<p>Service의 getPermissionMap이 <strong>17 키에 대한 boolean Map</strong> 반환 — 누락된 키도 false로 채워서. 프론트는 체크박스 상태로 그대로 매핑.</p>',
+    },
+    {
+      id: 'put-perm',
+      title: 'PUT /users/{id}/permissions — 일괄 업데이트',
+      lines: [6, 10],
+      body: '<p>Map 통째로 받아 일괄 적용. <strong>부분 업데이트 아님</strong> — "이 17 키의 최종 상태"를 매번 보냄. 프론트 UX와 동기화 쉬움.</p>',
+    },
+    {
+      id: 'defaults',
+      title: 'GET /permissions/defaults — 17 키 정의',
+      lines: [12, 15],
+      body: '<p>key + label + category의 메타 리스트. <strong>UI 렌더 시 이 정의에서 체크박스 이름/그룹 생성</strong>. 서버 변경만으로 UI 문구 업데이트 가능.</p>',
+    },
+    {
+      id: 'get-head',
+      title: 'GET /users/{id}/head-access — id 리스트',
+      lines: [19, 23],
+      body: '<p>boolean Map이 아닌 <strong>HeadConnection id 리스트</strong>. 수십~수백 head가 있을 수 있어 "선택된 id만" 보내는 편이 네트워크 효율.</p>',
+    },
+    {
+      id: 'put-head',
+      title: 'PUT /users/{id}/head-access — delete + insert',
+      lines: [25, 32],
+      body: '<p><code>deleteByUserId</code> → flush → 새 row insert. <strong>Replace-all 전략</strong> — 부분 업데이트 대신 전체 교체가 트랜잭션 단순. flush로 delete 즉시 반영 → insert의 unique 충돌 방지.</p>',
+    },
+  ]}
+/>
+
+## UserPermission — unique 조합 하나
+
+<CodeTour
+  client:visible
+  language="java"
+  source="UserPermission.java"
+  height={440}
+  code={upRaw}
+  steps={[
+    {
+      id: 'table',
+      title: '@Table user_permissions',
+      lines: [9, 14],
+      body: '<p>평면 구조 — `permission_menu`, `permission_action` 분리 안 함. <strong>prefix로만 구분</strong>(menu:slots vs action:remote-connect).</p>',
+    },
+    {
+      id: 'unique',
+      title: '@Column unique + @Table indexes',
+      lines: [16, 26],
+      body: '<p>(userId, permissionKey) 복합 unique index. <strong>같은 key가 한 유저에 중복 저장 방지</strong>. 역할별 적용(roleId) 없이 "유저별 직접" 저장 — 단순하지만 역할 관리 기능 없음.</p>',
+    },
+    {
+      id: 'granted',
+      title: 'granted: boolean',
+      lines: [28, 32],
+      body: '<p>false인 row도 저장 vs 아예 안 저장 중 <strong>저장을 선택</strong>. 명시적 "거부" 기록이 있으면 역할 상속 시 override 의미 명확(현재는 역할 없지만 확장 여지).</p>',
+    },
+    {
+      id: 'timestamps',
+      title: 'createdAt/updatedAt + hooks',
+      lines: [34, 44],
+      body: '<p>다른 엔티티와 동일. <strong>"언제 권한이 바뀌었는가" 감사 추적</strong> 기초 — 변경 이력은 별도지만 마지막 수정 시간은 보존.</p>',
+    },
+  ]}
+/>
+
+## "17 권한이 평면인 이유"
+
+역할(role) 기반 권한(RBAC)이 흔한 설계지만 MOVE는 **유저별 직접 부여**:
+
+| 방식 | 장점 | 단점 |
+|---|---|---|
+| RBAC (roles + role_permissions + user_roles) | 공통 역할 재사용 | 역할 설계 필요 · DB join 3개 |
+| **유저 직접 (현재)** | 단순 · 개별 예외 자연 | 권한 템플릿 부재 |
+
+MOVE 맥락:
+
+- 사용자 수 수십~수백 명 (엔터프라이즈급 수천이 아님)
+- 권한 조합이 **유저마다 상당히 다름** (프로젝트 접근 권한 등)
+- RBAC의 "역할 설계" 비용이 실질 이익 > **수작업 변경 부담**
+
+**"작은 조직에선 RBAC 오버엔지니어링"** 의 전형. 조직 커지면 role 레이어 추가 가능.
+
+## 17 권한 복원 프론트 렌더
+
+```
+GET /api/admin/permissions/defaults
+ → [{key: 'menu:dashboard', label: '대시보드', category: 'menu'},
+    {key: 'action:excel-export', label: 'Excel 내보내기', category: 'action'}, ...]
+
+GET /api/admin/users/{id}/permissions
+ → {'menu:dashboard': true, 'action:excel-export': false, ...}
+
+// 프론트 렌더
+{#each defaults as p}
+  <Checkbox
+    label={p.label}
+    checked={permissions[p.key]}
+    onChange={(v) => permissions[p.key] = v}
+  />
+{/each}
+
+// 저장 시
+PUT /api/admin/users/{id}/permissions
+Body: {'menu:dashboard': true, 'action:excel-export': false, ...}
+```
+
+- **정의와 값이 분리** → 정의 변경이 값 마이그레이션 불필요
+- prefix 기반 카테고리 필터로 UI 분할 (menu 섹션 vs action 섹션)
+
+## Head Access — 권한의 두 번째 축
+
+17 권한이 "기능 접근"이면 Head Access는 "**데이터 접근**":
+
+- 유저 A: menu:slots=true 지만 HeadConnection {1,2,3}만 접근 가능
+- 유저 B: menu:slots=true + HeadConnection 제한 없음
+
+**슬롯 L2의 `filterByUserHeadAccess`**가 이 필터링을 구현. Admin UI에서 유저당 허용된 head id 리스트를 UPDATE.
+
+**두 권한 축의 교차**:
+
+| | menu:slots=true | menu:slots=false |
+|---|---|---|
+| head [1,2,3] 허용 | head 1/2/3의 slots만 접근 | menu 접근 차단 |
+| head 전체 허용 | 모든 slots 접근 | menu 접근 차단 |
+
+**기능 × 데이터** 이중 필터. 운영 복잡도 약간 상승이지만 세밀 제어 가능.
+
+## 직접 해보기
+
+- [ ] Admin UI에서 한 유저에게 menu:slots=true만 주고 action:slot-init=false로 → 슬롯 페이지는 보이지만 초기화 버튼은 비활성화인지
+- [ ] `user_permissions` 테이블에서 특정 유저의 row 수가 17인지 (모든 키에 대해 저장되는지) 또는 명시한 것만 저장되는지
+- [ ] Head access 없는 상태로 슬롯 페이지 열면 — 모든 head가 보이나, 빈 배열인가, 에러인가 확인
+
+다음: [3. Permission Request 승인](/learn/l2-admin/03-approval/) →

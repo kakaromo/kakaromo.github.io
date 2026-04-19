@@ -1,0 +1,167 @@
+---
+title: 4. RunScenario 실행 — 전용 RPC + has_branching
+description: ScenarioStep/ScenarioLoop/ConditionalBranch proto · DAG 모드 · repeat/retry/busy_policy
+sidebar:
+  order: 4
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import protoRaw from '../../../../snippets/RunScenario-proto.text?raw';
+
+## 30초 요약
+
+iotest는 generic RunBenchmark에 기생했지만 Scenario는 **전용 `RunScenario` RPC** 보유:
+
+1. `RunScenarioRequest`: device_ids + scenario_name + **steps[]** + **loops[]** + repeat + busy_policy + retry + **has_branching + edges[]**
+2. `RunScenarioResponse`: job_id만 (짧은 ack)
+3. 진행률은 `SubscribeJobProgress` 공용 스트림으로
+
+**왜 전용 RPC**: Scenario가 step 배열 + loop 배열 + edges 배열 **3개의 복합 인자**. generic params map에 담기엔 너무 복잡 → 타입 안전성 우선.
+
+## RunScenario proto 메시지
+
+<CodeTour
+  client:visible
+  language="text"
+  source="device_agent.proto — Scenario"
+  height={620}
+  code={protoRaw}
+  steps={[
+    {
+      id: 'step',
+      title: 'ScenarioStep — 8 type 통합 메시지',
+      lines: [1, 7],
+      body: '<p>type 문자열 + BenchmarkTool(benchmark만) + <strong>params map</strong>(모든 step의 공통 인자) + ConditionalBranch(condition만) + AppMacroConfig(app_macro만). <strong>모든 step 타입이 한 메시지</strong> — 유니온 대신 optional 필드 사용.</p>',
+    },
+    {
+      id: 'macro',
+      title: 'AppMacroConfig — macro_id 또는 인라인',
+      lines: [9, 16],
+      body: '<p>DB에 저장된 매크로 참조(macro_id) <strong>또는</strong> 인라인 events 배열. <strong>양쪽 다 지원</strong> — 프리셋 사용 vs 즉시 정의 둘 다 허용.</p>',
+    },
+    {
+      id: 'loop',
+      title: 'ScenarioLoop — range + count',
+      lines: [49, 53],
+      body: '<p>start_step/end_step(0-based inclusive) + count. <strong>step index 범위를 repeat</strong>. 여러 loop가 겹치지 않게 serializer가 검증.</p>',
+    },
+    {
+      id: 'req-top',
+      title: 'RunScenarioRequest — 10 필드',
+      lines: [55, 66],
+      body: '<p>device_ids(멀티 디바이스) · scenario_name · steps + loops · <strong>repeat</strong>(전체 반복) · busy_policy + retry (iotest/benchmark 공통) · <strong>has_branching + edges</strong>(DAG 모드 플래그/데이터).</p>',
+    },
+    {
+      id: 'has-branching',
+      title: 'has_branching — 실행 모드 토글',
+      lines: [64, 65],
+      body: '<p>true면 edges를 사용해 DAG 실행. false면 steps 배열 순서대로 단순 순차. <strong>Agent가 분기를 처리할지 평면 실행할지</strong> 한 플래그로 결정.</p>',
+    },
+    {
+      id: 'resp',
+      title: 'RunScenarioResponse — job_id만',
+      lines: [68, 70],
+      body: '<p>RunBenchmark와 동일 패턴. <strong>진행률은 별도 스트림 RPC</strong> — Unary 시작 + Stream 관찰 분리로 확장성 확보.</p>',
+    },
+  ]}
+/>
+
+## iotest와 RunBenchmark 기생 vs Scenario 전용 RPC
+
+두 엔진 접근의 대조:
+
+| 축 | iotest (기생) | Scenario (전용) |
+|---|---|---|
+| proto 메시지 | 기존 RunBenchmarkRequest 재활용 | 신규 RunScenarioRequest/Response |
+| 복잡 데이터 | params map에 JSON string | 구조체 배열 직접 |
+| 타입 안전성 | gRPC 레벨 낮음 | 높음 |
+| 코드 추가 | Go Agent executor 분기 | 프로토 + 전용 handler |
+| 변경 자유도 | iotest 필드 추가 = JSON shape 변경 | proto 메시지 확장 필요 |
+| 유지보수 | JSON 버전 관리 수작업 | proto 호환성 규칙 적용 |
+
+**선택 기준**: 복잡 인자를 proto로 표현할 가치가 있는가. Scenario는 **step/loop/edge 세 배열**이라 값 있음. iotest는 **config 한 덩어리**라 JSON 충분.
+
+## has_branching 플래그 — Agent 분기
+
+Go Agent 실행 흐름:
+
+```go
+if req.HasBranching {
+    executeDAG(req.Steps, req.Edges)  // 그래프 순회
+} else {
+    executeSequential(req.Steps)      // for 루프
+}
+```
+
+- Sequential: steps 배열 순서대로. **대다수 시나리오가 이 경로**
+- DAG: 현재 step → edges에서 다음 노드 찾기 → 조건 평가(condition이면) → 이동
+
+**"일반 경로 가볍게, 특수 경로 명시"** 원칙이 여기서도. Sequential 실행은 최적화 여지 많음(배치 처리, 미리 준비 등).
+
+## Loop 처리 — 선형 확장 vs range 저장
+
+ScenarioLoop이 `{start: 2, end: 4, count: 3}` 이면 Agent가:
+
+```
+기존: step[0], step[1], step[2], step[3], step[4], step[5]
+loop: step[0], step[1],
+      [step[2], step[3], step[4]] × 3 ,
+      step[5]
+```
+
+**Agent 쪽에서 펼침** — proto가 단순 range 저장. 대안은 프론트가 step 배열을 미리 펼쳐 보내기:
+
+| 방식 | 장점 | 단점 |
+|---|---|---|
+| Range 저장(현재) | proto 크기 작음, loop 메타 분리 | Agent가 펼침 로직 |
+| 선형 확장 | Agent 단순 | proto 팽창 (10회 loop = 10배) |
+
+**"데이터는 작게, 로직은 서버"** 의 전형. 리소스 제약이 있는 Go Agent 측 추가 부담이지만 네트워크 비용 절감이 더 큼.
+
+## busy_policy · retry — generic 재사용
+
+RunScenarioRequest의 busy_policy/retry 필드는 **RunBenchmarkRequest와 동일 의미**. Agent 구현에서 Job 관리 레이어 공유:
+
+- reject/wait/force: 디바이스가 다른 job 중일 때 정책
+- retry_count/retry_delay_seconds: 실패 시 자동 재시도
+
+**Job 인프라가 엔진별로 분리되지 않음** — Scenario든 Benchmark든 같은 Job 관리. retry_count=2로 지정하면 시나리오 전체가 2번 더 재시도(개별 step이 아님).
+
+## repeat vs loop 차이
+
+혼동 주의:
+
+| 필드 | 범위 | 사용처 |
+|---|---|---|
+| `repeat` (top-level) | 시나리오 **전체** | 같은 시나리오 N번 반복 (예: stress) |
+| `loops[].count` | step 범위 **일부** | 시나리오 중간에 특정 구간 반복 |
+
+예: `repeat=2, loop{start:2, end:3, count:3}`  
+→ `(step0, step1, step2, step3, step2, step3, step2, step3, step4) × 2`
+
+전체 10 step이 2번 실행 (총 20 step). repeat × loop 중첩이 총 실행 수 = 사용자 명확 인지 필요.
+
+## AppMacroConfig — 앱 매크로 인라인 옵션
+
+macro_id로 DB 참조 또는 events를 인라인으로 담음:
+
+```
+AppMacroConfig {
+  macro_id: 42               // 선택 1
+  // 또는
+  events: [TapEvent, ...]    // 선택 2
+  source_width: 1080
+  source_height: 2340
+  package_name: "com.foo"
+}
+```
+
+**인라인 지원이 필요한 이유**: 시나리오 공유 시 macro_id가 다른 portal에 없을 수 있음 → 인라인으로 전체 재현 가능. **자기완결성(self-contained) 보장**.
+
+## 직접 해보기
+
+- [ ] 5 step 시나리오 실행 → browser Network 탭에서 Request payload 확인, steps 배열이 5개인지
+- [ ] condition 1개 추가 후 재실행 → has_branching=true로 바뀌는지, edges 배열에 sourceHandle이 라벨로 들어가는지
+- [ ] repeat=3, loop count=2인 시나리오 → 총 실행 step 수 계산 후 JobProgress 이벤트 수 일치 확인
+
+다음: [5. 진행률 + Orchestration 축](/learn/l2-scenario/05-progress/) →

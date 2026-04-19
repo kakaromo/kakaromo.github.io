@@ -1,0 +1,83 @@
+---
+title: Scenario Canvas — DAG 시나리오 편집 + 실행
+description: 16번째 L2 · Orchestration 축 개척 · @xyflow/svelte 비주얼 편집기 · Kahn 위상 정렬 · DAG 모드
+sidebar:
+  order: 0
+---
+
+import ArchitectureDiagram from '../../../../components/learn/ArchitectureDiagram.svelte';
+
+## 30초 요약
+
+Agent Scenario Canvas는 **`@xyflow/svelte`** 기반 비주얼 DAG 편집기:
+
+1. 사용자가 8 step 타입(benchmark/iotest/shell/cleanup/sleep/trace_start·stop/app_macro) + 2 제어(Loop/Condition)을 **드래그**
+2. 노드 사이를 **edge로 연결** → DAG 구성
+3. **Save** → `portal_scenario_templates` 테이블에 stepsJson/loopsJson 저장
+4. **Run** → `serializer.canvasToProto`가 DAG를 Proto 메시지로 변환 (Y정렬 또는 위상 정렬) → gRPC `RunScenario`
+5. Go Agent가 steps를 실행, **JobProgress** 스트림으로 per-step 상태 되돌림
+
+**Orchestration 축 개척** — 단일 작업이 아닌 **여러 step + 제어 흐름**을 엮어 실행. 이전 15 L2 중 가장 가까운 것은 T32 Stepper(순차 4단계 고정)지만 **시나리오는 사용자 구성**. 다음 Orchestration L2 후보가 등장하면 축으로 확정.
+
+## 5단계 파이프라인
+
+<ArchitectureDiagram
+  client:visible
+  height={320}
+  caption="Canvas → Serializer → Proto → gRPC → Agent → SSE"
+  altText="SvelteFlow 캔버스에서 사용자가 노드를 드래그하고 edge로 연결하면 DAG 구조가 만들어집니다. Save 시 canvasToProto가 노드를 ScenarioStep 배열로 직렬화하고 loop 그룹을 ScenarioLoop 배열로, 조건 분기가 있으면 위상 정렬 + edges 함께 전달합니다. RunScenario gRPC RPC가 Go Agent에 요청을 보내 순차 실행, 각 step 시작/종료마다 JobProgress 이벤트를 스트림으로 반환하면 포털이 SSE로 중계해 ExecutionMiniCanvas가 노드 색상을 업데이트합니다."
+  nodes={[
+    { id: 'palette', label: 'NodePalette', sublabel: '8 step + 2 control', layer: 'fe',    x: 0,   y: 80,  href: '/learn/l2-scenario/01-canvas/' },
+    { id: 'canvas',  label: 'ScenarioCanvas', sublabel: '@xyflow/svelte',   layer: 'fe',    x: 180, y: 80,  href: '/learn/l2-scenario/01-canvas/' },
+    { id: 'tmpl',    label: 'ScenarioTemplate', sublabel: 'stepsJson/loopsJson', layer: 'state', x: 180, y: 220, href: '/learn/l2-scenario/02-types/' },
+    { id: 'serial',  label: 'canvasToProto', sublabel: 'Y정렬 | 위상 정렬',   layer: 'be',    x: 360, y: 80,  href: '/learn/l2-scenario/03-serialize/' },
+    { id: 'grpc',    label: 'RunScenario', sublabel: 'steps+loops+edges',   layer: 'tx',    x: 540, y: 80,  href: '/learn/l2-scenario/04-execute/' },
+    { id: 'agent',   label: 'Go Agent', sublabel: '순차 실행',                layer: 'be',    x: 720, y: 80,  href: '/learn/l2-scenario/04-execute/' },
+    { id: 'progress', label: 'JobProgress SSE', sublabel: 'per-step 상태',    layer: 'tx',    x: 540, y: 220, href: '/learn/l2-scenario/05-progress/' },
+    { id: 'mini',    label: 'ExecutionMiniCanvas', sublabel: '실시간 노드 색상', layer: 'fe',    x: 0,   y: 220, href: '/learn/l2-scenario/05-progress/' },
+  ]}
+  edges={[
+    { from: 'palette', to: 'canvas',   label: 'drag',  kind: 'sync' },
+    { from: 'canvas',  to: 'tmpl',     label: 'save',  kind: 'sync' },
+    { from: 'canvas',  to: 'serial',   label: 'run',   kind: 'sync' },
+    { from: 'serial',  to: 'grpc',     label: 'invoke', kind: 'sync' },
+    { from: 'grpc',    to: 'agent',    label: 'exec',  kind: 'sync' },
+    { from: 'agent',   to: 'progress', label: 'stream', kind: 'async' },
+    { from: 'progress', to: 'mini',    label: 'SSE',   kind: 'async' },
+  ]}
+/>
+
+## 왜 "Orchestration 축"인가
+
+- 단일 작업이 아님 — 여러 step을 사용자가 **구성 편집**
+- **제어 흐름**이 본질 — Loop/Condition 노드가 실행 경로 변경
+- **DAG가 IR** — 위치가 아닌 연결이 의미
+- 실행은 다른 엔진(Go Agent)에 위임 — 자체 실행 없음
+
+**다른 축과의 구분**:
+
+| 축 | Scenario Canvas와의 차이 |
+|---|---|
+| 기능 축 | 단일 도메인에 집중 — Scenario는 여러 step 혼합 |
+| 크로스-컷 | 모든 요청/데이터 가로지름 — Scenario는 사용자가 선택한 몇 step만 |
+| 엔진 축 | 단방향 파이프라인 + 입력→출력 — Scenario는 편집→저장→실행 세 단계 |
+
+**"사용자가 여러 기능을 엮어 흐름을 만드는"** 이 Orchestration 축의 정의.
+
+## 학습 순서
+
+| 순서 | 페이지 | 관찰 포인트 |
+|---|---|---|
+| 1 | [Canvas + 노드 팔레트](/learn/l2-scenario/01-canvas/) | `@xyflow/svelte` · HTML5 DnD · 10 노드 타입 |
+| 2 | [타입과 DB 저장](/learn/l2-scenario/02-types/) | StepNodeData/Condition/LoopGroup · stepsJson vs loopsJson 이원 |
+| 3 | [DAG 직렬화 — Y정렬 vs 위상 정렬](/learn/l2-scenario/03-serialize/) | Kahn 알고리즘 · nodeToIndex · 조건 분기 판정 |
+| 4 | [RunScenario 실행](/learn/l2-scenario/04-execute/) | Proto 메시지 · has_branching 플래그 · DAG 모드 |
+| 5 | [진행률 + Orchestration 축 정리](/learn/l2-scenario/05-progress/) | per-step SSE · ExecutionMiniCanvas · 축 확립 조건 |
+
+## 직접 해보기
+
+- [ ] Agent 페이지 → Scenario Canvas 탭 → benchmark 노드 하나 드래그 → 실행 → 결과가 Agent Results View에 저장되는지
+- [ ] Loop 노드를 감싸 3회 반복 시나리오 → ScenarioLoop 메시지로 serializer가 변환하는지
+- [ ] Condition 노드의 true/false 가지에 서로 다른 step 연결 → 실행 시 metric 값에 따라 분기되는지
+
+다음: [1. Canvas + 노드 팔레트](/learn/l2-scenario/01-canvas/) →
