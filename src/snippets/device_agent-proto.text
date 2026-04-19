@@ -1,0 +1,55 @@
+// @source src/main/proto/device_agent.proto
+// @lines 1-50
+// @note DeviceAgent service RPC 목록
+// @synced 2026-04-19T05:26:12.216Z
+
+syntax = "proto3";
+package agent;
+option go_package = "agent/pb";
+option java_package = "com.samsung.move.agent.proto";
+option java_outer_classname = "DeviceAgentProto";
+
+service DeviceAgent {
+  // Device Management
+  rpc ListDevices(ListDevicesRequest) returns (ListDevicesResponse);
+  rpc ConnectDevice(ConnectDeviceRequest) returns (ConnectDeviceResponse);
+  rpc DisconnectDevice(DisconnectDeviceRequest) returns (DisconnectDeviceResponse);
+
+  // Benchmarking
+  rpc RunBenchmark(RunBenchmarkRequest) returns (RunBenchmarkResponse);
+  rpc GetJobStatus(GetJobStatusRequest) returns (GetJobStatusResponse);
+  rpc SubscribeJobProgress(SubscribeJobProgressRequest) returns (stream JobProgress);
+  rpc GetBenchmarkResult(GetBenchmarkResultRequest) returns (GetBenchmarkResultResponse);
+  rpc DeleteJob(DeleteJobRequest) returns (DeleteJobResponse);
+  rpc CancelJob(CancelJobRequest) returns (CancelJobResponse);
+
+  // Scenario
+  rpc RunScenario(RunScenarioRequest) returns (RunScenarioResponse);
+
+  // I/O Trace
+  rpc StartTrace(StartTraceRequest) returns (StartTraceResponse);
+  rpc StopTrace(StopTraceRequest) returns (StopTraceResponse);
+  rpc GetTraceResult(GetTraceResultRequest) returns (GetTraceResultResponse);
+  rpc GetTraceRawData(GetTraceRawDataRequest) returns (GetTraceRawDataResponse);
+
+  // MinIO Upload
+  rpc UploadTraceToMinio(UploadTraceRequest) returns (UploadTraceResponse);
+  rpc UploadBenchmarkToMinio(UploadBenchmarkRequest) returns (UploadBenchmarkResponse);
+
+  // Monitoring
+  rpc MonitorDevices(MonitorDevicesRequest) returns (stream DeviceMetrics);
+
+  // App Macro (이벤트 녹화/재생 + OCR)
+  rpc ListInstalledApps(ListInstalledAppsRequest) returns (ListInstalledAppsResponse);
+  rpc StartRecording(StartRecordingRequest) returns (StartRecordingResponse);
+  rpc StopRecording(StopRecordingRequest) returns (StopRecordingResponse);
+  rpc ReplayMacro(ReplayMacroRequest) returns (ReplayMacroResponse);
+  rpc TakeScreenshot(TakeScreenshotRequest) returns (TakeScreenshotResponse);
+  rpc ScreenshotOcr(ScreenshotOcrRequest) returns (ScreenshotOcrResponse);
+
+  // Trace Reparse
+  rpc ReparseTrace(ReparseTraceRequest) returns (ReparseTraceResponse);
+}
+
+// ==================== Device ====================
+

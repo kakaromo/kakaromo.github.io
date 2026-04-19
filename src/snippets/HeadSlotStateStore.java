@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/head/service/HeadSlotStateStore.java
 // @lines 1-119
 // @note ConcurrentHashMap + AtomicLong version + updateSlots
-// @synced 2026-04-19T04:30:19.799Z
+// @synced 2026-04-19T05:26:12.211Z
 
 package com.samsung.move.head.service;
 

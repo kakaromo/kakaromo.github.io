@@ -79,6 +79,64 @@ const manifest = [
     language: 'ts',
     note: 'createHeadSlotStore — $state + EventSource + dedup + retry',
   },
+
+  // ── Agent (L2 벤치마크) ──
+  {
+    id: 'AgentServer-entity',
+    source: 'src/main/java/com/samsung/move/agent/entity/AgentServer.java',
+    lines: [1, 57],
+    language: 'java',
+    note: 'portal_agent_servers — Agent gRPC 서버 등록',
+  },
+  {
+    id: 'JobExecution-entity',
+    source: 'src/main/java/com/samsung/move/agent/entity/JobExecution.java',
+    lines: [1, 81],
+    language: 'java',
+    note: 'portal_job_executions — job 이력 (벤치마크/시나리오/Trace 공용)',
+  },
+  {
+    id: 'AgentController-run',
+    source: 'src/main/java/com/samsung/move/agent/controller/AgentController.java',
+    lines: [178, 218],
+    language: 'java',
+    note: 'POST /api/agent/benchmark/run → gRPC RunBenchmark + JobExecution 저장',
+  },
+  {
+    id: 'AgentController-progress-sse',
+    source: 'src/main/java/com/samsung/move/agent/controller/AgentController.java',
+    lines: [248, 307],
+    language: 'java',
+    note: 'GET /api/agent/benchmark/progress — gRPC stream → SSE 중계',
+  },
+  {
+    id: 'AgentGrpcClient',
+    source: 'src/main/java/com/samsung/move/agent/grpc/AgentGrpcClient.java',
+    lines: [20, 100],
+    language: 'java',
+    note: 'ManagedChannel 설정 + blocking/async stub + subscribeJobProgressAsync',
+  },
+  {
+    id: 'AgentConnectionManager',
+    source: 'src/main/java/com/samsung/move/agent/grpc/AgentConnectionManager.java',
+    lines: [14, 82],
+    language: 'java',
+    note: 'serverId별 gRPC client 캐싱 + host:port 변경 시 재연결',
+  },
+  {
+    id: 'device_agent-proto',
+    source: 'src/main/proto/device_agent.proto',
+    lines: [1, 50],
+    language: 'text',
+    note: 'DeviceAgent service RPC 목록',
+  },
+  {
+    id: 'agent-api-ts',
+    source: 'frontend/src/lib/api/agent.ts',
+    lines: [180, 200],
+    language: 'ts',
+    note: 'runBenchmark / getJobStatus 프론트 API',
+  },
 ];
 
 async function extractLines(text, lines) {
