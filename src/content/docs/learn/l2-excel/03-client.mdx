@@ -1,0 +1,131 @@
+---
+title: 3. gRPC Client — BlockingStub + GrpcChannelFactory
+description: Spring gRPC의 채널 팩토리로 stub 생성, 단순한 blocking 호출
+sidebar:
+  order: 3
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import clientRaw from '../../../../snippets/ExcelGrpcClient.java?raw';
+
+## 30초 요약
+
+`ExcelGrpcClient`는 **30줄짜리 얇은 컴포넌트**입니다. Spring gRPC의 `GrpcChannelFactory`가 `application.yaml`의 `excel-service` 채널 설정을 읽어 `ManagedChannel`을 만들고, `BlockingStub`을 하나 보유합니다.
+
+호출 메서드 하나: `generateExcel(...)` — proto 빌더로 Request 조립 + `stub.generateExcel(request)` 한 줄.
+
+**벤치마크의 `AgentGrpcClient`와 대조**: Agent는 서버별로 채널을 동적 생성했지만 Excel은 **고정 Bean 하나** (단일 Go 서비스). 더 단순한 선택이 가능했던 이유.
+
+## 코드 투어
+
+<CodeTour
+  client:visible
+  language="java"
+  source="ExcelGrpcClient.java"
+  height={420}
+  code={clientRaw}
+  steps={[
+    {
+      id: 'component',
+      title: '@Component — 싱글톤 Bean',
+      lines: [6, 11],
+      body: '<p>전체 앱에서 인스턴스 하나. channel + stub을 한 번 만들고 <strong>모든 호출이 재사용</strong>. 벤치마크는 <code>AgentConnectionManager</code>로 서버별 캐시가 필요했지만 Excel은 서비스가 하나라 필요 없음.</p>',
+    },
+    {
+      id: 'stub-field',
+      title: 'BlockingStub 보유',
+      lines: [12, 12],
+      body: '<p>stream이 없어 <strong>async stub 불필요</strong>. blocking stub 하나로 충분. 이름 그대로 호출 스레드가 응답까지 대기.</p>',
+    },
+    {
+      id: 'channel-factory',
+      title: 'GrpcChannelFactory — Spring gRPC 팩토리',
+      lines: [14, 16],
+      body: '<p>Spring gRPC가 주입해주는 팩토리. <code>createChannel("excel-service")</code>의 문자열이 yaml의 <code>spring.grpc.client.channels.excel-service.address</code>와 매치. <strong>ManagedChannel 설정을 yaml로 외부화</strong>.</p>',
+    },
+    {
+      id: 'generate',
+      title: 'generateExcel — 빌더 + blocking 호출',
+      lines: [18, 28],
+      body: '<p>7 파라미터(메서드 시그니처) → ExcelRequest 빌더. <code>fileSystem</code>은 null 방어 (빈 문자열로). 마지막 한 줄 <code>stub.generateExcel(request)</code>가 네트워크 호출 — <strong>응답까지 스레드 점유</strong>.</p>',
+    },
+  ]}
+/>
+
+## application.yaml 설정
+
+```yaml title="application-dev.yaml"
+spring:
+  grpc:
+    client:
+      channels:
+        excel-service:
+          address: static://localhost:50052
+```
+
+- `excel-service` — 이름. Java 코드의 `createChannel("excel-service")`와 일치해야 함
+- `static://` — 정적 주소 resolver (부하분산·DNS 없는 단순 연결)
+- `localhost:50052` — Go 서비스 포트
+
+프로덕션에서는 **호스트명·포트 바꾸면 됨**. Java 코드 변경 불필요.
+
+## Spring gRPC vs 직접 ManagedChannel
+
+Agent L2의 `AgentGrpcClient`는 **ManagedChannel을 수동 생성**했습니다:
+
+```java
+// AgentGrpcClient.java
+this.channel = ManagedChannelBuilder.forAddress(host, port)
+        .usePlaintext()
+        .maxInboundMessageSize(256 * 1024 * 1024)
+        .keepAliveTime(30, TimeUnit.SECONDS)
+        // ...
+```
+
+Excel은 Spring gRPC의 **`@ConfigurationProperties` 기반 팩토리** 사용:
+
+```java
+// ExcelGrpcClient.java
+this.stub = ExcelServiceGrpc.newBlockingStub(channels.createChannel("excel-service"));
+```
+
+두 방식의 trade-off:
+
+| 축 | Agent (수동) | Excel (팩토리) |
+|---|---|---|
+| 설정 유연성 | 코드에서 세밀 제어 | yaml로 외부화 |
+| 여러 서버 지원 | 동적 host:port 가능 | 빈당 1개 고정 |
+| 보일러플레이트 | 많음 | 짧음 |
+| 적합 케이스 | 런타임에 변경되는 엔드포인트 | 고정 단일 서비스 |
+
+**Excel은 하나의 고정 서비스**라 팩토리 방식이 깔끔. Agent는 `AgentServer` DB 행마다 다른 host라 수동이 필요했음.
+
+## maxInboundMessageSize 고려
+
+Excel 파일이 커지면 기본 4MB 한도를 넘을 수 있습니다. `application.yaml`에 채널 옵션 추가로 늘림:
+
+```yaml
+spring:
+  grpc:
+    client:
+      channels:
+        excel-service:
+          address: static://localhost:50052
+          max-inbound-message-size: 64MB
+```
+
+**현재 MOVE에는 이 옵션이 없음** — 성능 결과가 수십 MB로 커지면 추가 필요. 기술 부채 후보로 인지.
+
+## 왜 BlockingStub으로 충분한가
+
+Excel 생성이 보통 **수 초 이내** 완료. Spring MVC 컨트롤러의 요청 스레드가 그 동안 대기해도 부담 없음. async stub + CompletableFuture 같은 구조는 오버엔지니어링.
+
+**응답이 수십 초 이상 걸릴 수 있는 작업**(벤치마크 progress 스트림)은 async 필수. 호출 지연 특성에 맞는 선택.
+
+## 직접 해보기
+
+- [ ] `excel-service` 포트를 잘못된 번호로 바꾸고 재시작 → <code>StatusRuntimeException</code>이 어떻게 전파되는지 관찰
+- [ ] Go 서비스를 죽인 상태에서 Export 버튼 → 에러 응답 시간 측정 (기본 timeout)
+- [ ] Actuator `/metrics`로 gRPC 호출 통계 수집 가능한지 확인 (Spring gRPC 지원)
+
+다음: [4. 컨트롤러 + 바이너리 응답](/learn/l2-excel/04-controller/) →

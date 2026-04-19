@@ -1,0 +1,99 @@
+---
+title: 2. Proto 스키마 — GenerateExcel Unary RPC
+description: Java와 Go 양쪽이 공유하는 단일 proto 파일 하나
+sidebar:
+  order: 2
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import protoRaw from '../../../../snippets/excel-service-proto.text?raw';
+
+## 30초 요약
+
+`excel_service.proto` 한 파일이 **Java와 Go 양쪽의 계약**입니다.
+
+- **서비스**: `ExcelService` · **RPC**: `GenerateExcel(ExcelRequest) → ExcelResponse` (Unary)
+- **Request 6 필드**: `parser_id`, `tc_name`, `fw`, `data_json`(JSON 문자열), `set_name`, `file_system`
+- **Response 2 필드**: `xlsx_data`(bytes), `file_name`(문자열)
+
+**벤치마크 proto와 비교**: 이 proto는 stream이 없고 메시지도 훨씬 단순. 도메인이 "한 번 변환"이라 단순한 스키마가 적절.
+
+## 코드 투어
+
+<CodeTour
+  client:visible
+  language="text"
+  source="excel_service.proto"
+  height={320}
+  code={protoRaw}
+  steps={[
+    {
+      id: 'header',
+      title: 'syntax + package + java/go options',
+      lines: [6, 10],
+      body: '<p>proto3 문법 + 두 언어 옵션. <strong>Java와 Go가 같은 이 파일로 코드 생성</strong>. portal 레포에 있지만 Go 서비스 레포(<code>~/project/excel-service</code>)도 동일 복사본 유지 — 변경 시 양쪽 재빌드 필요.</p>',
+    },
+    {
+      id: 'service',
+      title: 'ExcelService — Unary RPC 1 개',
+      lines: [12, 14],
+      body: '<p>가장 단순한 RPC 타입. <code>stream</code> 키워드 없음 → <strong>요청 1 · 응답 1</strong>. 벤치마크 proto(Server Stream)와 달리 호출자가 한 번에 결과를 받음.</p>',
+    },
+    {
+      id: 'request',
+      title: 'ExcelRequest — 6 필드',
+      lines: [16, 23],
+      body: '<p><code>parser_id</code>가 <strong>Go 서비스에서 8 Generator 중 어느 것으로 라우팅할지</strong>를 결정. <code>data_json</code>은 단계 1의 ResultData.rawJson 그대로 — <strong>Java가 파싱하지 않고 통째로 전달</strong>. 나머지는 파일명·헤더에 쓰일 메타.</p>',
+    },
+    {
+      id: 'response',
+      title: 'ExcelResponse — xlsx_data + file_name',
+      lines: [25, 28],
+      body: '<p><code>xlsx_data</code>는 <strong>bytes</strong> 타입 — proto는 바이너리를 자연스럽게 전달. <code>file_name</code>은 Go 서비스가 결정 (예: <code>"perf_TC42_fw1.2.3_20260419.xlsx"</code>). Spring이 그대로 <code>Content-Disposition</code>에 세팅.</p>',
+    },
+  ]}
+/>
+
+## 왜 data_json을 문자열로 그대로 보내는가
+
+Proto로 data의 세부 구조를 정의할 수도 있었습니다. 하지만:
+
+- **파서마다 데이터 구조가 다름** — 15 파서가 각기 다른 JSON 스키마를 가짐
+- **proto에 넣으면 파서 추가마다 proto 변경 → 양쪽 재배포**
+- **Go 서비스의 각 Generator가 파서별 JSON을 알아서 해석** — 책임이 서비스 안에 캡슐화
+
+Protocol Buffers의 **`oneof`·`Any` 같은 다형성 기능을 쓰지 않고 string 하나로** 푸는 실용적 선택. 타입 안전성 손실이 있지만 **파서 추가 비용 < 타입 안전성 이득**이라는 계산.
+
+## 두 레포 간 proto 동기화
+
+```
+~/project/portal/src/main/proto/excel_service.proto
+~/project/excel-service/proto/excel_service.proto     ← 수동 복사 유지
+```
+
+**proto 파일은 소스 of truth**인데 두 레포에 복사본이 있습니다. 변경 시:
+
+1. portal 레포 먼저 수정 → 빌드 (protobuf-maven-plugin으로 Java 코드 자동 생성)
+2. Go 서비스 레포에 같은 파일 복사 → `protoc --go_out=...` 실행
+3. 양쪽 배포
+
+리스크: **한쪽만 업데이트하면 계약 깨짐**. 이상적으로는 proto 전용 공유 레포를 만들어 submodule로 가져오는 방식. 현재는 두 레포가 한 조직 내부라 복사 관리.
+
+## 벤치마크 proto와의 대조
+
+| 축 | 벤치마크 `device_agent.proto` | **Excel `excel_service.proto`** |
+|---|---|---|
+| RPC 수 | 10+ (디바이스 관리·벤치마크·trace…) | **1개 (GenerateExcel만)** |
+| Stream 사용 | `SubscribeJobProgress` server stream | **없음** (Unary) |
+| Enum 정의 | BenchmarkTool, JobState 등 다수 | **없음** (parser_id int로) |
+| 총 줄 수 | 수백 줄 | **24 줄** |
+
+같은 gRPC 프로토콜이지만 **복잡도는 도메인이 결정**. Excel은 간단해서 proto도 간단.
+
+## 직접 해보기
+
+- [ ] Go 서비스 레포(`~/project/excel-service`)의 proto 파일과 Java 쪽이 **글자 단위로 동일**한지 확인
+- [ ] `parser_id`를 양쪽 시스템에서 어떻게 일치시키는지 — DB의 `portal_performance_parsers.id`가 Go의 Generator registry key
+- [ ] proto에 새 필드(예: `locale`) 추가 → `@Builder.setLocale` 자동 생성되는지 Java 코드 확인
+
+다음: [3. gRPC Client](/learn/l2-excel/03-client/) →

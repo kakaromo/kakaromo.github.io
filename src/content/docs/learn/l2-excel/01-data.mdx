@@ -1,0 +1,178 @@
+---
+title: 1. 데이터 수집 — DB + LogBrowser
+description: History·TestCase·Parser·TR·SetInfo 조합 + LogBrowser JSON 파일 읽기 + 불완전 JSON 복구
+sidebar:
+  order: 1
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import DataFlowPath from '../../../../components/learn/DataFlowPath.svelte';
+import fetchRaw from '../../../../snippets/PerformanceResultDataService-fetch.java?raw';
+
+## 30초 요약
+
+`PerformanceResultDataService.fetchResultData(historyId)`가 **모든 데이터를 한 record로 합칩니다**.
+
+1. `PerformanceHistory` 조회 → tcId, trId, setId, logPath, slotLocation
+2. `PerformanceTestCase` → `PerformanceParser` 체인 조회
+3. `logPath` 유무로 **완료 TC** vs **RUNNING TC** 경로 분기
+4. `LogBrowserService.readFileContent`로 원격 JSON 읽기
+5. JSON 유효성 검증 · 실패 시 **trailing comma 제거 + bracket 닫기** 복구 시도
+6. TR에서 `fw`, SetInfo에서 `setName`, history에서 `fileSystem` 추출
+7. `ResultData` record 반환
+
+**같은 메서드를 Excel API와 JSON API가 공유**. 이 재사용이 핵심.
+
+## 데이터 흐름
+
+<DataFlowPath
+  client:visible
+  caption="historyId 한 개에서 완결된 ResultData record까지"
+  altText="historyId로 History 엔티티를 조회하고, 그 안의 tcId로 TestCase와 Parser를 체인 조회합니다. logPath 유무로 완료 TC 경로와 RUNNING TC 경로를 분기해 LogBrowserService로 remote JSON을 읽습니다. Jackson으로 유효성 검증 후 실패하면 tryRepairJson으로 trailing comma 제거와 bracket 닫기를 시도하고, 성공 시 ResultData record 7 필드로 조립해 반환합니다."
+  stages={[
+    {
+      id: 's1',
+      label: 'historyId',
+      layer: 'fe',
+      language: 'text',
+      sample: '/api/performance-results/42/excel',
+      note: 'URL 파라미터',
+    },
+    {
+      id: 's2',
+      label: 'DB 조인 5개',
+      layer: 'state',
+      language: 'text',
+      sample: 'History + TestCase + Parser\n+ TestRequest + SetInfomation',
+      note: '5 엔티티 체인',
+    },
+    {
+      id: 's3',
+      label: '경로 분기',
+      layer: 'be',
+      language: 'java',
+      sample: 'if (logPath) {\n  // 완료 TC\n  remotePath = ".../history/..."\n} else {\n  // RUNNING\n  remotePath = ".../slot{N}/log/..."\n}',
+      note: 'logPath 유무',
+    },
+    {
+      id: 's4',
+      label: 'LogBrowser JSON',
+      layer: 'tx',
+      language: 'text',
+      sample: 'logBrowserService.readFileContent(\n  tentacleName, remotePath\n)',
+      note: 'L2 Log Browser 호출',
+    },
+    {
+      id: 's5',
+      label: 'JSON 복구',
+      layer: 'be',
+      language: 'java',
+      sample: 'try { readTree(trimmed) }\ncatch {\n  repaired = tryRepairJson(...)\n  partial = true\n}',
+      note: 'RUNNING 중 불완전 허용',
+    },
+    {
+      id: 's6',
+      label: 'ResultData',
+      layer: 'state',
+      language: 'java',
+      sample: 'ResultData(parserId, tcName,\n  fw, setName, fileSystem,\n  rawJson, partial)',
+      note: '7 필드 record',
+    },
+  ]}
+  transforms={[
+    { label: 'lookup' },
+    { label: 'branch' },
+    { label: 'read' },
+    { label: 'repair' },
+    { label: 'pack' },
+  ]}
+/>
+
+## 코드 투어
+
+<CodeTour
+  client:visible
+  language="java"
+  source="PerformanceResultDataService.fetchResultData"
+  height={700}
+  code={fetchRaw}
+  steps={[
+    {
+      id: 'history-lookup',
+      title: 'History 조회 + null 방어',
+      lines: [6, 15],
+      body: '<p>하나씩 <code>findById</code> → null이면 즉시 <code>IllegalArgumentException</code>. 컨트롤러에서 이 예외를 400으로 매핑. <strong>early return 체인이 길어 보이지만</strong> "어느 단계에서 실패했는가"가 예외 메시지에 바로 드러남.</p>',
+    },
+    {
+      id: 'tc-parser',
+      title: 'TestCase + Parser 체인',
+      lines: [17, 31],
+      body: '<p>History.tcId → TestCase → TestCase.parserId → Parser. <strong>JOIN SQL 하나로 끝낼 수도 있지만</strong> 서비스 레이어에서 단건 조회로 처리해 디버깅이 쉽게.</p>',
+    },
+    {
+      id: 'path-branch',
+      title: 'logPath 유무 — 완료 vs RUNNING 분기',
+      lines: [34, 55],
+      body: '<p><strong>완료된 TC</strong>는 <code>logPath</code>가 DB에 기록되어 있음 — 그 경로 기반. <strong>RUNNING</strong>은 아직 최종 경로 미정 → <code>slotLocation</code>(T10-4 같은)에서 <code>slot{N}/log/{parser}.json</code>을 동적 계산. UFS/NAS 경로는 HEAD 가상 tentacle로 분기.</p>',
+    },
+    {
+      id: 'read-json',
+      title: 'LogBrowserService.readFileContent 호출',
+      lines: [56, 68],
+      body: '<p>이 한 줄이 <strong>Log Browser L2와의 재사용 접점</strong>. Local 모드든 SSH 모드든 이 서비스는 모릅니다. 빈 응답이면 <code>COLLECTING:</code> prefix로 예외 — 프론트가 "아직 수집 중" UI로 처리.</p>',
+    },
+    {
+      id: 'json-validate',
+      title: 'Jackson 유효성 검증',
+      lines: [74, 78],
+      body: '<p><code>readTree</code>가 파싱 가능성만 확인. <strong>실제 구조 파싱은 Go 서비스가 담당</strong>하므로 Java 쪽에선 "JSON 문법 유효한가"만 체크.</p>',
+    },
+    {
+      id: 'json-repair',
+      title: '실패 시 tryRepairJson',
+      lines: [79, 94],
+      body: '<p>RUNNING 중 write가 중단되면 <code>...,}</code>나 <code>[{},{,...</code> 같은 조각이 흔함. <code>tryRepairJson</code>이 <strong>trailing comma 제거 + 닫히지 않은 bracket 닫기</strong>를 시도. 성공하면 <code>partial = true</code>로 표시 — Excel에는 "부분 데이터"로 표시됨.</p>',
+    },
+    {
+      id: 'fw-set',
+      title: 'TR에서 fw + SetInfo에서 setName',
+      lines: [96, 113],
+      body: '<p>Excel 파일명에 포함될 메타정보. 없으면 빈 문자열로 안전하게. <strong>try-catch ignored</strong>: SetInfomation 조회가 실패해도 Excel 생성을 막지 말 것.</p>',
+    },
+    {
+      id: 'record',
+      title: 'ResultData 조립 + 반환',
+      lines: [120, 131],
+      body: '<p>7 필드 immutable record. <strong>한 record에 Excel 생성에 필요한 모든 값</strong>. 호출자(이 서비스의 다른 소비자)가 가공 없이 그대로 사용 가능.</p>',
+    },
+  ]}
+/>
+
+## 왜 이 Service가 Controller와 분리되는가
+
+원래 `PerformanceResultController`에 이 로직이 있었는데 **Excel API가 추가되면서 Service로 추출**되었습니다. 근거:
+
+- **JSON 응답 API** (`PerformanceResultController.getResult(historyId)`) — 프론트가 차트 그릴 때
+- **Excel 응답 API** (`ExcelExportController.exportExcel(historyId)`) — Export All 버튼
+
+두 엔드포인트가 **정확히 같은 데이터**를 필요로 합니다. 차이는 응답 포맷(JSON vs xlsx)뿐.
+
+**Controller에 로직이 있으면 복제 불가피** → Service로 올려 공유. Log Browser의 `LogBrowserService` 인터페이스처럼 **"비즈니스 데이터 조합"을 Service가 책임**지는 레이어링.
+
+## COLLECTING 예외 — 도메인 시맨틱을 예외로
+
+```java
+throw new IllegalArgumentException("COLLECTING:" + remotePath);
+```
+
+메시지 prefix가 `COLLECTING:`이면 "아직 수집 중이니 잠시 후 다시 요청"이라는 도메인 상태. 프론트가 이 prefix를 감지해 **스피너 + "테스트 진행 중" 안내**로 처리.
+
+이상적으로는 **별도 예외 클래스**(예: `TestCollectingException`)가 더 깔끔하지만, 간단한 prefix 관례로 시작해 운영하다 필요하면 리팩토링. **기술 부채 후보**로 명시하는 편이 좋음.
+
+## 직접 해보기
+
+- [ ] `historyId`를 존재하지 않는 숫자로 호출 → `History not found: ...` 메시지
+- [ ] RUNNING 상태 TC의 historyId로 Excel 요청 → `COLLECTING:...` 메시지가 프론트에서 어떻게 처리되는지
+- [ ] DB에서 TC의 `parserId`를 null로 두고 호출 → 어느 throw가 나오는지 확인
+
+다음: [2. Proto 스키마](/learn/l2-excel/02-proto/) →

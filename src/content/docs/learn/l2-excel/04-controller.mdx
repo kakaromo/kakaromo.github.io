@@ -1,0 +1,130 @@
+---
+title: 4. 컨트롤러 + 바이너리 응답
+description: 18줄짜리 얇은 컨트롤러 + window.location.href 직접 다운로드 패턴
+sidebar:
+  order: 4
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import ctrlRaw from '../../../../snippets/ExcelExportController.java?raw';
+
+## 30초 요약
+
+컨트롤러는 **세 줄의 조립 코드**가 거의 전부입니다.
+
+1. `resultDataService.fetchResultData(historyId)` → 데이터 수집
+2. `excelGrpcClient.generateExcel(...)` → Go 서비스 호출
+3. `ResponseEntity<byte[]>` + Content-Disposition + xlsx MIME → 브라우저 다운로드
+
+프론트는 **`window.location.href`로 직접 링크**만 열면 끝 — fetch + Blob 변환 없이 브라우저가 자동 다운로드.
+
+## 코드 투어
+
+<CodeTour
+  client:visible
+  language="java"
+  source="ExcelExportController.java"
+  height={500}
+  code={ctrlRaw}
+  steps={[
+    {
+      id: 'class',
+      title: '@RestController · /api/performance-results',
+      lines: [16, 23],
+      body: '<p>prefix를 <strong>성능 결과 네임스페이스 아래로</strong>. JSON API와 Excel API가 같은 prefix를 공유 — <code>/{id}</code>(JSON), <code>/{id}/excel</code>(xlsx). URL만 봐도 관계가 드러남.</p>',
+    },
+    {
+      id: 'endpoint',
+      title: 'GET /{historyId}/excel',
+      lines: [25, 26],
+      body: '<p>historyId 하나만 받음 — 모든 메타데이터는 서비스가 DB에서 조합. <code>throws Exception</code> — <strong>도메인 예외가 그대로 전파</strong>되어 Spring의 전역 <code>@ControllerAdvice</code>가 상태 코드로 변환.</p>',
+    },
+    {
+      id: 'fetch',
+      title: 'fetchResultData + rawJson',
+      lines: [27, 28],
+      body: '<p>단계 1의 서비스 호출. <code>result.rawJson()</code>은 파서별 JSON 문자열 — <strong>Java는 이 내용을 알 필요 없음</strong>, 통째로 Go에 전달.</p>',
+    },
+    {
+      id: 'grpc-call',
+      title: 'generateExcel — 7 파라미터로 gRPC',
+      lines: [30, 31],
+      body: '<p>ResultData record의 7 필드를 6 인자로(parserName 제외) gRPC에 전달. <strong>blocking</strong>이라 응답까지 이 스레드가 대기.</p>',
+    },
+    {
+      id: 'response',
+      title: 'ResponseEntity — 헤더 + MIME + body',
+      lines: [33, 37],
+      body: '<p><code>Content-Disposition: attachment; filename="..."</code>로 브라우저가 저장 다이얼로그. <strong>xlsx MIME 타입</strong>은 공식 <code>openxmlformats</code> 표기. body는 proto의 <code>bytes xlsx_data</code>를 <code>toByteArray()</code>로 — <strong>메모리에 모두 실음</strong>.</p>',
+    },
+  ]}
+/>
+
+## 왜 스트리밍이 아닌 byte[]인가
+
+Go 서비스가 **완성된 xlsx 바이너리 통째로** gRPC response에 담아 보내므로, Spring은 이미 메모리에 로드된 byte[]를 그대로 응답. 스트리밍의 이점이 없음.
+
+이상적으로 Go 서비스가 **chunked response**로 바꾸고 Java가 `StreamingResponseBody`로 받으면 메모리 피크가 낮아집니다. 하지만:
+
+- 현재 xlsx가 수 MB 수준 → 메모리 부담 크지 않음
+- 스트리밍으로 바꾸려면 proto에 `stream ExcelResponse` 변경 + 양쪽 구현
+- 성능 병목으로 드러난 적 없음 → 미리 최적화 안 함
+
+**현재 사용 패턴에 맞는 가장 단순한 구현**. 커지면 바꾸면 됨.
+
+## 프론트 다운로드 — window.location.href
+
+```svelte
+<!-- routes/testdb/performance/history/[hisId]/+page.svelte -->
+<Button onclick={() => window.location.href = `/api/performance-results/${hisId}/excel`}>
+  <FileDown class="size-3 mr-1" /> Export All
+</Button>
+```
+
+단 한 줄. 이 **"직접 링크"** 패턴이 가능한 이유:
+
+- 응답에 `Content-Disposition: attachment` 헤더가 있음 → 브라우저가 네비게이션 대신 **다운로드로 해석**
+- 현재 URL은 바뀌지 않음 (헤더가 해석을 막음)
+- fetch + Blob 변환 같은 중간 단계 불필요 → **스피너 UI도 불필요**
+
+T32 Dump의 ZIP 다운로드도 같은 패턴. **Content-Disposition 하나로 프론트 복잡도 제거**.
+
+## 에러 응답은 어떻게 되는가
+
+컨트롤러에 try-catch가 없습니다. 예외가 나면:
+
+- `IllegalArgumentException("History not found: ...")` → 400
+- `IllegalArgumentException("COLLECTING:...")` → 400 + 프론트가 prefix 감지해 "수집 중" 안내
+- `StatusRuntimeException` (gRPC 실패) → 500
+- 기타 Exception → 500
+
+프론트는 `window.location.href`로 요청했기 때문에 **에러 응답도 다운로드 다이얼로그 대신 브라우저 화면**에 나타남. 이상적이지 않지만 Export 실패 빈도가 낮아 충분.
+
+**개선 후보**: 프론트에서 먼저 `HEAD` 요청으로 상태 체크 후 OK면 링크 오픈. 현재는 단순성 우선.
+
+## 여덟 L2의 "외부 서비스 응답 방식" 요약
+
+| L2 | 외부 서비스 | 응답 방식 | 프론트 수신 |
+|---|---|---|---|
+| 슬롯 | Head TCP | JSON SSE | EventSource |
+| 벤치마크 | Go Agent gRPC | JSON SSE (중계) | EventSource |
+| 원격 | guacd | WebSocket binary | WebSocketTunnel |
+| Metadata | Android adb | HTTP JSON | fetch 폴링 |
+| T32 Dump | SSH × 2 | SSE step-* | fetch ReadableStream |
+| Pre-Command | SSH | (없음) | (없음) |
+| Log Browser | SSH or Local | text / byte[] | fetch |
+| **Excel Export** | **Go gRPC unary** | **xlsx byte[]** | **window.location.href** |
+
+**Excel은 가장 짧은 프론트 코드**로 가능한 L2. "작업이 짧고 결과가 파일"인 조합이 이 단순성을 가능케 함.
+
+## 직접 해보기
+
+- [ ] Export All 버튼 클릭 → DevTools Network에서 요청 1건 + 다운로드 자동 시작
+- [ ] 응답 헤더의 `Content-Disposition`, `Content-Type` 확인
+- [ ] historyId=999999(없는 값)로 URL 직접 방문 → 에러가 브라우저 화면에 그대로 표시되는지
+
+---
+
+**L2 Excel Export 튜토리얼 완료**. 돌아가기:
+
+- [L2 7종 비교](/learn/l2-compare/) · [벤치마크 L2](/learn/l2-benchmark/) · [Log Browser L2](/learn/l2-logbrowser/) · 기타 L2들
