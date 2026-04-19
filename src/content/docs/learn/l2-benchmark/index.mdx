@@ -1,25 +1,72 @@
 ---
-title: "Agent 벤치마크 실행 (예정)"
-description: Android 디바이스에서 fio/iozone/tiotest를 실행하고 진행률을 실시간 중계
+title: Agent 벤치마크 — 5단계 여정
+description: 브라우저의 Run 버튼에서 Android 디바이스의 fio 실행·진행률 중계까지
 sidebar:
   order: 0
 ---
 
-:::caution[아직 작성되지 않았습니다]
-이 L2 모듈은 다음 작업자의 진입점입니다. L1 [key-flows #2](/learn/l1-overview/key-flows/#2-android-디바이스-벤치마크--grpc-양방향-스트림)의 그림을 확장해 다음 항목을 다룰 예정입니다.
+import ArchitectureDiagram from '../../../../components/learn/ArchitectureDiagram.svelte';
 
-- 프론트 "Run" 버튼 → Spring `AgentController` → Go Agent gRPC 호출
-- `RunBenchmark` → 디바이스 실행 → 서버 스트림 진행률
-- Spring이 진행률을 SSE로 재중계
-- 장시간(수십 분~시간) 작업의 keepalive·재연결·오작동 감지
-- 결과 저장 → MinIO + DB
-- **핵심 소스**: `com.samsung.move.agent.*`, `frontend/src/routes/agent/`
-:::
+## 이 모듈에서 배울 것
 
-## 작성할 때의 템플릿
+"사용자가 벤치마크 Run 버튼을 누르면, **실제 Android 디바이스**에서 fio/iozone이 돌고, 그 진행률이 브라우저의 Job Card에 실시간으로 뜨기까지 어떤 계층을 거치는가?"
 
-[슬롯 모니터링 L2](/learn/l2-slots/)와 같은 구조를 따릅니다.
+이 모듈은 [슬롯 모니터링 L2](/learn/l2-slots/)와 같은 **7단계 여정 템플릿**을 재사용하되, 스케일이 다른 프로토콜(gRPC 서버 스트림)과 비동기 job 모델을 다룹니다.
 
-1. `index.mdx` — 데이터 여정 N단계 인터랙티브 다이어그램
-2. 단계별 페이지 — 제일 앞에 30초 요약, CodeTour + 다이어그램, 하단 "직접 해보기"
-3. L3 개념은 새로 필요한 것만 추가 (예: `@Async`, `StreamObserver`, SvelteKit action 등)
+## 여정 한눈에
+
+<ArchitectureDiagram
+  client:visible
+  height={320}
+  caption="브라우저 POST → Spring → gRPC Agent → 디바이스 → gRPC stream 진행률 → SSE 중계 → 브라우저"
+  altText="브라우저의 AgentBenchmarkForm이 runBenchmark API를 호출하면 Spring의 AgentController가 AgentGrpcClient로 Go Agent에 RunBenchmark RPC를 보냅니다. Agent는 즉시 jobId를 반환하고 백그라운드에서 디바이스에 명령을 실행합니다. 브라우저는 jobId로 progress SSE에 구독하고, Spring은 gRPC SubscribeJobProgress 서버 스트림을 받아 프론트에 SSE로 중계합니다."
+  nodes={[
+    { id: 's1', label: '1. 데이터 모델',    sublabel: 'AgentServer · JobExecution', layer: 'state', x: 0,    y: 70,  href: '/learn/l2-benchmark/01-data-model/' },
+    { id: 's2', label: '2. Run 트리거',     sublabel: 'Form · runBenchmark API',    layer: 'fe',    x: 180,  y: 70,  href: '/learn/l2-benchmark/02-run-trigger/' },
+    { id: 's3', label: '3. 컨트롤러·gRPC',  sublabel: 'POST /run → RPC',            layer: 'be',    x: 360,  y: 0,   href: '/learn/l2-benchmark/03-controller-grpc/' },
+    { id: 's4', label: '4. 진행률 중계',    sublabel: 'stream → SSE',               layer: 'tx',    x: 360,  y: 150, href: '/learn/l2-benchmark/04-progress-relay/' },
+    { id: 's5', label: '5. Job Card',      sublabel: 'EventSource · UI',            layer: 'fe',    x: 540,  y: 70,  href: '/learn/l2-benchmark/05-job-card/' },
+  ]}
+  edges={[
+    { from: 's1', to: 's2', label: 'read',   kind: 'sync' },
+    { from: 's2', to: 's3', label: 'POST',   kind: 'sync' },
+    { from: 's3', to: 's4', label: 'jobId',  kind: 'async' },
+    { from: 's4', to: 's5', label: 'SSE',    kind: 'async' },
+  ]}
+/>
+
+## 슬롯과 무엇이 다른가
+
+슬롯 모니터링은 "**서버가 일방적으로 밀어주는** 상태"를 보여줬습니다. 벤치마크는 반대로 "**사용자가 시작한 작업**이 진행되는 과정"을 보여줍니다. 이 차이가 설계에 반영됩니다.
+
+| 축 | 슬롯 모니터링 | 벤치마크 |
+|---|---|---|
+| 트리거 | Head가 알아서 | 사용자 Run 버튼 |
+| 프로토콜 | TCP (커스텀) | gRPC 서버 스트림 |
+| 지속 시간 | 항상 연결 | job 하나 단위 (수초~수시간) |
+| 식별자 | source 이름 | jobId (UUID) |
+| 저장소 | 인메모리 StateStore | DB JobExecution (영속) |
+| 완료 통지 | 없음 (지속적) | `complete`/`error` 이벤트로 종료 |
+
+두 모듈이 동일한 SSE 프론트 패턴을 쓰면서도 내부 동작은 꽤 다릅니다. 템플릿이 "어디까지 재사용되고 어디서 갈라지는가"를 관찰하면 다른 L2를 만들 때 판단 기준이 됩니다.
+
+## 학습 순서와 예상 시간
+
+| 단계 | 제목 | 성격 | 시간 |
+|---|---|---|---|
+| 1 | 데이터 모델 (AgentServer + JobExecution) | 읽기 | 8분 |
+| 2 | Run 트리거 (프론트 Form → API) | 코드 투어 | 10분 |
+| 3 | Spring 컨트롤러 + gRPC 클라이언트 | 코드 투어 | 15분 |
+| 4 | 진행률 중계 (gRPC stream → SSE) | 코드 투어 + 시퀀스 | 15분 |
+| 5 | 프론트 Job Card 수신 | 코드 투어 | 10분 |
+
+총 약 **1시간**. 슬롯 L2를 읽은 뒤라면 반복 개념(@RestController, SseEmitter, EventSource)은 빠르게 훑고 넘어가도 됩니다.
+
+## 새로 등장할 L3 개념
+
+[슬롯 L2](/learn/l2-slots/)에서 본 개념은 그대로 쓰이고, 아래가 추가됩니다.
+
+- [Protocol Buffers + gRPC](/learn/l3-concepts/spring/grpc/) — 서비스 정의·RPC·서버 스트림
+- [StreamObserver](/learn/l3-concepts/spring/stream-observer/) — gRPC 비동기 콜백
+
+다음: [1. 데이터 모델 (AgentServer + JobExecution)](/learn/l2-benchmark/01-data-model/) →

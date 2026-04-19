@@ -1,0 +1,137 @@
+---
+title: 4. 진행률 중계 — gRPC 스트림 → SSE
+description: 두 비동기 프로토콜을 연결하는 다리 — StreamObserver가 SseEmitter를 재료로 바꾸는 패턴
+sidebar:
+  order: 4
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import SequenceTimeline from '../../../../components/learn/SequenceTimeline.svelte';
+import ConceptPopover from '../../../../components/learn/ConceptPopover.svelte';
+import sseRaw from '../../../../snippets/AgentController-progress-sse.java?raw';
+
+## 30초 요약
+
+이 단계가 Agent 모듈의 **하이라이트**입니다. Spring은 gRPC 서버 스트림을 받는 **StreamObserver**의 콜백 안에서 **SseEmitter**를 써서 프론트에 이벤트를 보냅니다. 두 비동기 프로토콜이 한 함수 안에서 만나는 구조.
+
+프론트 관점에서는 슬롯 L2의 SSE 패턴과 **동일**합니다. 차이는 Spring 뒤편에 gRPC 상대가 추가로 붙어 있다는 것.
+
+## 전체 시퀀스
+
+<SequenceTimeline
+  client:visible
+  height={380}
+  autoplay={true}
+  caption="구독 → gRPC subscribe → 매 onNext에서 SSE 중계 → complete/error로 종료"
+  altText="Browser가 /api/agent/benchmark/progress?jobId=X 에 GET SSE를 열면, Spring은 AgentGrpcClient로 Go Agent의 SubscribeJobProgress에 asyncStub으로 구독합니다. Agent가 JobProgress를 보낼 때마다 StreamObserver.onNext가 호출되어 SseEmitter로 progress 이벤트를 전송합니다. 작업이 완료되면 onCompleted에서 complete 이벤트를 보내고 JobExecution state를 completed로 갱신합니다."
+  lanes={[
+    { id: 'br',    label: 'Browser',       layer: 'fe',    sublabel: 'EventSource' },
+    { id: 'sp',    label: 'Spring',        layer: 'be',    sublabel: 'AgentController' },
+    { id: 'ag',    label: 'Go Agent',      layer: 'tx',    sublabel: 'gRPC stream' },
+    { id: 'db',    label: 'JobExecution',  layer: 'state', sublabel: 'DB' },
+  ]}
+  messages={[
+    { from: 'br', to: 'sp', label: 'GET /progress?jobId=X',  t: 0,   kind: 'sync' },
+    { from: 'sp', to: 'ag', label: 'SubscribeJobProgress',   t: 8,   kind: 'async' },
+    { from: 'ag', to: 'sp', label: 'onNext 20%',             t: 30,  kind: 'async' },
+    { from: 'sp', to: 'br', label: 'event: progress',        t: 35,  kind: 'async' },
+    { from: 'ag', to: 'sp', label: 'onNext 60%',             t: 70,  kind: 'async' },
+    { from: 'sp', to: 'br', label: 'event: progress',        t: 75,  kind: 'async' },
+    { from: 'ag', to: 'sp', label: 'onCompleted',            t: 110, kind: 'async' },
+    { from: 'sp', to: 'db', label: 'state=completed',        t: 115, kind: 'sync' },
+    { from: 'sp', to: 'br', label: 'event: complete',        t: 120, kind: 'async' },
+  ]}
+/>
+
+## 코드 투어
+
+<CodeTour
+  client:visible
+  language="java"
+  source="AgentController.java (/benchmark/progress)"
+  height={620}
+  code={sseRaw}
+  steps={[
+    {
+      id: 'mapping',
+      title: '@GetMapping produces = TEXT_EVENT_STREAM_VALUE',
+      lines: [6, 8],
+      body: '<p>SSE MIME 명시. 슬롯 L2의 HeadSseController와 동일한 진입점 패턴.</p>',
+    },
+    {
+      id: 'emitter-init',
+      title: 'SseEmitter(0L) + completed AtomicBoolean',
+      lines: [9, 14],
+      body: '<p>무제한 timeout + <code>completed</code> 플래그. 여러 콜백(onCompletion/onTimeout/onError)이 <strong>동시에 불릴 수 있으므로</strong> 공유 플래그로 재진입 방지. 이 플래그가 없으면 "이미 닫힌 emitter에 또 send" 에러가 납니다.</p>',
+    },
+    {
+      id: 'subscribe',
+      title: 'subscribeJobProgressAsync — gRPC 구독',
+      lines: [16, 16],
+      body: '<p>인자로 <code>StreamObserver&lt;JobProgress&gt;</code>를 넘기는 것이 포인트. 익명 클래스로 세 콜백(onNext/onError/onCompleted)을 선언.</p>',
+    },
+    {
+      id: 'on-next',
+      title: 'onNext — JobProgress → SSE progress 이벤트',
+      lines: [17, 40],
+      body: '<p>각 메시지를 <code>LinkedHashMap</code>으로 변환해 JSON 직렬화. 빈 필드(<code>metrics</code>/<code>rawOutput</code>)는 조건부로 포함해 페이로드 크기 최적화. send 실패 시 <code>completed=true</code>로 이후 메시지 전송 중단.</p>',
+    },
+    {
+      id: 'on-error',
+      title: 'onError — 실패 중계 + DB 갱신',
+      lines: [42, 51],
+      body: '<p>gRPC 쪽 에러 → DB의 <code>state=failed</code>로 갱신 + 프론트에 <code>error</code> 이벤트 전송 + emitter complete. <strong>여러 효과를 순서대로 실행하고 각각 try/catch</strong>로 감싸 후속 효과가 막히지 않도록.</p>',
+    },
+    {
+      id: 'on-completed',
+      title: 'onCompleted — 정상 종료',
+      lines: [53, 61],
+      body: '<p>DB의 <code>state=completed</code>로 갱신 + <code>complete</code> 이벤트 + emitter close. 프론트는 이 이벤트를 받으면 EventSource를 닫고 "최종 결과" API를 별도 호출해 상세 메트릭 조회.</p>',
+    },
+    {
+      id: 'return-emitter',
+      title: 'return emitter — async context 이양',
+      lines: [64, 65],
+      body: '<p>메서드 반환 시점에는 <strong>아직 진행률이 하나도 도착하지 않았을 수 있습니다</strong>. 반환과 동시에 요청 스레드는 풀려나고, 이후 모든 send는 gRPC 스레드에서 비동기로 이뤄집니다.</p>',
+    },
+  ]}
+/>
+
+## <ConceptPopover client:visible term="StreamObserver" concept="spring/stream-observer"><p>gRPC 비동기 콜백 인터페이스. onNext(각 메시지) / onError(에러) / onCompleted(정상 종료) 3개 메서드. 서버 스트림·클라이언트 스트림·양방향 스트림 모두에서 사용됩니다.</p></ConceptPopover> — 세 콜백의 계약
+
+어떤 스트리밍 패턴이든 StreamObserver는 동일한 규칙을 따릅니다.
+
+- **onNext**는 0번 이상 호출. 메시지 하나마다 한 번.
+- **정확히 한 번**의 종료 콜백 — onError **또는** onCompleted. 둘 다 불리지 않음.
+- onError / onCompleted가 불린 뒤 **onNext는 더 이상 호출되지 않음**.
+
+이 계약 덕에 MOVE는 단일 `completed` 플래그만으로 상태를 관리할 수 있습니다. 계약을 위반한 서버와 통신한다면 훨씬 복잡한 상태 머신이 필요할 것.
+
+## JobExecution 상태 머신
+
+이 함수가 DB의 `state` 필드를 3번 바꿀 수 있는 주체입니다.
+
+```
+(단계 3에서 저장) running
+    ├── onCompleted → completed
+    └── onError     → failed
+```
+
+`running` → `running`은 없고, 한번 completed/failed가 되면 **더 바뀌지 않습니다**. 이 단방향 전이가 동시성 안전성을 크게 단순화합니다.
+
+## 왜 SseEmitter timeout이 0L인가
+
+슬롯 SSE와 같은 이유 + 하나 더:
+
+- **작업이 언제 끝날지 모름** — 벤치마크는 1분일 수도, 8시간일 수도 있음
+- **유한 timeout 설정 시 AsyncRequestTimeoutException WARN 쌓임** (슬롯과 동일)
+
+프론트의 EventSource가 네트워크 단절 시 자동 재연결하므로, timeout은 서버 측에서 걱정하지 않아도 됩니다.
+
+## 직접 해보기
+
+- [ ] DevTools Network → EventStream 탭에서 `progress` 이벤트가 1초~수초 간격으로 오는지 확인
+- [ ] 짧은 벤치마크 1회 후 `complete` 이벤트가 마지막에 한 번만 오는지 확인 (자동으로 연결 종료)
+- [ ] 일부러 Agent를 죽여 `error` 이벤트가 오고 DB의 `state=failed`로 바뀌는지 확인
+
+다음: [5. 프론트 Job Card — 수신과 렌더](/learn/l2-benchmark/05-job-card/) →

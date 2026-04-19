@@ -1,0 +1,130 @@
+---
+title: 1. 데이터 모델 — AgentServer · JobExecution
+description: Agent 모듈의 영속 상태 두 축 — 연결할 서버와 실행된 job 이력
+sidebar:
+  order: 1
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import serverRaw from '../../../../snippets/AgentServer-entity.java?raw';
+import jobRaw from '../../../../snippets/JobExecution-entity.java?raw';
+
+## 30초 요약
+
+Agent 모듈은 **두 종류의 DB 행**으로 관리됩니다.
+
+- **`AgentServer`** — 어떤 Go Agent 서버에 붙을지 (`host`/`port`). 관리자가 등록.
+- **`JobExecution`** — 벤치마크·시나리오·trace 각각의 **실행 이력 한 건**. `jobId` UUID로 식별, 상태(running/completed/failed) 추적.
+
+이 외에 `BenchmarkPreset`(파라미터 프리셋), `ScenarioTemplate`(복합 워크플로) 등이 있지만 이 튜토리얼 범위 밖입니다.
+
+## 왜 두 엔티티를 나누는가
+
+- **AgentServer**는 **정적 설정** — 관리자가 서버를 등록하면 거의 바뀌지 않음.
+- **JobExecution**은 **동적 이력** — 실행할 때마다 새 행이 쌓이고 끝날 때 상태가 업데이트됨.
+
+이 분리는 [슬롯 L2 단계 2](/learn/l2-slots/02-db-row/)에서 `HeadConnection`(설정) vs `HeadSlotStateStore`(런타임) 분리와 **같은 원칙**입니다. 다만 Agent는 job 이력을 재시작 후에도 조회할 수 있어야 해서 **DB에 영속**합니다.
+
+## AgentServer — 코드 투어
+
+<CodeTour
+  client:visible
+  language="java"
+  source="AgentServer.java"
+  height={520}
+  code={serverRaw}
+  steps={[
+    {
+      id: 'entity-header',
+      title: '@Entity + Serializable',
+      lines: [17, 23],
+      body: '<p>HeadConnection과 동일한 패턴. <code>implements Serializable</code>이 추가된 이유는 Redis 캐시를 위해 — MOVE 대부분의 엔티티가 갖는 규약입니다.</p>',
+    },
+    {
+      id: 'id-name',
+      title: 'PK + 유일 이름',
+      lines: [24, 30],
+      body: '<p>내부적으로는 <code>id</code>로 참조하지만, UI와 로그에는 <code>name</code>이 쓰입니다.</p>',
+    },
+    {
+      id: 'host-port',
+      title: 'host / port 직접 저장',
+      lines: [31, 40],
+      body: '<p>슬롯의 suffix 방식과 달리 gRPC 포트는 관례적으로 <strong>50051</strong> 같은 5자리 숫자 → 엔티티가 그대로 <code>int port</code> 필드를 갖습니다. 포트 계산 헬퍼가 필요 없습니다.</p>',
+    },
+    {
+      id: 'enabled',
+      title: 'enabled 플래그',
+      lines: [41, 48],
+      body: '<p>관리자가 임시로 서버를 빼고 싶을 때. 실제 연결은 사용자가 Run 버튼을 눌러야 시작되므로, <strong>기동 시 자동 연결은 없습니다</strong>. 슬롯 모듈의 HeadConnectionManager와 달리.</p>',
+    },
+  ]}
+/>
+
+## JobExecution — 코드 투어
+
+<CodeTour
+  client:visible
+  language="java"
+  source="JobExecution.java"
+  height={600}
+  code={jobRaw}
+  steps={[
+    {
+      id: 'table',
+      title: '@Table portal_job_executions',
+      lines: [17, 23],
+      body: '<p>벤치마크·시나리오·Trace가 <strong>같은 테이블</strong>에 저장됩니다. 공통된 lifecycle(생성 → running → 종료) + 일부 필드가 job type에 따라 다르게 해석되는 구조.</p>',
+    },
+    {
+      id: 'job-id',
+      title: 'jobId — UUID (DB PK 아님)',
+      lines: [24, 33],
+      body: '<p><code>id</code>(DB PK)와 별개로 Agent가 발급한 <code>jobId</code>를 유니크 인덱스로 보유. gRPC 응답으로 받은 UUID가 그대로 저장됩니다. 두 개의 식별자를 갖는 이유는 <strong>Agent 서버를 신뢰하지 않고도 DB 자체 추적이 가능하게</strong> 하기 위함.</p>',
+    },
+    {
+      id: 'type-tool',
+      title: 'type / tool — 다형성 필드',
+      lines: [38, 49],
+      body: '<p><code>type</code>에 "benchmark" / "scenario" / "trace"가 들어가고, <code>tool</code>에 "FIO" / "IOZONE" 등이 들어갑니다. 타입별로 <code>config</code>(JSON 문자열)을 다르게 해석하는 느슨한 모델.</p>',
+    },
+    {
+      id: 'state-error',
+      title: 'state + config + errorMessage',
+      lines: [51, 70],
+      body: '<p>SSE 중계 도중 <code>jobExecutionService.updateState()</code>로 "running" → "completed" / "failed"로 전이됩니다. 실패 시 에러 메시지까지 저장해 사후 조회에 유용. <code>config</code>에는 UI에서 전달된 파라미터 JSON이 통째로 들어가 재현 가능한 기록이 됩니다.</p>',
+    },
+    {
+      id: 'timestamps',
+      title: 'timestamps — started / completed / created',
+      lines: [72, 80],
+      body: '<p>시작·완료 시각이 별도 컬럼으로, <code>completed_at - started_at</code>으로 job 실행 시간을 계산할 수 있습니다. <code>@PrePersist</code>/<code>@PreUpdate</code>가 <code>createdAt</code>/<code>updatedAt</code> 자동 갱신을 담당.</p>',
+    },
+  ]}
+/>
+
+## 운영 데이터의 형태
+
+실제 DB를 들여다보면 이런 모양입니다.
+
+```sql
+-- Agent 서버 2개 등록
+SELECT id, name, host, port, enabled FROM portal_agent_servers;
+-- 1 | dev-agent-1  | 192.168.0.10  | 50051 | 1
+-- 2 | staging-agent| 192.168.0.20  | 50051 | 1
+
+-- 최근 job 이력 3개
+SELECT job_id, type, tool, state, started_at FROM portal_job_executions
+ ORDER BY started_at DESC LIMIT 3;
+-- abc-1234 | benchmark | FIO     | completed | 2026-04-19 10:00:00
+-- def-5678 | trace     | null    | running   | 2026-04-19 10:15:00
+-- ghi-9012 | scenario  | null    | failed    | 2026-04-19 10:20:00
+```
+
+## 직접 해보기
+
+- [ ] Admin 페이지 또는 DB에서 `portal_agent_servers`에 로컬 Go Agent(`localhost:50051`) 한 행 추가
+- [ ] 벤치마크 한 번 실행 후 `portal_job_executions`에 새 행이 생기는지 확인
+- [ ] 실행 중인 job의 `state` 필드가 `running` → `completed`로 변화하는 순간을 쿼리로 관찰
+
+다음: [2. Run 트리거 (프론트 Form → API)](/learn/l2-benchmark/02-run-trigger/) →

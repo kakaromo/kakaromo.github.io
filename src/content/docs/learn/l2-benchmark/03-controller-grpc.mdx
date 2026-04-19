@@ -1,0 +1,176 @@
+---
+title: 3. Spring 컨트롤러 + gRPC 클라이언트
+description: POST 한 번이 gRPC 호출 + DB 저장으로 이어지는 짧은 경로
+sidebar:
+  order: 3
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import ConceptPopover from '../../../../components/learn/ConceptPopover.svelte';
+import runRaw from '../../../../snippets/AgentController-run.java?raw';
+import clientRaw from '../../../../snippets/AgentGrpcClient.java?raw';
+import cmRaw from '../../../../snippets/AgentConnectionManager.java?raw';
+
+## 30초 요약
+
+`AgentController.runBenchmark()`는 세 일을 순서대로 합니다.
+
+1. **gRPC 클라이언트 확보** — `getClient(serverId)` 으로 서버 id에 맞는 `AgentGrpcClient`를 캐시에서 꺼냄
+2. **RunBenchmark RPC 호출** — Proto 빌더로 요청 만들고 blocking stub 호출
+3. **JobExecution 저장** — 이력 영속화 (실패해도 무시, best effort)
+
+그리고 `{ jobId }`를 반환합니다. 실제 디바이스 실행은 Go Agent 안에서 별도 스레드로 돌아갑니다.
+
+## 컨트롤러 — 코드 투어
+
+<CodeTour
+  client:visible
+  language="java"
+  source="AgentController.java (/benchmark/run)"
+  height={520}
+  code={runRaw}
+  steps={[
+    {
+      id: 'mapping',
+      title: '@PostMapping /benchmark/run',
+      lines: [6, 7],
+      body: '<p><code>serverId</code>는 query param, 나머지 파라미터는 body JSON으로 받음. <code>Map&lt;String, Object&gt;</code>로 받는 이유는 tool마다 params 구조가 달라서 — 타입 강제 대신 유연성 우선.</p>',
+    },
+    {
+      id: 'get-client',
+      title: 'getClient — gRPC 채널 확보',
+      lines: [8, 8],
+      body: '<p>내부적으로 <code>AgentConnectionManager.getOrCreate</code> → <code>AgentServer</code> DB 조회 → 캐시된 <code>AgentGrpcClient</code> 반환. 아래 두 번째 투어에서 상세.</p>',
+    },
+    {
+      id: 'parse-body',
+      title: 'body → RunBenchmarkRequest',
+      lines: [10, 24],
+      body: '<p>proto 빌더 체이닝. <code>tool</code> 문자열을 <code>BenchmarkTool</code> enum으로 변환, params Map을 그대로 전달. <code>addAllDeviceIds</code>로 여러 디바이스를 한 번에 지정 가능합니다.</p>',
+    },
+    {
+      id: 'rpc-call',
+      title: 'runBenchmark RPC (blocking)',
+      lines: [26, 26],
+      body: '<p>이 한 줄이 <strong>네트워크 경계</strong>. Agent는 즉시 jobId를 돌려주므로 blocking이어도 빠릅니다 (수 ms). 실제 작업은 Agent 내부에서 비동기로 돌아감.</p>',
+    },
+    {
+      id: 'save-history',
+      title: 'JobExecution 이력 저장',
+      lines: [28, 43],
+      body: '<p>try/catch로 감쌌습니다 — <strong>이력 저장 실패가 run 자체를 막으면 안 된다</strong>는 판단. config JSON에는 UI에서 온 body 전체를 직렬화해 재현 가능성 확보.</p>',
+    },
+    {
+      id: 'return',
+      title: '{ jobId } 반환',
+      lines: [45, 45],
+      body: '<p>딱 이것만. 프론트는 이 jobId로 다음 단계의 SSE를 구독합니다.</p>',
+    },
+  ]}
+/>
+
+## gRPC 클라이언트 — 채널 설정
+
+<CodeTour
+  client:visible
+  language="java"
+  source="AgentGrpcClient.java"
+  height={560}
+  code={clientRaw}
+  steps={[
+    {
+      id: 'autocloseable',
+      title: 'AutoCloseable — 채널 수명 관리',
+      lines: [6, 8],
+      body: '<p><code>ManagedChannel</code>은 리소스를 쥐므로 반드시 <code>shutdown()</code>이 필요. <code>AutoCloseable</code>을 구현해 try-with-resources나 <code>@PreDestroy</code>에서 정리.</p>',
+    },
+    {
+      id: 'constructor',
+      title: 'ManagedChannel 설정',
+      lines: [16, 25],
+      body: '<p><code>usePlaintext()</code> — TLS 없이. 내부망 전제. <code>maxInboundMessageSize 256MB</code> — trace raw 데이터가 커서. <code>keepAlive 30s</code> — 유휴 연결 유지로 재연결 비용 감소. <code>keepAliveWithoutCalls(true)</code> — idle 상태에서도 keepalive.</p>',
+    },
+    {
+      id: 'stubs',
+      title: 'blockingStub + asyncStub',
+      lines: [26, 28],
+      body: '<p>두 stub을 모두 생성해둡니다. <strong>단발 RPC는 blocking, 서버 스트림은 async</strong>로 써야 하기 때문. 같은 채널을 공유하므로 오버헤드 없음.</p>',
+    },
+    {
+      id: 'benchmark-rpcs',
+      title: 'RunBenchmark + GetJobStatus',
+      lines: [63, 70],
+      body: '<p>그냥 stub 호출을 얇게 감싼 래퍼. 별 로직이 없는 이유는 <strong>Proto 메시지를 그대로 통과시키는 것이 최선</strong>이라는 판단 — 컨트롤러가 이미 빌더 체이닝을 했으므로 여기서 다시 감쌀 필요 없음.</p>',
+    },
+    {
+      id: 'async-subscribe',
+      title: 'subscribeJobProgressAsync — 핵심',
+      lines: [77, 80],
+      body: '<p>다음 단계의 주인공. <code>StreamObserver</code>를 넘기면 Agent가 메시지를 보낼 때마다 <code>onNext</code>가 호출됩니다. <strong>blocking stub 대신 asyncStub을 쓴 이유</strong>가 여기.</p>',
+    },
+  ]}
+/>
+
+## 동적 채널 관리 — AgentConnectionManager
+
+<CodeTour
+  client:visible
+  language="java"
+  source="AgentConnectionManager.java"
+  height={520}
+  code={cmRaw}
+  steps={[
+    {
+      id: 'store',
+      title: 'serverId → client 캐시',
+      lines: [6, 11],
+      body: '<p><code>ConcurrentHashMap&lt;Long, AgentGrpcClient&gt;</code>로 <strong>서버 id별 단일 클라이언트</strong>. 슬롯의 HeadSlotStateStore와 같은 스레드 안전 패턴.</p>',
+    },
+    {
+      id: 'get-or-create',
+      title: 'getOrCreate — host:port 변화 감지',
+      lines: [13, 24],
+      body: '<p><code>compute</code>는 원자적. 이미 있는 클라이언트의 host·port와 요청이 일치하면 재사용, 다르면 <strong>기존을 close하고 새로 생성</strong>. 관리자가 Admin UI에서 서버 주소를 바꾸면 다음 getOrCreate에서 자동 반영됩니다.</p>',
+    },
+    {
+      id: 'test-connection',
+      title: 'testConnection — 캐시 미오염',
+      lines: [37, 44],
+      body: '<p>connection 테스트 버튼용. try-with-resources로 <strong>임시 클라이언트</strong>를 써서 실제 캐시는 건드리지 않음.</p>',
+    },
+    {
+      id: 'reconnect',
+      title: 'reconnect — 강제 재연결',
+      lines: [46, 58],
+      body: '<p>사용자가 "Reconnect" 버튼을 누르거나 네트워크 이상 시. 기존 close + 새로 생성 + 캐시 교체. 재연결은 장애 복구의 <strong>마지막 수단</strong>이지, 매번 할 일은 아님.</p>',
+    },
+    {
+      id: 'shutdown',
+      title: '@PreDestroy 전체 close',
+      lines: [69, 73],
+      body: '<p>애플리케이션 종료 시 모든 채널 정리. 빠뜨리면 JVM shutdown에 수초 더 걸리거나 경고 로그가 남음.</p>',
+    },
+  ]}
+/>
+
+## <ConceptPopover client:visible term="gRPC" concept="spring/grpc"><p>Protocol Buffers로 스키마를 정의하고 HTTP/2 기반으로 통신하는 RPC 프레임워크. 4가지 통신 패턴(unary, server stream, client stream, bidirectional stream)을 지원하며 MOVE는 unary + server stream을 주로 사용.</p></ConceptPopover> 와 <ConceptPopover client:visible term="StreamObserver" concept="spring/stream-observer"><p>gRPC 비동기 콜백 인터페이스. onNext(각 메시지) / onError(에러) / onCompleted(정상 종료) 3개 메서드로 스트리밍 RPC의 응답을 받습니다.</p></ConceptPopover>
+
+이 두 개념이 단계 4에서 본격 등장합니다. 지금 단계에서는 "채널을 어떻게 만들고, 어떤 stub을 준비해두는가"만 익히면 충분합니다.
+
+## 왜 엔드포인트마다 getClient 하는가
+
+각 엔드포인트 첫 줄이 `getClient(serverId)`로 시작하는 게 번거로울 수 있습니다. 왜 공통 인터셉터로 빼지 않나?
+
+- **명시적 > 암묵적**: serverId가 어느 필드에서 오는지 엔드포인트마다 다를 수 있음 (query, body, path). 인터셉터로 숨기면 오히려 읽기 어려움.
+- **테스트 용이성**: 단위 테스트에서 `AgentConnectionManager`를 mock해 특정 클라이언트를 주입하기 쉬움.
+- **오류 경로 명확**: 서버가 연결 불가일 때 에러가 어디서 발생하는지 스택 추적에 그대로 보임.
+
+"한 줄 반복"은 의도된 신호입니다.
+
+## 직접 해보기
+
+- [ ] MOVE 기동 로그에서 `AgentConnectionManager` 생성·종료 로그 확인
+- [ ] Admin에서 Agent 서버 host를 바꾼 뒤 다음 Run에서 "server ... changed, reconnecting" 로그 관찰
+- [ ] `testConnection` 버튼이 기존 세션을 끊지 않고 임시 확인만 하는지 (캐시 크기 변화 없음) 검증
+
+다음: [4. 진행률 중계 — gRPC 스트림 → SSE](/learn/l2-benchmark/04-progress-relay/) →

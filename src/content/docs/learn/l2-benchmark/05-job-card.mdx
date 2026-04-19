@@ -1,0 +1,161 @@
+---
+title: 5. 프론트 Job Card — 수신과 렌더
+description: ActiveJob · EventSource · $derived로 만드는 실시간 진행률 UI
+sidebar:
+  order: 5
+---
+
+import ConceptPopover from '../../../../components/learn/ConceptPopover.svelte';
+
+## 30초 요약
+
+프론트는 **`ActiveJob` 객체 배열**을 $state로 관리합니다. 각 ActiveJob은 자기 자신의 `EventSource`를 가지고, 받은 이벤트를 `events` 배열에 누적합니다. 화면(`AgentFloatingJobCard`)은 이 배열을 $derived로 가공해 디바이스별 진행률을 렌더합니다.
+
+슬롯 L2의 `createHeadSlotStore`와 비슷하지만, **job 라이프사이클이 유한**하다는 점이 가장 큰 차이입니다.
+
+## ActiveJob 타입
+
+```ts
+// routes/agent/types.ts
+export interface ActiveJob {
+  jobId: string;
+  serverId: number;
+  serverName: string;
+  type: 'benchmark' | 'scenario' | 'trace';
+  tool?: string;
+  jobName?: string;
+  deviceIds: string[];
+  createdAt: number;
+  events: JobProgress[];          // 누적된 progress 이벤트
+  state: 'running' | 'completed' | 'failed';
+  eventSource?: EventSource;      // 구독 핸들
+}
+```
+
+핵심은 **한 job이 자기 자신의 EventSource를 소유**한다는 점. 여러 job이 동시에 돌면 EventSource도 여러 개 열립니다. 서버 측 SSE 엔드포인트는 jobId별로 따로 스트림을 주므로 이 모델이 자연스럽습니다.
+
+## 구독 시작 — onJobStarted
+
+Run 버튼 핸들러에서 jobId를 받으면 ActiveJob 하나를 만들고 EventSource를 엽니다.
+
+```ts
+function onJobStarted(serverId: number, jobId: string, tool: string, deviceIds: string[]) {
+  const es = new EventSource(
+    `/api/agent/benchmark/progress?serverId=${serverId}&jobId=${jobId}`
+  );
+
+  const job: ActiveJob = {
+    jobId, serverId, serverName, type: 'benchmark',
+    tool, deviceIds,
+    createdAt: Date.now(),
+    events: [],
+    state: 'running',
+    eventSource: es,
+  };
+
+  es.addEventListener('progress', (e) => {
+    const p = JSON.parse(e.data) as JobProgress;
+    job.events = [...job.events, p]; // 배열 교체로 반응성 트리거
+  });
+
+  es.addEventListener('complete', () => {
+    job.state = 'completed';
+    es.close();
+  });
+
+  es.addEventListener('error', (e) => {
+    job.state = 'failed';
+    es.close();
+  });
+
+  activeJobs = [...activeJobs, job];
+}
+```
+
+- **배열 교체로 반응성**: `job.events.push(p)`도 Svelte 5의 deep proxy가 추적하지만, 명시적으로 새 배열로 교체하면 의도가 더 분명합니다.
+- **es.close()를 complete/error 핸들러에서**: 브라우저가 자동 재연결하지 않도록 명시적으로 닫음.
+
+## Job Card — 렌더 파이프라인
+
+<ConceptPopover client:visible term="$derived" concept="svelte/derived"><p>다른 $state에서 파생된 읽기 전용 값. 의존성을 자동 추적해 필요할 때만 재계산됩니다.</p></ConceptPopover>를 사용한 실제 Job Card 구조는 대략 이렇게 생겼습니다.
+
+```svelte
+<script lang="ts">
+  interface Props {
+    activeJobs: ActiveJob[];
+    onDismiss: (jobId: string) => void;
+    onViewResult: (serverId: number, jobId: string) => void;
+  }
+  let { activeJobs, onDismiss, onViewResult }: Props = $props();
+
+  // 완료된 job은 1분간만 노출 (UI 깜빡임 방지)
+  let visibleJobs = $derived(
+    activeJobs.filter(
+      (j) => j.state !== 'completed' || Date.now() - j.createdAt < 60_000,
+    ),
+  );
+
+  let runningCount = $derived(
+    activeJobs.filter((j) => j.state === 'running').length,
+  );
+
+  // 디바이스별 "가장 최근" progress를 뽑음
+  function getDeviceProgress(job: ActiveJob) {
+    const map = new Map<string, { state: string; percent: number }>();
+    for (const e of job.events) {
+      map.set(e.deviceId, { state: e.state, percent: e.progressPercent });
+    }
+    return map;
+  }
+</script>
+
+{#if visibleJobs.length > 0}
+  <div class="floating-card">
+    <header>실행 중 {runningCount}</header>
+    {#each visibleJobs as job (job.jobId)}
+      <div class="job">
+        <span>{job.tool} · {job.jobName}</span>
+        {#each [...getDeviceProgress(job).entries()] as [deviceId, p]}
+          <div class="device">
+            <span>{deviceId}</span>
+            <progress value={p.percent} max="100" />
+            <span>{p.state}</span>
+          </div>
+        {/each}
+      </div>
+    {/each}
+  </div>
+{/if}
+```
+
+## 왜 `getDeviceProgress`가 Map을 만들어내나
+
+`events` 배열에는 **동일한 deviceId에 대한 여러 progress**가 섞여 있습니다(20%, 60%, 100% …). 화면에는 **가장 최근 것**만 보여주면 되므로 Map으로 `deviceId → 최신 progress` 덮어쓰기. 슬롯의 `dedup` 패턴과 동일한 사고방식입니다.
+
+## 완료 1분 후 숨기는 이유
+
+`state === 'completed'`가 되자마자 Job Card에서 사라지면 사용자가 "완료됐다"는 신호를 놓칩니다. **1분 유예**를 두어:
+
+- 완료 순간을 UI에서 확인 가능
+- 오래 쌓이지 않아 카드가 비대해지지 않음
+- 영구 이력은 `/agent/results`에서 별도 조회
+
+## 슬롯 store와의 대조
+
+| 축 | 슬롯 store | Agent Job Card |
+|---|---|---|
+| 인스턴스 | 페이지당 1개 (Head당 1개) | job 하나당 1 EventSource |
+| 수명 | 페이지 전체 | job 종료 + 1분 |
+| 종료 이벤트 | 없음 | complete/error로 명시적 |
+| dedup 단위 | slotIndex | (job, deviceId) |
+| 재연결 | EventSource 기본 | complete 후 재연결 안 함 |
+
+두 모델의 "같고 다른 부분"을 머리로 비교하면 다음 L2(원격 터미널 등)에서 어떤 선택을 할지 감이 잡힙니다.
+
+## 직접 해보기
+
+- [ ] 두 벤치마크를 동시에 실행해 카드 안에 두 개의 Job이 나오고, 각자 EventSource로 구독되는지 확인 (DevTools Network에 progress SSE 2건)
+- [ ] 하나 완료되면 약 1분 후 사라지는지 관찰
+- [ ] 페이지 reload 시 카드가 초기화되는지 (현재는 localStorage 미사용 시 초기화됨)
+
+다음: [L2 벤치마크 완료 — 다른 모듈로](/learn/l1-overview/)
