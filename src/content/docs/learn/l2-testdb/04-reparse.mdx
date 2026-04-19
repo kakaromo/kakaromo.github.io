@@ -1,0 +1,153 @@
+---
+title: 4. Reparse — 비동기 재실행 Job
+description: FixedThreadPool(4) · ConcurrentHashMap 상태 저장 · 중복 방어 · SSH로 tentacle 파서 재호출
+sidebar:
+  order: 4
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import jobRaw from '../../../../snippets/ReparseJob.java?raw';
+import startRaw from '../../../../snippets/PerformanceReparseService-start.java?raw';
+
+## 30초 요약
+
+기존 History의 원본 로그는 보존된 채, **파서만 재실행**해 결과 JSON을 갱신하는 비동기 Job 시스템.
+
+- **ReparseJob** = 상태 머신 (preparing/running/completed/failed) + 진행률
+- **PerformanceReparseService** = 4-worker 풀 + Job 등록/조회/SSH 실행
+- **history → Job 역 매핑**으로 **같은 history 중복 리파싱 차단**
+- 경로 해석은 fetchResultData와 **동일 로직** (코드 중복 허용 — 서로 다른 쓰임)
+
+## ReparseJob — 상태 컨테이너
+
+<CodeTour
+  client:visible
+  language="java"
+  source="ReparseJob.java"
+  height={440}
+  code={jobRaw}
+  steps={[
+    {
+      id: 'immutable',
+      title: '6 final 필드 — 생성 시 고정',
+      lines: [8, 19],
+      body: '<p>jobId / historyId / tcId / tentacleName / logDir / nas / parserName. <strong>Job이 생성된 후 바뀌지 않는 메타</strong>. UUID로 jobId를 발급해 외부 참조를 안정화.</p>',
+    },
+    {
+      id: 'volatile',
+      title: 'volatile 진행 필드',
+      lines: [20, 26],
+      body: '<p>state / totalFiles / currentIndex / currentFileName / error. <strong>워커 쓰레드가 write + REST 스레드가 read</strong> → volatile로 가시성 보장. 세밀한 락은 불필요(각 쓰기는 atomic).</p>',
+    },
+    {
+      id: 'ctor',
+      title: '생성 시 jobId UUID + 타임스탬프',
+      lines: [28, 38],
+      body: '<p>생성 순간 자동 jobId 발급 — 호출자가 명명 부담 없음. startedAt/updatedAt 동시 세팅으로 <strong>대기 중 Job이 실제로 시작했는지</strong> 시간 비교 가능.</p>',
+    },
+    {
+      id: 'transitions',
+      title: '3 메서드 상태 전이',
+      lines: [40, 55],
+      body: '<p>updateProgress / complete / fail. <strong>상태 전환이 이 3 메서드로만</strong> — 외부에서 setState 직접 못 씀(없어서 안전). 도메인 상태를 API로 제한하는 기본 패턴.</p>',
+    },
+  ]}
+/>
+
+## startReparse — Job 등록 + 워커 제출
+
+<CodeTour
+  client:visible
+  language="java"
+  source="PerformanceReparseService.startReparse"
+  height={640}
+  code={startRaw}
+  steps={[
+    {
+      id: 'thread-pool',
+      title: 'FixedThreadPool(4) + daemon',
+      lines: [10, 14],
+      body: '<p>동시 최대 4 Job. daemon 스레드라 <strong>JVM 종료 시 workaround 없이 끝남</strong>. 스레드 이름 <code>reparse-worker</code>로 스레드 덤프에서 식별 쉬움.</p>',
+    },
+    {
+      id: 'maps',
+      title: 'jobs Map + historyJobMap',
+      lines: [16, 18],
+      body: '<p>jobId→Job과 historyId→jobId <strong>두 인덱스 병렬 유지</strong>. "같은 history 중복 실행 차단"이 첫 번째 목적 → 역 매핑이 핵심.</p>',
+    },
+    {
+      id: 'version',
+      title: 'AtomicLong version — 변경 감지',
+      lines: [19, 19],
+      body: '<p>Job 시작/완료마다 increment. <strong>폴링 클라이언트가 version 비교로 fetch 여부 결정</strong> — SSE 안 쓰고도 효율 확보.</p>',
+    },
+    {
+      id: 'ctor',
+      title: '생성자 — yaml 값 주입',
+      lines: [20, 33],
+      body: '<p>DataService와 <strong>같은 <code>tentacle.log-prefix</code>/<code>tentacle.head.log-path</code></strong> 읽음. 두 서비스가 경로 규칙을 공유.</p>',
+    },
+    {
+      id: 'dupcheck',
+      title: '중복 방어 — 이미 running이면 거절',
+      lines: [38, 47],
+      body: '<p>state가 preparing/running이면 <code>IllegalStateException</code>. <strong>completed/failed는 허용</strong> — 재시도 가능. 한 history가 동시에 두 번 돌아 결과 덮어쓰기 방지.</p>',
+    },
+    {
+      id: 'validate',
+      title: 'History + 상태 검증',
+      lines: [48, 57],
+      body: '<p>History 존재 · logPath 있음 · <strong>RUNNING이 아닐 것</strong>. RUNNING은 아직 1차 파서가 돌고 있음 → 리파서는 완료된 실행만 대상.</p>',
+    },
+    {
+      id: 'tc-parser',
+      title: 'TC → Parser 검증',
+      lines: [59, 73],
+      body: '<p>Parser.name이 없으면 재실행 불가 — 어떤 파서 바이너리를 호출할지 모름. 한 단계씩 null check 후 이유를 다르게 제시해 로그 추적성 확보.</p>',
+    },
+    {
+      id: 'path-resolve',
+      title: '경로 해석 — DataService와 동일 규칙',
+      lines: [75, 93],
+      body: '<p>logPath + slotLocation → <code>tentacleName</code> + <code>logDir</code> + <code>isNas</code>. <strong>코드 중복 허용</strong> — 두 서비스가 경로 규칙을 서로 다른 쓰임으로 사용(읽기 vs 명령 실행)해 공유 헬퍼로 추출 시 결합도 오히려 높아짐.</p>',
+    },
+    {
+      id: 'register',
+      title: 'Job 생성 + 등록 + submit',
+      lines: [95, 102],
+      body: '<p>3개 write를 순서대로: jobs put → historyJobMap put → version++ → executor.submit. <strong>submit 전에 Map 두 개 먼저 쓰는 것이 중요</strong> — 워커가 즉시 돌아도 조회 API가 Job을 찾을 수 있어야 함.</p>',
+    },
+  ]}
+/>
+
+## 왜 SSE가 아니라 version 폴링인가
+
+리파스 진행률을 UI에 보여줘야 하지만 MOVE는 **SSE 대신 AtomicLong version + 폴링** 선택.
+
+| 축 | SSE (e.g. 벤치마크) | version 폴링 (Reparse) |
+|---|---|---|
+| 필요 속도 | 초 단위 로그 실시간 | 수 초 허용 |
+| 동시 job 수 | 장시간 소수 | 단시간 다수(4 병렬 × 여러 사용자) |
+| 구현 비용 | SseEmitter + 브릿지 | Atomic++ + GET |
+| 실패 시 재시작 | 재연결 로직 필요 | 다음 폴링에서 자연 복구 |
+| 브라우저 연결 한도 | 도메인당 ~6 | 무제한(요청마다 새) |
+
+**수초 허용 + 동시 많음** → 폴링이 더 단순. MOVE의 모든 "작업 진행률"이 SSE를 쓰는 건 아니라는 예시.
+
+## "같은 코드 중복 허용"의 판단
+
+fetchResultData와 Reparse의 경로 해석이 **똑같이 3브랜치**. DRY 유혹이 강하지만 분리한 이유:
+
+- **쓰임이 다름**: Data는 파일 읽기(read), Reparse는 SSH 명령 생성(write) — 시그너처가 다음에 갈라질 여지
+- **수명이 다름**: Data는 요청마다, Reparse는 Job 생성 시 한 번
+- 현재 3줄 × 3브랜치 = 9줄 정도라 **추출 비용이 결합도 비용보다 큼**
+
+중복이 생기면 주석으로 "another copy in PerformanceResultDataService" 같은 pointer를 두는 편이 안전. 코드베이스 전체에서 이 규칙은 **"중복 2번까지는 OK, 3번째에 추출"** (Rule of Three) 근사치로 운영.
+
+## 직접 해보기
+
+- [ ] 한 historyId로 startReparse 호출 두 번 연속 → 두 번째가 `IllegalStateException`
+- [ ] `jobs.values()`를 REST로 덤프해보고, `updatedAt`이 진행률에 따라 바뀌는지 확인
+- [ ] result="RUNNING"인 history에 startReparse → 즉시 거절되는지(이유: 아직 1차 파싱 중)
+
+다음: [5. Dashboard 집계](/learn/l2-testdb/05-dashboard/) →

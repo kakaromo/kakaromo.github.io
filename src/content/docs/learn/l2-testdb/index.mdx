@@ -1,0 +1,101 @@
+---
+title: TestDB — 성능·호환성 결과 저장 모델
+description: 열두 번째 L2 · 두 번째 크로스-컷 · 여러 L2가 소비하는 데이터 레이어
+sidebar:
+  order: 0
+---
+
+import ArchitectureDiagram from '../../../../components/learn/ArchitectureDiagram.svelte';
+
+## 30초 요약
+
+TestDB는 **성능·호환성 두 도메인 × (TestRequest / TestCase / History)** 3-entity 트리플로 실행 이력을 모델링하는 데이터 레이어입니다.
+
+- **TestRequest**: FW 메타(컨트롤러·NAND·CS 버전) — *무엇을 검증하는가*
+- **TestCase**: 실행 시나리오 + 파서 — *어떻게 측정하는가*
+- **History**: 실행 결과 스냅샷 — *언제·어디서·결과는*
+
+**원본 JSON은 DB에 없음** — History는 `logPath`로 원격 파일을 가리키기만 하고, 실제 측정 데이터는 tentacle/HEAD NAS에 파일로 존재. Excel export·Reparse·결과 조회가 모두 `PerformanceResultDataService.fetchResultData`를 거쳐 JSON을 끌어옵니다.
+
+## 왜 "크로스-컷"인가
+
+Auth가 **요청 축**의 크로스-컷이라면, TestDB는 **데이터 축**의 크로스-컷입니다. 앞 10 L2 중 절반이 TestDB를 참조:
+
+| L2 | TestDB 의존 방식 |
+|---|---|
+| 슬롯 | `SlotInfomation.testcaseIds` → TC 조회, SlotCard에 현재 TC 이름 표시 |
+| Agent 벤치마크 | 완료 시 PerformanceHistory 쓰기(외부 트리거) |
+| Excel Export | `fetchResultData` 재사용 — JSON API와 xlsx Generator가 같은 진입점 |
+| Pre-Command | TC statuses 읽어 completed position 판정 |
+| T32 Dump | 결과 폴더명에 `{setLocation}_{testToolName}_{testTrName}` 조립 |
+| Log Browser | History.logPath가 가리키는 원격 파일을 탐색/다운로드 |
+
+나머지(원격·Metadata·Bitbucket·MinIO)는 TestDB와 직접 연결 없음. **"결과를 생산·소비하는 L2라면 모두 TestDB를 지나간다"**.
+
+## 6단계 구조
+
+<ArchitectureDiagram
+  client:visible
+  height={320}
+  caption="TR(FW) · TC(시나리오) · History(결과) 세 엔티티가 부모-자식 관계로 묶이고, logPath가 원격 JSON으로 연결"
+  altText="PerformanceTestRequest(FW 메타)와 PerformanceTestCase(시나리오 정의)가 각각 PerformanceHistory(실행 결과)를 ManyToOne으로 가리킵니다. History는 logPath만 저장하고 실제 JSON은 tentacle이나 HEAD NAS의 파일 시스템에 존재. PerformanceResultDataService가 History를 받아 TC/Parser/TR을 조회한 뒤 LogBrowserService로 JSON을 읽고 tryRepairJson으로 불완전 JSON을 복구합니다. 이 결과는 JSON API와 Excel export, Reparse 세 소비자가 공유합니다."
+  nodes={[
+    { id: 'tr',     label: 'TestRequest', sublabel: 'FW 메타',       layer: 'state', x: 0,   y: 60,  href: '/learn/l2-testdb/01-entities/' },
+    { id: 'tc',     label: 'TestCase',    sublabel: '시나리오 + 파서', layer: 'state', x: 180, y: 60,  href: '/learn/l2-testdb/01-entities/' },
+    { id: 'hist',   label: 'History',     sublabel: '결과 스냅샷',    layer: 'state', x: 360, y: 60,  href: '/learn/l2-testdb/02-history/' },
+    { id: 'svc',    label: 'DataService', sublabel: 'fetch + repair', layer: 'be',    x: 540, y: 60,  href: '/learn/l2-testdb/03-fetch/' },
+    { id: 'repair', label: 'repairJson',  sublabel: 'RUNNING 복구',   layer: 'tx',    x: 540, y: 180, href: '/learn/l2-testdb/03-fetch/' },
+    { id: 'reparse',label: 'Reparse',     sublabel: 'SSH + 재실행',   layer: 'tx',    x: 720, y: 60,  href: '/learn/l2-testdb/04-reparse/' },
+    { id: 'dash',   label: 'Dashboard',   sublabel: '집계 + byFw/Tc', layer: 'fe',    x: 360, y: 220, href: '/learn/l2-testdb/05-dashboard/' },
+  ]}
+  edges={[
+    { from: 'tr',   to: 'hist',    label: 'trId',  kind: 'sync' },
+    { from: 'tc',   to: 'hist',    label: 'tcId',  kind: 'sync' },
+    { from: 'hist', to: 'svc',     label: 'logPath', kind: 'sync' },
+    { from: 'svc',  to: 'repair',  label: 'fallback', kind: 'async' },
+    { from: 'svc',  to: 'reparse', label: 'share path logic', kind: 'sync' },
+    { from: 'hist', to: 'dash',    label: 'aggregate', kind: 'sync' },
+  ]}
+/>
+
+## 앞 11 L2와의 대조
+
+| 축 | 대부분의 L2 | Auth (11번째) | **TestDB (12번째)** |
+|---|---|---|---|
+| 역할 | 기능 하나 완결 | 모든 요청을 가로지름 | **여러 L2가 데이터를 공유** |
+| 쓰기 시점 | 기능별 상이 | ADFS 콜백 / 권한 변경 | **외부(tentacle) 트리거가 대부분 — portal은 소비** |
+| 읽기 진입점 | 각 Controller | SecurityContext | **`fetchResultData` 하나로 JSON·Excel·Reparse 전부** |
+| 상태 머신 | 각 L2가 고유 | 세션 만료만 | **RESULT: PASS/FAIL/RUNNING — RUNNING 중 부분 JSON도 허용** |
+| 저장 매체 | DB 또는 파일 | DB + HttpSession | **DB(메타) + 원격 파일(측정값) 이원 저장** |
+
+## 이원 저장 원칙
+
+**왜 JSON을 DB에 안 넣는가**:
+
+- 측정 데이터가 수십~수백 MB (한 TC 실행당 차트 수십 개) — DB 부하
+- Excel Generator(Go)와 Reparser(SSH로 tentacle에서 파서 재실행) 둘 다 **파일 시스템 기반** — DB에 넣으면 매번 export/re-read 왕복
+- 원본 log/trace는 History 삭제 후에도 tentacle에 남아있어 재현 가능
+
+**DB에는 무엇만 남는가**:
+
+- 메타: 누가(TR) · 무엇을(TC) · 어디서(slotLocation/setId) · 언제(startTime) · 결과(PASS/FAIL)
+- 포인터: logPath (원격 파일 절대 경로를 암시하는 상대 키)
+
+## 학습 순서
+
+| 순서 | 페이지 | 관찰 포인트 |
+|---|---|---|
+| 1 | [엔티티 3종](/learn/l2-testdb/01-entities/) | TestRequest·TestCase·History 필드 분담 + `getFw()` 전용 패턴 |
+| 2 | [History 상세](/learn/l2-testdb/02-history/) | 성능 vs 호환성 차이 + logPath의 3 브랜치 |
+| 3 | [DataService](/learn/l2-testdb/03-fetch/) | 경로 해석 + JSON 복구 + ResultData record |
+| 4 | [Reparse](/learn/l2-testdb/04-reparse/) | 비동기 Job + FixedThreadPool(4) + 중복 방어 |
+| 5 | [Dashboard 집계](/learn/l2-testdb/05-dashboard/) | JPQL 그룹 쿼리 + byFw/byTc 조립 |
+| 6 | [12 L2 연결 지도](/learn/l2-testdb/06-consumers/) | TestDB를 관통하는 다른 L2 6종의 접점 |
+
+## 직접 해보기
+
+- [ ] `PerformanceTestRequest.java`에서 `getFw()`를 호출하고, 반대로 `setFw("foo")`는 무시되는지 확인
+- [ ] `PerformanceHistory.logPath`가 `null`인 RUNNING 상태 행을 DB에서 찾고, slotLocation으로 경로를 만드는 단계(`03-fetch`)를 추적
+- [ ] `fetchResultData` 호출 → `COLLECTING:` prefix 예외가 던져지는 조건을 코드에서 확인
+
+다음: [1. 엔티티 3종](/learn/l2-testdb/01-entities/) →

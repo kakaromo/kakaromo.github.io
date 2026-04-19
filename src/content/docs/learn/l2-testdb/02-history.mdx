@@ -1,0 +1,149 @@
+---
+title: 2. History — logPath 포인터 + 3 브랜치
+description: 성능 History와 호환성 History 비교 · logPath 해석 규칙 · RUNNING 상태
+sidebar:
+  order: 2
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import perfHistRaw from '../../../../snippets/PerformanceHistory-entity.java?raw';
+import compatHistRaw from '../../../../snippets/CompatibilityHistory-entity.java?raw';
+
+## 30초 요약
+
+- **logPath = 원격 파일로의 포인터 문자열** — DB에는 경로만, 실제 JSON은 tentacle `/home/octo/tentacle/history/...` 또는 HEAD `/home/octo/nas/NAS/...`
+- **PerformanceHistory** vs **CompatibilityHistory** — 시간 타입(String vs LocalDateTime), 장치 메타(setId vs setSerial 직접), failCause 유무가 갈림
+- **result 상태**: `PASS` · `FAIL` · `RUNNING` · (간혹 `COLLECTING` UI 가상 상태) — RUNNING은 logPath가 null일 수도 있음
+
+## PerformanceHistory
+
+<CodeTour
+  client:visible
+  language="java"
+  source="PerformanceHistory.java"
+  height={480}
+  code={perfHistRaw}
+  steps={[
+    {
+      id: 'times',
+      title: 'String 타임스탬프',
+      lines: [26, 34],
+      body: '<p>startTime/endTime/runningTime이 <strong>String 타입</strong>. tentacle이 자체 형식(yyyyMMdd_HHmmss 등)으로 쓰기 편하도록 — 포털은 파싱 안 함. CompatibilityHistory는 LocalDateTime → 신규 설계라 타입 진화.</p>',
+    },
+    {
+      id: 'setid-logpath',
+      title: 'setId + logPath',
+      lines: [35, 40],
+      body: '<p>setId는 <strong>SetInfomation FK(모델명 조회용)</strong>, logPath는 원격 파일 위치. 둘 다 nullable — RUNNING 중에는 logPath가 비어있을 수 있음.</p>',
+    },
+    {
+      id: 'tc-manytoone',
+      title: 'tcId + ManyToOne insertable=false',
+      lines: [41, 48],
+      body: '<p>tcId 컬럼과 testCase 관계 매핑이 <strong>같은 컬럼을 두 번</strong>. 관계는 읽기 전용(insertable/updatable=false), 실제 CUD는 tcId로. <code>@JsonIgnore</code>로 응답에서 제외 — REST가 TR/TC까지 재귀 로드하지 않도록.</p>',
+    },
+    {
+      id: 'tr-manytoone',
+      title: 'trId + ManyToOne 같은 패턴',
+      lines: [49, 56],
+      body: '<p>TR 참조도 동일. 서비스 단에서 필요하면 lazy로 펼침. <strong>대시보드 집계는 ID 조인 대신 findAll + Map 조회</strong>(DashboardController) — JPQL 복잡도 줄임.</p>',
+    },
+    {
+      id: 'slot-uploaded',
+      title: 'slotLocation + uploaded + result + fileSystem',
+      lines: [57, 67],
+      body: '<p>slotLocation은 <code>T10-4</code> 형태 — tentacle 이름 + 슬롯 번호 조합. <code>uploaded</code>는 결과 업로드 상태, <code>fileSystem</code>은 UFS/eMMC 등 파일 시스템 구분. <strong>logPath 해석이 이 조합으로 분기</strong>.</p>',
+    },
+  ]}
+/>
+
+## CompatibilityHistory — 확장된 장치 메타
+
+<CodeTour
+  client:visible
+  language="java"
+  source="CompatibilityHistory.java"
+  height={420}
+  code={compatHistRaw}
+  steps={[
+    {
+      id: 'manual-id',
+      title: '@Id만 — GeneratedValue 없음',
+      lines: [22, 24],
+      body: '<p>Performance와 달리 ID 자동 증가 안 씀. <strong>외부 시스템(호환성 테스트 통합 툴)이 ID를 먼저 생성</strong>해 portal이 받아 저장. 도메인 경계가 다름을 스키마에서 선언.</p>',
+    },
+    {
+      id: 'failcause',
+      title: 'failCause — 호환성에만 있는 필드',
+      lines: [28, 30],
+      body: '<p>성능은 PASS/FAIL 이유가 차트(JSON) 안에 있음. 호환성은 <strong>pass/fail 원인이 짧은 카테고리 텍스트</strong>로 필요 — 디바이스별 집계 용도.</p>',
+    },
+    {
+      id: 'datetime-times',
+      title: 'LocalDateTime startTime/endTime',
+      lines: [31, 37],
+      body: '<p>String 아닌 <strong>LocalDateTime</strong>. 호환성은 portal이 직접 집계(매일·매주 통계)하므로 타입 안전한 datetime이 필요. 대시보드 기간 필터가 쉬워짐.</p>',
+    },
+    {
+      id: 'device-meta',
+      title: 'setSerial/productName/modelName/deviceName',
+      lines: [40, 52],
+      body: '<p>FK(setId) 대신 <strong>4개 컬럼에 장치 메타를 평탄화</strong>. 호환성은 디바이스가 매우 다양해(수백 종) SetInfomation 마스터를 유지하지 못함 — 측정 시점 스냅샷을 그대로 보관.</p>',
+    },
+    {
+      id: 'tentacle-usb',
+      title: 'tentacleIp + usbId',
+      lines: [53, 58],
+      body: '<p>어느 tentacle의 어떤 USB 포트에서 돌았는지. <strong>동일 장치가 다른 포트에서 돌면 다른 결과</strong>가 나올 수 있어 재현성 위해 기록. 성능은 slotLocation으로 축약.</p>',
+    },
+  ]}
+/>
+
+## logPath 해석 3 브랜치
+
+`PerformanceResultDataService.fetchResultData`가 결정하는 경로 규칙:
+
+| 조건 | tentacleName | remotePath |
+|---|---|---|
+| **logPath not null + contains "UFS"** | `HEAD` | `{headLogPath}/NAS/{dirPath}/{parser}.json` |
+| **logPath not null + no "UFS"** | `slotLocation → T\\d+` 추출 | `{logPrefix}/history/{dirPath}/{parser}.json` |
+| **logPath null** (RUNNING 중) | `slotLocation → T\\d+` 추출 | `{logPrefix}/slot{N}/log/{parser}.json` |
+
+`{headLogPath}` = `tentacle.head.log-path` (기본 `/home/octo/nas`)
+`{logPrefix}` = `tentacle.log-prefix` (기본 `/home/octo/tentacle`)
+
+**규칙의 의미**:
+
+- "UFS" 포함 = HEAD에서 실행된 UFS 파일시스템 테스트 → 공용 NAS
+- 일반 완료 TC → tentacle 자체 디스크 `history/`
+- RUNNING 중 → tentacle의 `slot{N}/log/` 라이브 경로. **아직 history/로 이동 안 됨**
+
+## 성능 vs 호환성 — 한 눈에
+
+| 축 | PerformanceHistory | CompatibilityHistory |
+|---|---|---|
+| ID 생성 | @GeneratedValue IDENTITY | 외부 제공 (@Id만) |
+| 시간 타입 | String (tentacle format) | LocalDateTime |
+| 장치 메타 | setId FK (SetInfomation) | 4개 컬럼 평탄화 |
+| 실패 원인 | JSON 차트 안 | failCause 전용 컬럼 |
+| 식별 위치 | slotLocation (T10-4) | tentacleIp + usbId |
+| 결과 상태 | PASS/FAIL/RUNNING | PASS/FAIL (RUNNING 드묾) |
+
+## RUNNING의 의미 — 두 층
+
+**DB 상태**: result = `"RUNNING"` — tentacle이 아직 완료 이벤트를 안 보낸 상태.
+
+**UI 가상 상태**: `"COLLECTING"` — DB에는 없음. fetchResultData가 던지는 `IllegalArgumentException("COLLECTING:{path}")`를 컨트롤러가 **200 OK + body.status="COLLECTING"**으로 전환:
+
+- "결과는 아직 완성이 아니지만 차트 그릴 시도는 해볼 수 있음"
+- 프론트가 이 상태를 받으면 1-2초 후 재호출 — 폴링 없이 **lazy refresh**
+
+이 설계로 **완료 알림 채널(SSE/웹훅)을 안 만들어도 됨** — 사용자가 궁금할 때만 재요청.
+
+## 직접 해보기
+
+- [ ] `PerformanceHistory` row의 logPath가 `UFS_...` 문자열을 포함한 경우 `fetchResultData`가 `tentacleName="HEAD"` 로 가는지 디버거로 추적
+- [ ] result="RUNNING" + logPath=null인 상태에서 fetchResultData 호출 → `IllegalArgumentException("COLLECTING:...")` 확인
+- [ ] `CompatibilityHistory.ID`를 중복 생성 시 JPA가 EntityExistsException을 던지는지 (GeneratedValue 없기 때문)
+
+다음: [3. DataService — fetch + repair](/learn/l2-testdb/03-fetch/) →

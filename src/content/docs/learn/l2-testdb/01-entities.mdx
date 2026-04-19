@@ -1,0 +1,141 @@
+---
+title: 1. 엔티티 3종 — TR · TC · History
+description: FW 메타(TR) · 시나리오(TC) · 결과 스냅샷(History) 세 엔티티로 트리플 구성
+sidebar:
+  order: 1
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import trRaw from '../../../../snippets/PerformanceTestRequest-entity.java?raw';
+import tcRaw from '../../../../snippets/PerformanceTestCase-entity.java?raw';
+
+## 30초 요약
+
+- **PerformanceTestRequest(TR)** — FW 메타만. TR 하나가 여러 TC 실행에 공유됨. "어떤 펌웨어를 검증하는가"
+- **PerformanceTestCase(TC)** — 시나리오 정의 + `parserId`(측정 결과 파일 이름). "어떻게 측정하는가"
+- **PerformanceHistory** — TR × TC 실행 한 번의 결과. TR/TC를 ManyToOne으로 참조.
+
+세 엔티티 모두 `implements Serializable` — **Redis 캐시가 JDK serializer를 쓰기 때문에** 필수.
+
+## TestRequest — FW 메타 + getFw() 전용 패턴
+
+<CodeTour
+  client:visible
+  language="java"
+  source="PerformanceTestRequest.java"
+  height={520}
+  code={trRaw}
+  steps={[
+    {
+      id: 'columns',
+      title: 'FW 메타 7필드',
+      lines: [25, 47],
+      body: '<p>컨트롤러 / spec / cellType / nandType / nandSize / density / fwVersion / baseFwVersion. <strong>null=false 로 모두 강제</strong> — FW 정체성이 불완전한 row를 차단.</p>',
+    },
+    {
+      id: 'optional',
+      title: 'OEM / CS_VERSION은 nullable',
+      lines: [49, 53],
+      body: '<p>일부 실험용 FW는 OEM·CS 버전이 없음 — 여기만 선택. <strong>스키마에 "필수"와 "선택"이 명확히 갈림</strong>.</p>',
+    },
+    {
+      id: 'prepersist',
+      title: '@PrePersist 자동 타임스탬프',
+      lines: [55, 61],
+      body: '<p>date 컬럼은 컨트롤러에서 안 받음 — JPA 생명주기 훅에서 채움. <strong>API 호출자가 date를 조작할 수 없게</strong> 서버가 단독 기록.</p>',
+    },
+    {
+      id: 'getfw',
+      title: '@Transient getFw() — 6필드 합성',
+      lines: [63, 66],
+      body: '<p>FW 정체성을 하나의 문자열로. <strong>DB에 안 저장</strong> — 매번 조립. 다른 엔티티/대시보드에서 TR 참조 시 이 값 사용.</p>',
+    },
+    {
+      id: 'setfw',
+      title: '⚠️ setFw(ignored) — Redis 역직렬화 방어',
+      lines: [68, 70],
+      body: '<p>getFw()가 직렬화 시 <code>fw</code> 필드로 나감 → 역직렬화가 setFw(String)을 호출해 실제 필드를 덮어쓰려 함 → 본체 컨트롤러/NAND 조합과 불일치 발생. <strong>setter를 빈 몸체로 둬서 무시</strong>. 한 줄이 한 대형 버그를 막는 지점.</p>',
+    },
+  ]}
+/>
+
+## TestCase — 시나리오 + 파서 핸들
+
+<CodeTour
+  client:visible
+  language="java"
+  source="PerformanceTestCase.java"
+  height={420}
+  code={tcRaw}
+  steps={[
+    {
+      id: 'name-file',
+      title: 'name + fileName — UI vs 실행',
+      lines: [25, 29],
+      body: '<p>name은 사용자 표시, fileName은 <strong>tentacle이 실행하는 스크립트 파일</strong>. 둘을 분리해 이름 변경이 실행 파일에 영향 없게.</p>',
+    },
+    {
+      id: 'parserid',
+      title: 'parserId — 결과 JSON 파일명 단서',
+      lines: [30, 32],
+      body: '<p>PerformanceParser 테이블의 FK. <strong>파서 이름이 그대로 JSON 파일명</strong>이 됨 — <code>{dirPath}/{parser.name}.json</code>. TC → parser → 파일명의 3단 체인.</p>',
+    },
+    {
+      id: 'meta',
+      title: 'author / date / hidden',
+      lines: [33, 46],
+      body: '<p>author = 생성자, hidden = 소프트 삭제(0/1). <strong>삭제 대신 숨김</strong> 정책 — History가 이미 참조 중이면 TC를 실제 삭제할 수 없음.</p>',
+    },
+    {
+      id: 'category-iotype',
+      title: 'category / ioType — 분류 축',
+      lines: [47, 52],
+      body: '<p>category (basic / stress / …), ioType (SEQ / RAND / MIXED). <strong>15개 파서를 가로지르는 공통 필터</strong>로 UI 탭 구성.</p>',
+    },
+    {
+      id: 'tcoption',
+      title: 'tcOption — 자유 형식 옵션 문자열',
+      lines: [53, 55],
+      body: '<p>JSON도 아니고 구조화도 아님. <strong>각 파서가 알아서 해석</strong> — TC마다 필요한 커스텀 파라미터를 담는 escape hatch.</p>',
+    },
+  ]}
+/>
+
+## 왜 "도메인 × 3-entity" 패턴인가
+
+Performance와 Compatibility 두 도메인이 **동일한 구조**를 복제해 씁니다.
+
+| 의도 | Performance | Compatibility |
+|---|---|---|
+| FW 정체성 | PerformanceTestRequest | CompatibilityTestRequest |
+| 시나리오 정의 | PerformanceTestCase | CompatibilityTestCase |
+| 실행 결과 | PerformanceHistory | CompatibilityHistory |
+
+**공통 추상화 안 쓴 이유**:
+
+- 도메인별 필드가 다름 — PerformanceHistory는 setId/fileSystem, CompatibilityHistory는 setSerial/setProductName/failCause
+- `@MappedSuperclass` 도입 시 공통 필드 3개 + 도메인 필드 10+개가 섞여 **가독성 악화**
+- JPA 상속(`@Inheritance`)은 테이블 조인/식별 컬럼이 추가돼 **대시보드 집계 쿼리가 복잡해짐**
+
+**복제의 비용은 "바꿀 때 두 번"인데, 두 도메인이 서로 영향을 거의 안 줌** → Samsung 테스트 프로세스상 성능/호환성 이벤트가 분리 운영되므로 허용.
+
+## Redis JDK Serializer의 의미
+
+```
+ObjectMapper(Jackson) → JSON 직렬화 → fw 키 포함 → deserialize → setFw(String) 호출 ❌
+JDK Serializer       → 바이너리 stream → @Transient 무시 → setFw 호출 안 됨 ✅
+```
+
+**MOVE는 JDK Serializer를 선택**:
+
+- Hibernate proxy + JSON deserialize의 `activateDefaultTyping` 충돌 회피
+- `@Transient`가 저절로 무시됨 — `setFw` 빈 메서드는 "혹시 모를" 안전망
+- 단점: 스키마가 바뀌면 `serialVersionUID` 충돌 가능. 배포 전 `FLUSHALL` 운영 정책으로 완화
+
+## 직접 해보기
+
+- [ ] PerformanceTestCase row에서 `hidden=1`로 바꿨을 때, 서비스 `findAll` 응답에서 제외되는지 확인 (hint: PerformanceTestCaseService)
+- [ ] TR을 생성 후 TestDB 툴(DBeaver 등)에서 `DATE` 컬럼이 자동 세팅됐는지 확인
+- [ ] TR을 Redis에서 직접 읽어(`@Cacheable` 키), getFw 결과가 본체 필드와 일치하는지 재계산 비교
+
+다음: [2. History 상세](/learn/l2-testdb/02-history/) →

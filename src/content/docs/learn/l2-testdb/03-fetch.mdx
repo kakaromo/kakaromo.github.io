@@ -1,0 +1,233 @@
+---
+title: 3. DataService — fetch + repair
+description: History → TC → Parser 조회 · 경로 해석 · 불완전 JSON 복구 · ResultData record
+sidebar:
+  order: 3
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import DataFlowPath from '../../../../components/learn/DataFlowPath.svelte';
+import fetchRaw from '../../../../snippets/PerformanceResultDataService-fetch.java?raw';
+import repairRaw from '../../../../snippets/PerformanceResultDataService-repair.java?raw';
+
+## 30초 요약
+
+`PerformanceResultDataService.fetchResultData(historyId)`가 TestDB 읽기 경로의 **유일한 진입점**:
+
+1. History → TC → Parser 조회 (각 null 방어)
+2. logPath + slotLocation → `tentacleName` + `remotePath` 조립 (3 브랜치)
+3. `LogBrowserService.readFileContent`로 원격 JSON 로드
+4. Jackson `readTree` 시도 → 실패 시 `tryRepairJson` → 그래도 실패 + RUNNING이면 `COLLECTING` 예외
+5. TR에서 FW, SetInfomation에서 modelName 보충
+6. `ResultData` record로 묶어 반환
+
+**JSON API · Excel Export · 미래의 Reparse UI** 모두 이 한 메서드를 거칩니다.
+
+## fetchResultData — 엔트리부터 반환까지
+
+<CodeTour
+  client:visible
+  language="java"
+  source="PerformanceResultDataService.fetchResultData"
+  height={660}
+  code={fetchRaw}
+  steps={[
+    {
+      id: 'deps',
+      title: '의존성 — 5 서비스 + LogBrowser',
+      lines: [16, 26],
+      body: '<p>History / TC / Parser / TR / SetInfomation 서비스 다섯 개 + LogBrowserService. <strong>한 메서드가 테스트 도메인 전체의 엔티티를 모읍니다</strong> — 그래서 별도 서비스로 추출해 Excel/JSON API가 공유.</p>',
+    },
+    {
+      id: 'config',
+      title: '@Value — log prefix 두 종',
+      lines: [28, 32],
+      body: '<p>tentacle 경로와 HEAD 경로를 <strong>application.yaml에서 주입</strong>. 기본값도 함께 — dev/prod에서 오버라이드 가능.</p>',
+    },
+    {
+      id: 'record',
+      title: 'ResultData record — 반환 타입',
+      lines: [34, 34],
+      body: '<p>Java record 한 줄로 8필드 DTO. <strong>parser, TC, FW, device model, JSON 본문, partial 여부</strong>를 소비자(ExcelGrpcClient·JSON API)가 동시에 알 수 있게.</p>',
+    },
+    {
+      id: 'history-tc-parser',
+      title: 'History → TC → Parser — 3단 체인',
+      lines: [36, 58],
+      body: '<p>세 엔티티가 <strong>어느 단계에서든 null이면 즉시 예외</strong> — 원인을 상위로 바로 노출. 소프트 실패로 숨기지 않음.</p>',
+    },
+    {
+      id: 'slotloc',
+      title: 'slotLocation null 방어',
+      lines: [60, 65],
+      body: '<p>RUNNING 경로 해석에 slotLocation이 필수. <strong>logPath만 있고 slotLocation이 빠진 row는 비정상</strong>이므로 조기 실패.</p>',
+    },
+    {
+      id: 'branch1',
+      title: 'Branch A — logPath + UFS → HEAD',
+      lines: [69, 77],
+      body: '<p>완료 TC + UFS 포함이면 HEAD. <code>dirPath</code>는 <strong>logPath에서 파일명 제거한 디렉토리 부분</strong> — 파서 이름을 붙여 실제 JSON 파일 조립.</p>',
+    },
+    {
+      id: 'branch2',
+      title: 'Branch B — logPath + 일반 tentacle',
+      lines: [78, 80],
+      body: '<p>regex <code>^(T\\d+).*</code>로 <strong>"T10-4" → "T10"</strong>. slotLocation이 tentacle 식별자를 첫 토큰으로 갖는 규칙.</p>',
+    },
+    {
+      id: 'branch3',
+      title: 'Branch C — RUNNING (logPath null)',
+      lines: [81, 88],
+      body: '<p>아직 history/ 로 이동 안 된 라이브 슬롯 경로. <strong>slotLocation에서 tentacle과 슬롯 번호를 모두 추출</strong>.</p>',
+    },
+    {
+      id: 'read-content',
+      title: 'readFileContent — LogBrowser 위임',
+      lines: [90, 98],
+      body: '<p>Log Browser L2(SSH/Local 전략 패턴)에 위임 → <strong>접근 모드에 따라 SSH exec cat 또는 Files.readString</strong>. TestDB가 파일 접근 세부를 몰라도 됨.</p>',
+    },
+    {
+      id: 'validate-parse',
+      title: 'Jackson readTree — 첫 검증',
+      lines: [104, 108],
+      body: '<p>valid JSON이면 파싱만 하고 버림(서버는 raw 문자열을 반환). Frontend가 parse. <strong>서버에서 구조 접근이 필요 없으므로 tree 폐기가 자연스러움</strong>.</p>',
+    },
+    {
+      id: 'repair-branch',
+      title: '실패 시 tryRepairJson 시도',
+      lines: [109, 124],
+      body: '<p>repaired 성공 → <code>partial=true</code> 플래그로 마크. 실패 + RUNNING → COLLECTING 예외. 실패 + 완료된 TC면 <strong>진짜 파싱 에러</strong>로 외부 공개.</p>',
+    },
+    {
+      id: 'fw-set',
+      title: 'TR.getFw() + SetInfomation.modelName',
+      lines: [126, 148],
+      body: '<p>TR은 필수 있다고 가정하지 않음 — <strong>없어도 fw=""</strong>로 빈 문자열. SetInfomation도 try/catch로 완전 선택적 — <strong>측정 데이터 반환을 막지 않는 원칙</strong>.</p>',
+    },
+    {
+      id: 'return',
+      title: 'ResultData 조립',
+      lines: [150, 161],
+      body: '<p>모든 String은 <code>!= null ? x : ""</code>로 <strong>null-free contract</strong>. 소비자(Excel Generator·Frontend)는 null 체크 없이 바로 사용.</p>',
+    },
+  ]}
+/>
+
+## tryRepairJson — 중단된 JSON 복구 전략
+
+<CodeTour
+  client:visible
+  language="java"
+  source="PerformanceResultDataService.tryRepairJson"
+  height={520}
+  code={repairRaw}
+  steps={[
+    {
+      id: 'trailing',
+      title: 'Trailing comma 제거',
+      lines: [6, 7],
+      body: '<p><code>,\\s*([\\]\\}])</code> → <strong>"[1,2,3,]" → "[1,2,3]"</strong>. tentacle이 배열 항목을 하나씩 append 하다가 멈춘 흔한 패턴.</p>',
+    },
+    {
+      id: 'count',
+      title: '열린 bracket / 따옴표 카운트',
+      lines: [9, 24],
+      body: '<p>문자열 안의 <code>{</code>, <code>}</code>는 제외해야 하므로 <strong>inString 플래그와 escape 처리</strong>를 수동으로. Regex로는 안 됨 — 상태 머신.</p>',
+    },
+    {
+      id: 'neg-guard',
+      title: '음수 = 복구 불가',
+      lines: [26, 27],
+      body: '<p>닫기 bracket이 더 많다면 <strong>이미 깨진 JSON</strong>. 복구 포기.</p>',
+    },
+    {
+      id: 'string-close',
+      title: '잘린 문자열 닫기',
+      lines: [29, 33],
+      body: '<p>중간에 끊긴 <code>"some valu</code>를 <strong>"some valu"</strong>로 닫음. HEAD가 write 중이었을 수 있음.</p>',
+    },
+    {
+      id: 'key-only',
+      title: 'key만 있고 value 없는 경우',
+      lines: [35, 40],
+      body: '<p><code>"key":</code> 에서 끊기면 value 자리에 <strong>null 주입</strong> 또는 해당 pair 제거. 3가지 regex로 대응.</p>',
+    },
+    {
+      id: 'close-brackets',
+      title: '빠진 close brackets 채우기',
+      lines: [42, 44],
+      body: '<p>카운트한 숫자만큼 <code>]</code>, <code>}</code>를 순서대로 append. <strong>열기 순서와 상관없이 닫아도</strong> Jackson tree는 수용 — 의미는 왜곡되지만 구조는 유효.</p>',
+    },
+    {
+      id: 'revalidate',
+      title: '최종 readTree 재검증',
+      lines: [46, 53],
+      body: '<p>복구 JSON도 통과 못 하면 null 반환 → fetchResultData가 COLLECTING 또는 실패로 처리.</p>',
+    },
+  ]}
+/>
+
+## "왜 복구까지 시도하나"
+
+원칙적으로는 완료된 JSON만 읽으면 되지만, **사용자 경험을 위해 부분 성공을 허용**:
+
+- RUNNING 중 10초마다 UI 갱신 → 이미 쓰인 60% 차트라도 보여주는 게 blank보다 유용
+- HEAD의 JSON 쓰기는 flush 단위가 크고, race로 "좀 늦게 닫힌" 상태가 흔함
+- partial=true 플래그로 프론트에 "아직 완성 아님" 배지를 띄워 오해 방지
+
+이건 **"실패는 빠르게, 부분 성공은 허용"** 의 균형 설계.
+
+## ResultData 소비자 지도
+
+<DataFlowPath
+  client:visible
+  caption="한 record가 세 소비자에게 재활용되는 흐름"
+  altText="PerformanceResultDataService.fetchResultData에서 반환한 ResultData record는 GET /api/performance-results/{id}/data가 JSON으로 응답하는 경로, GET /api/performance-results/{id}/excel이 Go Excel Service로 gRPC 호출해 xlsx 바이트를 생성하는 경로, 그리고 미래의 Reparse 예고 API가 재실행 전 preview에 사용하는 경로 이렇게 세 갈래로 확장됩니다."
+  stages={[
+    {
+      id: 'fetch',
+      label: 'fetchResultData',
+      layer: 'be',
+      language: 'text',
+      sample: 'History id\n  ↓\nResultData record',
+      note: '단일 진입점',
+    },
+    {
+      id: 'json',
+      label: 'JSON API',
+      layer: 'tx',
+      language: 'text',
+      sample: 'PerformanceResultController\nreturn rawJson + meta',
+      note: '프론트 차트 렌더',
+    },
+    {
+      id: 'excel',
+      label: 'Excel Generator',
+      layer: 'tx',
+      language: 'text',
+      sample: 'ExcelExportController\n→ Go gRPC\n→ byte[]',
+      note: 'parserId로 Generator 선택',
+    },
+    {
+      id: 'reparse',
+      label: '(미래) Reparse preview',
+      layer: 'state',
+      language: 'text',
+      sample: '재실행 전 기존 값\nside-by-side 미리보기',
+      note: '단일 소스에서 분기',
+    },
+  ]}
+  transforms={[
+    { label: 'same input' },
+    { label: 'different output' },
+    { label: 'shared repair' },
+  ]}
+/>
+
+## 직접 해보기
+
+- [ ] logPath에 수동으로 `UFS_SLOT_HEAD` 포함한 문자열을 넣고 fetchResultData → tentacle name이 `HEAD` 로 찍히는지 로그 확인
+- [ ] 원격 JSON 파일을 일부러 `,` + 닫는 bracket 없이 만들고 request → `partial=true`로 돌아오는지
+- [ ] ResultData 반환에서 setName이 비어있는 경우(setId null) 응답이 `""` 로 오는지 frontend 관점 확인
+
+다음: [4. Reparse — 비동기 재실행](/learn/l2-testdb/04-reparse/) →

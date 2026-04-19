@@ -1,0 +1,207 @@
+---
+title: 5. Dashboard 집계 — JPQL GROUP BY + Map 조립
+description: PerformanceHistoryRepository · countByTrAndResult · byFw/byTc Map 패턴
+sidebar:
+  order: 5
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import repoRaw from '../../../../snippets/PerformanceHistoryRepository.java?raw';
+import dashRaw from '../../../../snippets/DashboardController-stats.java?raw';
+
+## 30초 요약
+
+Dashboard는 **두 도메인(성능·호환성)의 요약 카드**를 한 화면에 그립니다. 핵심 원칙:
+
+- **집계는 DB에서** — JPQL `GROUP BY` + `Object[]` 배열 반환
+- **이름은 Java에서** — TR/TC 전체를 `Map<Long, Entity>`로 올려 JOIN 대신 조회
+- **상위 10건만** — 대시보드는 "한눈에" 용도, full list는 각 L2가 페이지로 제공
+
+## PerformanceHistoryRepository — 집계 쿼리
+
+<CodeTour
+  client:visible
+  language="java"
+  source="PerformanceHistoryRepository.java"
+  height={560}
+  code={repoRaw}
+  steps={[
+    {
+      id: 'spec',
+      title: 'JpaSpecificationExecutor 병용',
+      lines: [12, 13],
+      body: '<p>기본 CRUD + <strong>동적 쿼리 조립</strong>. 서비스에서 <code>Specification.where(...).and(...)</code>로 검색 조건을 붙임.</p>',
+    },
+    {
+      id: 'existsbytr',
+      title: 'existsByTrId — TR 삭제 전 가드',
+      lines: [15, 15],
+      body: '<p>TR을 삭제할 때 <strong>참조하는 History가 있으면 차단</strong>. 삭제가 실제로 발생하지 않도록 선검사.</p>',
+    },
+    {
+      id: 'grouptr',
+      title: 'countByTrGroup — TR별 count',
+      lines: [19, 20],
+      body: '<p><code>SELECT h.trId, COUNT(h) GROUP BY h.trId</code>. 반환은 <strong><code>List&lt;Object[]&gt;</code></strong> — 첫 원소 trId, 두 번째 count.</p>',
+    },
+    {
+      id: 'grouptc',
+      title: 'countByTcGroup — TC별 count',
+      lines: [22, 23],
+      body: '<p>같은 패턴. "어떤 TC가 가장 많이 실행됐는가" 정렬에 사용.</p>',
+    },
+    {
+      id: 'findby',
+      title: 'findByTrId / findByTcId / 조합',
+      lines: [25, 29],
+      body: '<p>Spring Data의 <strong>derived query</strong>. 메서드 이름만으로 SQL 자동 생성 — <code>@Query</code> 없이도 복잡 조회 가능.</p>',
+    },
+    {
+      id: 'tcfortr',
+      title: 'countByTcGroupForTr — 특정 TR 내 TC 분포',
+      lines: [31, 32],
+      body: '<p>TR 드릴다운 — 한 FW 실행에서 어떤 TC가 몇 번 돌았는지.</p>',
+    },
+    {
+      id: 'starttime-range',
+      title: 'String 날짜 범위 — 타입 주의',
+      lines: [34, 38],
+      body: '<p>PerformanceHistory.startTime이 <strong>String</strong>이라 비교 연산자만 가능. 포맷이 사전순 비교 가능(<code>yyyyMMdd_HHmmss</code>)하게 설계되어 동작.</p>',
+    },
+    {
+      id: 'dashboard-tr',
+      title: 'countByTrAndResult — 대시보드 핵심',
+      lines: [40, 42],
+      body: '<p><strong>3-tuple (trId, result, count)</strong>. 하나의 쿼리로 대시보드 byFw 통계 전체 생성.</p>',
+    },
+    {
+      id: 'dashboard-tc',
+      title: 'countByTcAndResult',
+      lines: [44, 45],
+      body: '<p>동일 패턴으로 byTc. <strong>두 쿼리</strong>면 대시보드 두 섹션 채움.</p>',
+    },
+    {
+      id: 'countall',
+      title: 'countAll + countByResult + recent10',
+      lines: [47, 53],
+      body: '<p>total · PASS/FAIL 분포 · 최근 10. <strong>모든 집계가 JPQL / derived query로 처리</strong> — 서비스 코드에 raw SQL 없음.</p>',
+    },
+  ]}
+/>
+
+## DashboardController — Object[] → Map 조립
+
+<CodeTour
+  client:visible
+  language="java"
+  source="DashboardController.getStats"
+  height={640}
+  code={dashRaw}
+  steps={[
+    {
+      id: 'tx',
+      title: '@Transactional(readOnly, testdb manager)',
+      lines: [26, 28],
+      body: '<p>읽기 전용 트랜잭션으로 최적화. <strong>testdb 전용 트랜잭션 매니저</strong> 지정 — 여러 datasource(testdb, portal) 환경.</p>',
+    },
+    {
+      id: 'result-map',
+      title: 'LinkedHashMap 루트',
+      lines: [29, 29],
+      body: '<p>두 도메인 키(compatibility, performance) <strong>삽입 순서 보존</strong>. JSON 응답 키 순서가 프론트와 계약.</p>',
+    },
+    {
+      id: 'trlist-tclist',
+      title: 'findAll() — TR/TC 소량 로드',
+      lines: [35, 41],
+      body: '<p>TR/TC 전체를 메모리에 올림. <strong>"수백 row 수준이라 JOIN보다 쉬움"</strong> 판단. 10만 row면 다른 전략 필요.</p>',
+    },
+    {
+      id: 'aggregate',
+      title: 'aggregateResultCounts — Object[] 평탄화',
+      lines: [43, 47],
+      body: '<p>PASS/FAIL/RUNNING 각 count를 Map으로. <strong>null 결과는 "OTHER"</strong>로 묶음 — UI에서 깨지지 않게.</p>',
+    },
+    {
+      id: 'byfw',
+      title: 'buildTrSummary 호출',
+      lines: [48, 50],
+      body: '<p>TR 메타(getFw)로 라벨을 채워 pass/fail/total/rate 5필드 Map 리스트 생성.</p>',
+    },
+    {
+      id: 'bytc',
+      title: 'buildTcSummary 호출',
+      lines: [51, 54],
+      body: '<p>TC 이름 Map을 준비해 라벨로 사용.</p>',
+    },
+    {
+      id: 'recent',
+      title: '최근 10건 — 행 조립',
+      lines: [57, 71],
+      body: '<p>findTop10ByOrderByIdDesc로 10 row. <strong>각 row에 TR/TC 이름을 Map 조회로 붙임</strong> — DB JOIN 없음.</p>',
+    },
+    {
+      id: 'perf-mirror',
+      title: 'Performance — 같은 패턴',
+      lines: [76, 117],
+      body: '<p>Compatibility 블록과 <strong>90% 동일한 구조</strong>. Set 정보까지 포함(성능만). DRY 유혹 있지만 <strong>도메인별 필드 차이를 그대로 노출</strong>하는 편이 읽기 쉽다는 선택.</p>',
+    },
+  ]}
+/>
+
+## 왜 JOIN 대신 Map 조립인가
+
+대시보드 쿼리를 JPA로 한 방에 할 수도 있음:
+
+```sql
+SELECT tr.fw, h.result, COUNT(h)
+FROM PerformanceHistory h JOIN h.testRequest tr
+GROUP BY tr.fw, h.result
+```
+
+하지만 TestRequest의 `fw`는 **@Transient** — DB에 없어 JOIN 불가. 두 가지 선택지:
+
+1. **DB에 fw 컬럼 추가** — 모든 UPDATE 시 getFw() 재계산 훅 필요, 스키마 마이그레이션 비용
+2. **메모리 Map 조립** — TR 전체(1000 row 미만) 메모리 로드 후 조회
+
+현재는 (2). 확장 시 **materialized view**나 **캐시된 tr_fw Map**이 다음 단계.
+
+## Helper 메서드들 — Object[] 처리
+
+`buildTrSummary`와 `buildTcSummary`가 공통 패턴:
+
+```java
+Map<Long, long[]> stats = new LinkedHashMap<>();
+for (Object[] row : rows) {
+    Long id = ((Number) row[0]).longValue();
+    String res = ((String) row[1]).toUpperCase();
+    long count = ((Number) row[2]).longValue();
+    stats.computeIfAbsent(id, k -> new long[3]);  // [pass, fail, total]
+    long[] s = stats.get(id);
+    s[2] += count;
+    if ("PASS".equals(res)) s[0] += count;
+    else if ("FAIL".equals(res)) s[1] += count;
+}
+```
+
+- **long[3] 배열 in Map** — 별도 record 없이 가벼운 stats 컨테이너
+- **total 먼저 += → pass/fail 분기** — 모든 결과가 total에 포함 (PASS/FAIL 외 RUNNING도 카운트)
+- **rate 계산은 마지막** — `total > 0` 분기로 0-division 방어
+
+## 두 도메인 "미러 코드"의 현실
+
+getStats는 **95% 동일한 구조**가 두 도메인에 대해 반복됨. 추출 시도 시 문제:
+
+- CompatibilityHistory는 `setProductName`, PerformanceHistory는 `SetInfomation` 조회 필요 → 파라미터로 `Function<H, String>` 주입? 가능하지만 **타입 파라미터가 복잡**
+- 도메인 추가 시 ratio가 1/2 → 1/3 → 1/4로 떨어짐 — 추출 가치가 감소
+- **현재 상태에서 "수정 시 두 곳" 비용 < 추출 후 "타입 게임" 비용** 판단
+
+복제가 반드시 나쁜 게 아니라는 예시.
+
+## 직접 해보기
+
+- [ ] `/api/dashboard/stats` 호출 응답에서 `byFw[0].rate`가 `pass/total*100`과 일치하는지 계산
+- [ ] TR 하나를 지우려 시도 → History가 참조하면 `existsByTrId`로 차단되는지
+- [ ] `countByTrAndResult` 쿼리를 DB에서 직접 실행 → 리포지토리 결과와 같은지
+
+다음: [6. 12 L2 연결 지도](/learn/l2-testdb/06-consumers/) →
