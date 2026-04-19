@@ -73,7 +73,7 @@ export default defineConfig({
               label: 'L2 — 기능 모듈',
               collapsed: true,
               items: [
-                { label: '🔎 L2 15종 비교', slug: 'learn/l2-compare' },
+                { label: '🔎 L2 18종 비교', slug: 'learn/l2-compare' },
                 {
                   label: '슬롯 모니터링 (Head TCP + SSE)',
                   autogenerate: { directory: 'learn/l2-slots' },
@@ -133,6 +133,18 @@ export default defineConfig({
                 {
                   label: '🔬 iotest (syscall DSL · Agent 실행 엔진)',
                   autogenerate: { directory: 'learn/l2-iotest' },
+                },
+                {
+                  label: '🕸 Scenario Canvas (DAG · 위상 정렬 · Orchestration)',
+                  autogenerate: { directory: 'learn/l2-scenario' },
+                },
+                {
+                  label: '🛠 Admin 대시보드 (18 탭 · 17 권한 · 승인 워크플로)',
+                  autogenerate: { directory: 'learn/l2-admin' },
+                },
+                {
+                  label: '🖥 Server Admin (portal_servers · 비트마스크 · guacd)',
+                  autogenerate: { directory: 'learn/l2-serveradmin' },
                 },
               ],
             },
