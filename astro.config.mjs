@@ -164,6 +164,12 @@ export default defineConfig({
                 { label: '새 데이터소스 추가하기', slug: 'developer/adding-datasource' },
               ],
             },
+            {
+              label: '리팩토링 사례',
+              items: [
+                { label: 'slots 페이지 리팩토링 여정', slug: 'developer/slots-refactor' },
+              ],
+            },
             { label: '문제 해결', slug: 'developer/troubleshooting' },
           ],
         },
