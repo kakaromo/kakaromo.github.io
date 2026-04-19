@@ -1,0 +1,122 @@
+---
+title: Perf Generator — JSON → Svelte 코드 생성 엔진
+description: 14번째 L2 · 엔진 축 두 번째 · 프론트엔드-only devtool · 입력 분석 + 템플릿 조립
+sidebar:
+  order: 0
+---
+
+import ArchitectureDiagram from '../../../../components/learn/ArchitectureDiagram.svelte';
+
+## 30초 요약
+
+`/devtools/perf-generator`는 **"성능 테스트 결과 JSON을 붙여넣으면 `perf-content/` 패턴에 맞는 Svelte 컴포넌트 코드가 나오는"** 프론트엔드 단독 devtool.
+
+1. 사용자가 JSON 샘플을 `<textarea>`에 붙여넣기 (또는 `<JsonTreeView>`로 구조 확인)
+2. **analyzeJson** — 최상위 shape 판정(`object-of-arrays` vs `array-of-objects`) + 재귀 `flattenFields` + role 휴리스틱(cycle/data/stat/ignore)
+3. 사용자가 Field Mapping 드롭다운으로 role 보정 · Tab label/unit 편집
+4. **generateCode** — 문자열 템플릿 조립(인터페이스 · TAB_DEFS · EChartsOption · DataTable 컬럼 · Excel export)
+5. 오른쪽 패널 Code 탭에서 Svelte 소스 복사 → `perf-content/` 폴더에 paste
+
+**BinMapper와 같은 엔진 축**이지만 성격은 정반대:
+
+| 축 | BinMapper | Perf Generator |
+|---|---|---|
+| 실행 위치 | Backend (Java + JPA) | **Frontend only** |
+| 상태 저장 | PredefinedStruct DB | **없음 — 브라우저 메모리만** |
+| 파이프라인 끝 | `MappedResult` 트리 | **Svelte 소스 문자열** |
+| 소비 주체 | devtool UI (즉시 렌더) | **사람이 복사해 다른 프로젝트에 paste** |
+
+## "코드를 만드는 코드"라는 희귀 패턴
+
+Perf Generator는 MOVE에서 **유일한 코드 생성기**. 다른 13 L2는 "데이터를 처리"하지만 이건 **"다른 L2에서 쓸 소스를 만들어내는"** 메타 툴.
+
+### 왜 생성인가 — 수고를 구조적으로 덜어냄
+
+MOVE는 성능 파서가 **15종** 이상이고 각 파서 결과마다 전용 Svelte 컴포넌트(차트 + 테이블)가 있음 — `GenPerf.svelte`, `FragmentWrite.svelte`, `WearLeveling.svelte`...
+
+새 파서를 추가할 때마다:
+
+- 인터페이스 타입 정의 (필드 ~10종)
+- TAB_DEFS 상수
+- EChartsOption $derived
+- DataTable ColumnDef
+- Excel export 함수
+- Chart type toggle (line/scatter), raw data toggle
+- 사이클 탭 전환
+
+**총 300-600줄의 보일러플레이트**. 손으로 매번 쓰면 오타·패턴 불일치·빠뜨린 Excel 함수가 속출. Perf Generator는 **JSON만 주면 이 전체를 조립**.
+
+### 왜 "scaffolding"이 아니라 "generator"인가
+
+전통적 scaffolding(Yeoman, Angular CLI)은 **템플릿 파일 + 변수 치환**. Perf Generator는 다름:
+
+- **JSON을 읽어야** — 필드 이름/타입/역할은 JSON 구조에서 추론
+- **조건부 섹션** — 숫자 배열(data) 있으면 차트, 없으면 통계만. 탭이 1개면 단일 뷰, 여러 개면 전환 UI
+- **사용자 보정 반영** — 휴리스틱이 틀리면 드롭다운으로 교정
+
+결과: **순수 템플릿이 아닌 "분석 + 조립"** 의 하이브리드.
+
+## 5단계 파이프라인
+
+<ArchitectureDiagram
+  client:visible
+  height={320}
+  caption="JSON → 분석 → 조립 → 소스 문자열"
+  altText="사용자가 JSON 샘플을 textarea에 붙여넣으면 JsonTreeView가 동시에 트리로 시각화합니다. analyzeJson이 최상위 shape를 판정하고 flattenFields가 재귀적으로 필드 목록과 role을 만들어 AnalysisResult를 생성합니다. 필드 매핑 UI로 사용자가 role을 보정하면 generateCode가 템플릿 조립으로 Svelte 소스 문자열을 만들고, 오른쪽 패널 Code 탭이 Shiki 하이라이팅으로 표시합니다. Preview 탭은 같은 분석 결과를 PerfPreview가 실제 차트/테이블로 렌더링해 생성 결과를 미리 보여줍니다."
+  nodes={[
+    { id: 'json',     label: 'JSON 입력',   sublabel: 'text / tree 탭',      layer: 'fe',    x: 0,   y: 80,  href: '/learn/l2-perfgen/01-entry/' },
+    { id: 'analyze',  label: 'analyzeJson', sublabel: 'shape 판정 + 재귀',   layer: 'be',    x: 200, y: 80,  href: '/learn/l2-perfgen/02-analyze/' },
+    { id: 'result',   label: 'AnalysisResult', sublabel: 'tabs + fields',    layer: 'state', x: 380, y: 80,  href: '/learn/l2-perfgen/02-analyze/' },
+    { id: 'mapping',  label: 'Field Mapping', sublabel: '사용자 role 보정', layer: 'fe',    x: 380, y: 200, href: '/learn/l2-perfgen/02-analyze/' },
+    { id: 'generate', label: 'generateCode', sublabel: '템플릿 조립',       layer: 'tx',    x: 560, y: 80,  href: '/learn/l2-perfgen/03-generate/' },
+    { id: 'code',     label: 'Svelte 소스',  sublabel: 'Shiki 하이라이팅',   layer: 'fe',    x: 740, y: 40,  href: '/learn/l2-perfgen/03-generate/' },
+    { id: 'preview',  label: 'PerfPreview',  sublabel: '실시간 렌더',       layer: 'fe',    x: 740, y: 140, href: '/learn/l2-perfgen/04-preview/' },
+  ]}
+  edges={[
+    { from: 'json',     to: 'analyze',  label: '$derived', kind: 'sync' },
+    { from: 'analyze',  to: 'result',   label: 'return',   kind: 'sync' },
+    { from: 'mapping',  to: 'result',   label: 'override', kind: 'async' },
+    { from: 'result',   to: 'generate', label: '$derived', kind: 'sync' },
+    { from: 'generate', to: 'code',     label: 'string',   kind: 'sync' },
+    { from: 'result',   to: 'preview',  label: 'same data', kind: 'sync' },
+  ]}
+/>
+
+## 엔진 축 내 BinMapper와의 대조
+
+같은 축이지만 **비슷한 점과 다른 점**을 통해 엔진 축의 다양성을 관찰:
+
+| 공통점 | BinMapper · Perf Generator 모두 |
+|---|---|
+| 단방향 파이프라인 | 입력 → 중간 표현 → 출력 |
+| Stateless | 요청마다 새로 분석, 중간 상태 없음 |
+| 부분집합만 지원 | C 전체 / 모든 JSON이 아닌 "우리가 자주 쓰는 것" |
+| 부분 성공 허용 | 에러 난 필드만 placeholder |
+
+| 차이점 | BinMapper | Perf Generator |
+|---|---|---|
+| 파이프라인 길이 | Lexer → Parser → IR → Reader 4단계 | analyze → generate 2단계 |
+| 사용자 편집 여지 | 없음 (입력 그대로 실행) | Field Mapping · Tab Overrides로 교정 가능 |
+| 중간 표현(IR) 공개 | 외부 API로 조회 가능 | 내부 AnalysisResult, 외부 미공개 |
+| 주 실행 환경 | JVM | 브라우저 V8 |
+| 반복 호출 | 다른 사용자가 공유 | 한 사용자의 한 세션 |
+
+**엔진 축도 서브패턴이 다양**하다는 관찰. 파이프라인 길이·사용자 개입 위치·환경 세 축이 가능.
+
+## 학습 순서
+
+| 순서 | 페이지 | 관찰 포인트 |
+|---|---|---|
+| 1 | [진입점 + 공유 타입](/learn/l2-perfgen/01-entry/) | FieldRole 5종 · TopLevelShape 3종 · state 구조 |
+| 2 | [analyzeJson — shape + 필드 추론](/learn/l2-perfgen/02-analyze/) | flattenFields 4 분기 · object-of-arrays vs array-of-objects · role 휴리스틱 |
+| 3 | [generateCode — 문자열 템플릿 조립](/learn/l2-perfgen/03-generate/) | interface 조립 · TAB_DEFS · EChartsOption · 조건부 섹션 |
+| 4 | [JsonTreeView + PerfPreview](/learn/l2-perfgen/04-preview/) | 자동 2-depth 펼침 · 미리보기 재사용 · 생성-프리뷰 일관성 |
+| 5 | [perf-content 소비 + 엔진 축 정리](/learn/l2-perfgen/05-integration/) | 15개 파서 컴포넌트와의 관계 · BinMapper와 나란히 본 엔진 축 |
+
+## 직접 해보기
+
+- [ ] `/devtools/perf-generator` 접속 → `{ "SEQ": [{cycle: 1, data: [1,2,3]}] }` 붙여넣기 → Code 탭 확인
+- [ ] Field Mapping에서 `data` 역할을 `ignore`로 바꾸면 → 생성된 코드에 차트 섹션이 사라지는지
+- [ ] Tab Overrides에서 yAxisUnit을 `MB/s`로 변경 → xAxis 라벨 반영 확인
+
+다음: [1. 진입점 + 공유 타입](/learn/l2-perfgen/01-entry/) →

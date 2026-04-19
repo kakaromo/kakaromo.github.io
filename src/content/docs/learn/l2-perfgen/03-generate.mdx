@@ -1,0 +1,197 @@
+---
+title: 3. generateCode — 문자열 템플릿 조립
+description: interface 조립 · TAB_DEFS · EChartsOption · 조건부 섹션 · AST 없는 이유
+sidebar:
+  order: 3
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import genRaw from '../../../../snippets/PerfGenerator-gen-header.svelte?raw';
+
+## 30초 요약
+
+`generateCode` → shape에 따라 `generateObjectOfArrays` 또는 `generateArrayOfObjects`. 둘 다 **문자열 join**으로 Svelte 소스 조립:
+
+1. interface `CycleEntry` 필드 정의 (role별 타입 결정)
+2. `TAB_DEFS` 상수
+3. `EChartsOption` $derived
+4. `DataTable ColumnDef`
+5. Excel export 함수
+6. `<script>` + `<div>` 마크업
+
+**조건부**: data field(숫자 배열)이 없으면 차트 관련 코드 생략. 탭이 1개면 탭 전환 UI 제거.
+
+## 왜 AST가 아니라 문자열인가
+
+Svelte 코드 생성을 AST(SWC, Prettier plugin API)로도 쓸 수 있음. 문자열 선택 이유:
+
+| 축 | AST 방식 | 문자열 방식 |
+|---|---|---|
+| 출력 가독성 | AST→print로 손실 가능 | **그대로 보존** (들여쓰기·줄바꿈 의도) |
+| Svelte 특수 문법 | `{#each}`, `$state` 등 AST 확장 필요 | **그냥 포함** |
+| 출력 수정 사이클 | 파서·프린터 조정 복잡 | **템플릿 부분 편집만** |
+| 의존성 | SWC/Prettier 추가 | **표준 string만** |
+| 에러 위치 추적 | AST 검증 가능 | 없음 (생성 후 Svelte 컴파일러가 검증) |
+
+**생성 후 사람이 검토·복사하는 UX** 에서 가독성·편집 용이성이 결정적. 이것이 AST 포기의 이유.
+
+## generateObjectOfArrays — 전반부
+
+<CodeTour
+  client:visible
+  language="svelte"
+  source="generateObjectOfArrays — 전반부"
+  height={680}
+  code={genRaw}
+  steps={[
+    {
+      id: 'accessor',
+      title: 'cycleAccessor — 경로의 마지막 원소',
+      lines: [7, 8],
+      body: '<p>cyclePath가 <code>[\'meta\', \'cycleNumber\']</code>여도 <strong>마지막 <code>cycleNumber</code>만 사용</strong> — 생성 코드에서 <code>entry.cycleNumber</code> 접근. 중첩은 flatten 단계에서 이미 처리된 것으로 가정.</p>',
+    },
+    {
+      id: 'iface',
+      title: 'interface CycleEntry — role별 타입',
+      lines: [10, 20],
+      body: '<p>data → number[], stat/cycle → number, null → unknown, 그 외 → unknown. <strong>타입을 확신 못 하는 건 unknown으로 명시</strong> — 사용자가 생성 후 타이핑 가능.</p>',
+    },
+    {
+      id: 'tabdefs',
+      title: 'TAB_DEFS 상수 — 탭 목록 하드코딩',
+      lines: [22, 24],
+      body: '<p>런타임 props 대신 <strong>생성 시점에 탭이 고정</strong>. 각 컴포넌트가 한 파서 결과를 담당한다는 가정. 탭이 바뀌면 재생성.</p>',
+    },
+    {
+      id: 'split-roles',
+      title: 'statFields / dataFields 분리 — 조건부 섹션용',
+      lines: [26, 30],
+      body: '<p>statFields는 통계 테이블, dataFields는 차트 소스. <strong>dataField 이름은 첫 data 필드만</strong> — 현재 엔진은 다중 data 필드 차트 지원 안 함 (의도된 단순화).</p>',
+    },
+    {
+      id: 'chart-imports',
+      title: '조건부 import — hasDataFields',
+      lines: [32, 34],
+      body: '<p>차트가 없으면 <strong>PerfChart / EChartsOption import가 아예 생성 안 됨</strong> — 불필요한 의존성 없는 깔끔한 출력. 탭 병합(`+`)으로 조립.</p>',
+    },
+    {
+      id: 'state-vars',
+      title: 'chartRef + chartType + showRawData $state',
+      lines: [36, 38],
+      body: '<p>차트 있으면 chartRef / chartType(line/scatter) / showRawData. 없으면 showRawData만. <strong>$state 라인 수가 소비 기능에 비례</strong>.</p>',
+    },
+    {
+      id: 'valid-fn',
+      title: 'hasValidData — data 필드 유무로 조건 달라짐',
+      lines: [40, 42],
+      body: '<p>data 있으면 "배열 중 비어있지 않은 것이 하나라도", 없으면 "cycle 수 > 0". <strong>생성 코드가 자신의 조건을 자기가 압니다</strong>.</p>',
+    },
+    {
+      id: 'indices',
+      title: 'indices $derived — 차트 X축',
+      lines: [44, 46],
+      body: '<p>최장 data 배열의 길이로 X축. <strong>차트 없으면 빈 문자열</strong> — indices 자체를 생성 안 함.</p>',
+    },
+    {
+      id: 'yaxismax-line',
+      title: 'yAxisMaxLine — 3가지 케이스',
+      lines: [48, 53],
+      body: '<p>탭 여러 개면 <code>Record&lt;string, number&gt;</code>, 1개면 number, data 없으면 null. <strong>JSX spread</strong>로 조건부 프로퍼티 삽입.</p>',
+    },
+    {
+      id: 'chart-option',
+      title: 'chartOption — 35줄 템플릿 문자열',
+      lines: [55, 88],
+      body: '<p>title/subtext/tooltip/legend/grid/dataZoom/xAxis/yAxis/series 전부 <strong>한 문자열</strong>. 이스케이프된 <code>\\\\\\`</code>로 중첩 template literal 처리.</p>',
+    },
+  ]}
+/>
+
+## 조건부 조립의 세 패턴
+
+### 패턴 A — 빈 문자열 생략
+
+```js
+const chartImport = hasDataFields
+  ? `\n\timport { PerfChart } from '$lib/components/perf-chart';`
+  : '';
+```
+
+`+` 결합 시 빈 문자열은 자연스레 사라짐. **분기가 1개 라인만 다를 때** 적합.
+
+### 패턴 B — 서로 다른 블록
+
+```js
+const hasValidDataFn = hasDataFields
+  ? `function hasValidData(cycles) { return cycles.some(c => c.${dataField}?.length > 0); }`
+  : `function hasValidData(cycles) { return cycles.length > 0; }`;
+```
+
+**함수 전체를 갈아끼움** — 빈 문자열 없이 둘 중 하나.
+
+### 패턴 C — spread-like 조건
+
+```js
+const yAxisMaxLine = yAxisMaxType === 'record'
+  ? `\n\t\t\t...(yAxisMax?.[activeTab] != null ? { max: yAxisMax[activeTab] } : {})`
+  : yAxisMaxType === 'number'
+    ? `\n\t\t\t...(yAxisMax != null ? { max: yAxisMax } : {})`
+    : '';
+```
+
+**3개 이상 분기가 있고 각각 조각 수가 다름** — 중첩 삼항으로 세 결과 구분.
+
+이 3 패턴이 generateCode 전체 ~600줄의 대부분을 이룸. **템플릿 엔진 없이도 문자열 붙이기로 충분히 복잡한 코드 생성 가능**.
+
+## 탭 수와 출력 구조
+
+| mergedTabs.length | yAxisMax prop | 탭 전환 UI | 코드 길이 증가 |
+|---|---|---|---|
+| 0 | 없음 | 없음 | 최소 (shape=other) |
+| 1 | `number?` | 없음 (단일 뷰) | ~200줄 |
+| 2+ | `Record<string,number>?` | 탭 바 `{#each}` | ~400-600줄 |
+
+**"1개 탭이면 탭 UI를 아예 안 만든다"** 는 사용자 피드백 결과. 성능 파서의 절반은 탭이 불필요한 단일 결과 — 불필요한 UI가 인지 부담.
+
+## "생성된 코드가 자신의 조건을 안다"
+
+중요한 관찰: 생성된 컴포넌트는 **원본 JSON에 차트 필드가 있었는지 없었는지 알 필요 없음**. `hasValidData`·`indices`·`yAxisMax` 타입이 모두 **생성 시점에 결정되어 하드코딩**.
+
+장점:
+
+- 런타임 분기 없음 → 런타임 성능 ↑
+- 타입이 정확 (unknown 남발 안 함)
+- 사용자가 수정할 때 **불필요한 분기 제거 부담 없음**
+
+단점:
+
+- 데이터 shape가 바뀌면 **재생성 필요** — 손 수정은 재생성 시 충돌 가능
+- 한 컴포넌트당 한 shape 전용
+
+**"생성 후 사람이 변형" vs "재생성"** 두 운영 패턴이 공존. 보통 새 파서는 "생성 후 한두 줄 수정" 형태.
+
+## Excel export 함수 — 자동 포함
+
+차트가 있으면 Excel 버튼도 자동 생성. 내용:
+
+```js
+function exportExcel() {
+  const rows = [...];  // currentCycles flatten
+  const csv = [headers, ...rows].map(r => r.join(',')).join('\n');
+  downloadBlob(new Blob([csv]), `${componentName}_${tcName}.csv`);
+}
+```
+
+- **서버 gRPC 호출이 아닌 클라이언트 CSV** — Excel Export L2와 다른 경로
+- 빠른 "내려받기" 니즈에 충분
+- Excel 네이티브 차트가 필요하면 **Excel Export L2의 Go 경로로 교체**
+
+생성기는 기본 옵션을 주고 사용자가 필요에 따라 업그레이드.
+
+## 직접 해보기
+
+- [ ] data field가 없는 JSON 입력 → 생성 코드에 `PerfChart` import가 **완전히 사라지는지** 확인
+- [ ] 탭 1개만 있도록 JSON 조정 → 생성 코드의 yAxisMax 타입이 `number?` 로 바뀌는지
+- [ ] 탭 overrides에서 label을 `Random 4K` 같이 공백 포함으로 바꾸고 → 생성 TAB_DEFS 문자열 이스케이프가 유지되는지 (공백은 그대로 들어가야)
+
+다음: [4. JsonTreeView + PerfPreview](/learn/l2-perfgen/04-preview/) →

@@ -1,0 +1,172 @@
+---
+title: 4. JsonTreeView + PerfPreview
+description: 자동 2-depth 펼침 · 같은 analysis 공유 · 생성과 미리보기의 일관성
+sidebar:
+  order: 4
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import treeRaw from '../../../../snippets/JsonTreeView-effect.svelte?raw';
+import previewRaw from '../../../../snippets/PerfPreview-header.svelte?raw';
+
+## 30초 요약
+
+두 도우미 컴포넌트가 서로 다른 관점에서 **"생성 전 확인"** 을 돕습니다:
+
+- **JsonTreeView** — 입력 JSON의 구조 시각화 (depth≤2 자동 펼침, 배열 첫 5개만)
+- **PerfPreview** — generateCode 결과를 실제로 렌더링 (generate의 side-by-side 검증)
+
+**왜 둘 다 필요한가**: 트리 뷰는 "내 JSON이 어떤 모양이지", 프리뷰는 "그래서 생성 코드가 뭘 만들지" 각기 다른 질문에 답. 한 화면에 섞지 않고 **탭으로 전환**해 인지 부담 절감.
+
+## JsonTreeView — 자동 펼침 효과
+
+<CodeTour
+  client:visible
+  language="svelte"
+  source="JsonTreeView.svelte"
+  height={560}
+  code={treeRaw}
+  steps={[
+    {
+      id: 'props',
+      title: 'Props 최소 — jsonString 하나',
+      lines: [6, 8],
+      body: '<p>부모가 parsing 한 값이 아니라 <strong>원시 문자열</strong>을 받음. 파싱 에러도 자기 책임 — 트리 뷰가 독립적으로 쓰일 수 있도록.</p>',
+    },
+    {
+      id: 'parse-derived',
+      title: '$derived.by로 parse 1회',
+      lines: [10, 17],
+      body: '<p>value + error를 한 번에. <strong>재계산 비용을 derived로 자동 캐시</strong> — jsonString이 같으면 건너뜀.</p>',
+    },
+    {
+      id: 'expanded-state',
+      title: 'expandedPaths — Set 상태',
+      lines: [22, 23],
+      body: '<p>경로 문자열(<code>$.foo.bar</code>)로 펼침 여부 저장. <strong>Set 쓰면 has/add/delete가 O(1)</strong>. 배열 대신 Set 선택.</p>',
+    },
+    {
+      id: 'effect',
+      title: '$effect — 새 JSON에만 재초기화',
+      lines: [25, 28],
+      body: '<p>currentJson === lastJsonString 체크로 <strong>재렌더 시 상태 초기화 방지</strong>. 사용자가 펼쳐둔 노드 유지.</p>',
+    },
+    {
+      id: 'walk',
+      title: 'walk — 재귀 depth-2 까지',
+      lines: [29, 50],
+      body: '<p>depth > 2면 return. <strong>배열은 앞 5개만</strong> 방문 — 대형 JSON이 UI를 멈추지 않도록. object는 모든 key.</p>',
+    },
+    {
+      id: 'toggle',
+      title: 'togglePath — Set mutate + identity 교체',
+      lines: [52, 57],
+      body: '<p>next = new Set(...) 먼저 만들고 mutate. <strong>Svelte 5는 원시 Set 내부 변경을 감지 못 해</strong> 새 Set을 할당해 재렌더 트리거.</p>',
+    },
+  ]}
+/>
+
+## 왜 "depth 2 + array 5"인가
+
+- **Depth 2**: 최상위 + 첫 중첩. 사용자가 보고 싶은 것은 **"어떤 탭/필드가 있는지"** — 그 수준이면 충분. 그 이상은 클릭으로 확장
+- **Array 5**: 같은 shape의 반복이라 5개만 봐도 패턴 파악. 20개를 자동 펼치면 스크롤만 나옴
+
+**"자동으로 어디까지 보여줄지"의 두 축**. 너무 적게(depth 1, array 1)면 매번 클릭, 너무 많이(depth ∞, array ∞)면 메모리 + 스크롤 문제. 경험적으로 이 숫자가 최적.
+
+## PerfPreview — 같은 analysis 재사용
+
+<CodeTour
+  client:visible
+  language="svelte"
+  source="PerfPreview.svelte"
+  height={560}
+  code={previewRaw}
+  steps={[
+    {
+      id: 'imports',
+      title: 'perf-content import — 생성 타겟과 동일',
+      lines: [7, 11],
+      body: '<p>PerfChart / DataTable / baseChartOption / btnBase 등 <strong>생성 코드가 쓸 유틸을 프리뷰도 그대로</strong>. 미리보기 = 생성 결과의 동적 근사.</p>',
+    },
+    {
+      id: 'props',
+      title: 'Props — analysis + mergedTabs + parsedData',
+      lines: [13, 21],
+      body: '<p>부모가 이미 계산한 <strong>analysis 전달</strong> — 프리뷰가 재분석 안 함. generateCode와 <strong>동일한 입력</strong>으로 "생성될 것"을 미리 보여줌.</p>',
+    },
+    {
+      id: 'active-tab',
+      title: 'activeTab $effect — tabs 변할 때 리셋',
+      lines: [26, 34],
+      body: '<p>mergedTabs가 갱신되면 현재 activeTab이 유효한지 검사. <strong>untrack</strong>으로 effect 내부 write가 재귀 발생 안 하게.</p>',
+    },
+    {
+      id: 'tab-data',
+      title: 'tabData $derived — shape 분기',
+      lines: [38, 59],
+      body: '<p>object-of-arrays면 activeTab 키의 배열, array-of-objects면 parsed 전체 배열. <strong>shape가 바뀌면 동일 로직에서 자동 대응</strong>.</p>',
+    },
+    {
+      id: 'case-insensitive',
+      title: '키 매칭 대소문자 무시',
+      lines: [46, 49],
+      body: '<p>analysis.tabs의 key는 lowercase지만 원본 obj는 원형. <strong>매번 전체 key를 lower로 비교</strong> — 소량이라 비용 무시 가능.</p>',
+    },
+    {
+      id: 'role-split',
+      title: 'dataFields / statFields — role로 분기',
+      lines: [65, 68],
+      body: '<p>filter 두 번으로 차트용/통계용 필드 분리. <strong>generateCode 내부와 동일한 분기</strong> — 두 곳의 패턴 일치가 프리뷰-생성 일관성을 보장.</p>',
+    },
+  ]}
+/>
+
+## 프리뷰-생성 일관성 — 두 구현, 같은 출력
+
+Perf Generator의 위험 포인트는 **"프리뷰에서 잘 보였는데 복사 후 동작 다름"**. 방어책:
+
+1. **같은 analysis record를 공유** — PerfPreview가 자체 분석 안 함
+2. **같은 perf-content import** — PerfChart·DataTable·baseChartOption이 프리뷰와 생성 코드 둘 다 사용
+3. **같은 role 휴리스틱 적용** — dataFields/statFields 분리가 두 곳에서 동일
+4. **같은 xAxis/yAxis 빌드** — baseChartOption이 공통 기본값 제공
+
+그럼에도 **1% 정도 차이 가능**:
+
+- 프리뷰는 runtime data, 생성 코드는 props로 data 받음 → 타이밍 미세 차이
+- 프리뷰는 개발 환경, 생성 컴포넌트는 사용처 환경 → CSS inherit 차이
+
+실무 권장: **"프리뷰에서 OK면 95% 준비, 복사 후 한 번 렌더 테스트"**.
+
+## PerfPreview가 생성 코드를 "흉내"하는 깊이
+
+완전한 흉내는 아니고 **핵심만**:
+
+| 요소 | 프리뷰 | 생성 코드 |
+|---|---|---|
+| 탭 전환 | ✅ | ✅ |
+| 차트 렌더 | ✅ line/scatter 토글 | ✅ |
+| 통계 테이블 | ✅ | ✅ |
+| Excel 내보내기 | ❌ (의미 없음) | ✅ |
+| raw data 테이블 | ❌ (공간 제약) | ✅ |
+| yAxisMax prop | ❌ | ✅ |
+| 사이드바 토글 | ❌ | ✅ |
+
+**프리뷰는 "핵심이 되는가"만 확인**, 생성 코드는 "제품 수준으로 쓰이는가". 80/20 법칙.
+
+## "Sample data" 배너
+
+PerfPreview는 위에 **"이것은 생성 결과의 샘플 미리보기입니다"** 메시지를 표시. 왜?
+
+- 사용자가 **real data를 보고 있다고 오해하기 쉬움** — 사실은 "생성 코드를 가상 실행한 결과"
+- 값이 조금 이상해도 괜찮다는 신호
+- 생성 흐름의 맥락을 계속 상기
+
+UX의 **"과도한 신뢰 방지"** 패턴. 편리한 미리보기는 오해를 부르기 때문에 방어 멘트 필요.
+
+## 직접 해보기
+
+- [ ] 깊이 5 중첩 JSON 넣고 TreeView에서 자동으로 depth 2까지만 열리는지 확인
+- [ ] 배열 10개 원소 입력 → TreeView에 처음 5개만 보이고 나머지는 "…" 처리 확인
+- [ ] Field Mapping에서 data→stat으로 바꾸면 PerfPreview의 차트가 즉시 사라지는지 (analysis 공유 효과)
+
+다음: [5. perf-content 소비 + 엔진 축 정리](/learn/l2-perfgen/05-integration/) →

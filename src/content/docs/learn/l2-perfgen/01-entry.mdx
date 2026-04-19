@@ -1,0 +1,166 @@
+---
+title: 1. 진입점 + 공유 타입
+description: FieldRole · FieldType · TopLevelShape · FieldNode · TabInfo · AnalysisResult — 6 타입이 엔진 전체의 계약
+sidebar:
+  order: 1
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import typesRaw from '../../../../snippets/PerfGenerator-types.ts?raw';
+import stateRaw from '../../../../snippets/PerfGenerator-flatten.svelte?raw';
+
+## 30초 요약
+
+6개 공유 타입이 전체 파이프라인의 **계약**:
+
+- **`FieldRole`** — 5종(`tab` · `cycle` · `data` · `stat` · `ignore`) — 필드가 UI에서 어떤 역할인지
+- **`FieldType`** — 5종(`number` · `number[]` · `string` · `null` · `object`) — JSON 원시 타입
+- **`TopLevelShape`** — 3종(`object-of-arrays` · `array-of-objects` · `other`)
+- **`FieldNode`** — path + key + type + sample + role (재귀 flatten 결과)
+- **`TabInfo`** — 탭 하나의 메타 (key/label/yAxisUnit/fields)
+- **`AnalysisResult`** — 파이프라인 2단계의 반환 값
+
+## 6 타입 — 엔진 계약
+
+<CodeTour
+  client:visible
+  language="ts"
+  source="PerfGenerator.types.ts"
+  height={440}
+  code={typesRaw}
+  steps={[
+    {
+      id: 'roles',
+      title: 'FieldRole 5종 — 필드의 UI 역할',
+      lines: [6, 6],
+      body: '<p><code>tab</code>(탭 분리 기준) · <code>cycle</code>(사이클 식별자) · <code>data</code>(차트 Y값 배열) · <code>stat</code>(통계 스칼라) · <code>ignore</code>. <strong>역할이 정해지면 생성 코드에서 위치가 결정됨</strong>.</p>',
+    },
+    {
+      id: 'types',
+      title: 'FieldType 5종 — JSON 원시 타입',
+      lines: [7, 7],
+      body: '<p><code>number</code> · <code>number[]</code> · <code>string</code> · <code>null</code> · <code>object</code>. <strong>flattenFields가 이 타입으로 분류하고 role 휴리스틱이 타입을 참고</strong>. string은 자동 ignore.</p>',
+    },
+    {
+      id: 'shape',
+      title: 'TopLevelShape — 최상위 형태 3가지',
+      lines: [8, 8],
+      body: '<p><code>object-of-arrays</code>: <code>{"SEQ":[...], "RAND":[...]}</code> — 키가 탭. <code>array-of-objects</code>: <code>[{...},{...}]</code> — 배열 자체가 데이터. <code>other</code>: 파싱 실패/빈 배열/지원 안 됨.</p>',
+    },
+    {
+      id: 'fieldnode',
+      title: 'FieldNode — 재귀 flatten 결과 한 원소',
+      lines: [10, 16],
+      body: '<p>path는 <strong>`[\'metrics\', \'latency\']` 같은 배열</strong> — 중첩 구조 보존. key는 마지막 원소. sample은 실제 값(미리보기용). role은 추론 + 사용자 override.</p>',
+    },
+    {
+      id: 'tabinfo',
+      title: 'TabInfo — 탭 하나의 메타',
+      lines: [18, 23],
+      body: '<p>key(소문자 id) · label(표시명) · yAxisUnit(차트 Y축 라벨) · fields(이 탭의 FieldNode 리스트). <strong>label/yAxisUnit은 tabOverrides로 덮일 수 있음</strong>.</p>',
+    },
+    {
+      id: 'result',
+      title: 'AnalysisResult — 2단계 반환 값',
+      lines: [25, 30],
+      body: '<p>shape + tabs + cycleField(전역 사이클 식별자) + allFields(중복 포함, 매핑 UI용) + error. <strong>하나의 record가 generate·preview 두 소비자에게 공급</strong>.</p>',
+    },
+  ]}
+/>
+
+## 왜 role을 5종으로 좁혔는가
+
+필드가 UI에 나타날 수 있는 자리는 여러 개지만, **perf-content 패턴에서 의미 있는 자리는 5개**:
+
+| Role | 코드 위치 |
+|---|---|
+| `tab` | 최상위 탭 바 (`{#each tabs}`) |
+| `cycle` | 시리즈 라벨 (`Cycle ${entry.cycle}`) |
+| `data` | 차트 Y 시리즈 (`entry.latency` 같은 배열) |
+| `stat` | 통계 테이블 컬럼 |
+| `ignore` | 생성 코드에서 제외 |
+
+**6번째 role을 추가하려면** 생성 템플릿에도 새 섹션 필요 — 타입이 코드 구조와 1:1. "타입 시스템으로 generate의 분기 수를 고정" 하는 설계.
+
+## state 구조 + 유틸
+
+<CodeTour
+  client:visible
+  language="svelte"
+  source="PerfGenerator.svelte — state + flatten"
+  height={620}
+  code={stateRaw}
+  steps={[
+    {
+      id: 'state',
+      title: '$state 7개 — 브라우저 메모리만',
+      lines: [6, 12],
+      body: '<p>jsonInput / componentName / xAxisUnit / copied / rightPanelTab / jsonPanelTab / parsedData. <strong>DB 저장 없음</strong> — 새로고침하면 초기화. "한 번 복사해서 paste 하면 끝" 사용 패턴에 맞춤.</p>',
+    },
+    {
+      id: 'parsed',
+      title: '$derived parsedData — try/catch 1회',
+      lines: [14, 22],
+      body: '<p>JSON 파싱 실패 시 <code>undefined</code> 반환. <strong>undefined면 다운스트림 파이프라인이 전부 조용히 빈 결과</strong>로 — 에러를 errant 위치로 전파하지 않음.</p>',
+    },
+    {
+      id: 'overrides',
+      title: 'fieldRoleOverrides + tabOverrides',
+      lines: [24, 25],
+      body: '<p>사용자 보정을 <strong>path 문자열을 키로</strong> 기록. 재분석이 돌아도 override는 유지 → 같은 필드 경로면 역할이 바뀌지 않음.</p>',
+    },
+    {
+      id: 'utils',
+      title: 'capitalize + guessYAxisUnit + pathStr',
+      lines: [27, 43],
+      body: '<p>3개 순수 함수. <strong>guessYAxisUnit은 정규식 3개로 80% 추론</strong> — rand→IOPS, seq→MB/s, time/lat→ms. 나머지는 사용자 보정.</p>',
+    },
+    {
+      id: 'flatten',
+      title: 'flattenFields — 4 분기 재귀',
+      lines: [45, 67],
+      body: '<p><code>null/undefined</code> → ignore. <code>number[]</code> → data (차트 후보). <code>number</code> → cycle 또는 stat (키 이름 regex로). <code>string</code> → ignore. <strong>object면 재귀 하강</strong>해 중첩 구조 평탄화.</p>',
+    },
+    {
+      id: 'cycle-heuristic',
+      title: 'cycle 휴리스틱 — 키 이름 regex',
+      lines: [56, 57],
+      body: '<p><code>/cycle|id|index/i</code>에 매칭되면 자동 cycle role. <strong>"cycleNumber", "id", "_index" 등도 잡힘</strong>. 틀릴 수 있어 Field Mapping UI에서 교정.</p>',
+    },
+  ]}
+/>
+
+## "path 배열"이라는 선택
+
+FieldNode.path가 **문자열이 아닌 배열**:
+
+```typescript
+path: ['metrics', 'latency']  // 좋음
+path: 'metrics.latency'        // 나쁨 (왜?)
+```
+
+이유:
+
+- **키에 `.`이 들어갈 수 있음** — `{ "a.b": 1 }` 같은 입력에 문자열 방식은 깨짐
+- **접근이 자연스러움** — `for (key of path) obj = obj[key]` 루프
+- **비교/해시가 필요하면 `pathStr()`** 으로 명시 변환
+
+**배열이 일급이고 문자열은 파생** — 가장 정확한 표현을 일급으로 두는 원칙.
+
+## override의 세 층 (경로별 · 탭별 · 분석 시 적용)
+
+Perf Generator의 **보정 레이어링**:
+
+1. **자동 role** — flattenFields가 타입과 키 이름으로 결정
+2. **`fieldRoleOverrides`** — path 문자열 키로 덮어쓰기 (analyzeJson 내부에서 참조)
+3. **`tabOverrides`** — 탭 key로 label/yAxisUnit 덮어쓰기 (mergedTabs $derived에서 적용)
+
+**왜 분리**: role은 분석 시 반영되어야 "data였던 필드가 stat이 되면 차트에서 사라지는" 즉각 반응이 가능. tab 레이블은 분석 결과에 영향 안 주므로 **별도 계산 단계**. 동일 데이터라도 소비 시점이 달라 override 시점 분리.
+
+## 직접 해보기
+
+- [ ] `{ "a.b": [1,2,3] }` 같은 key에 `.` 포함 JSON을 넣어 → flattenFields가 path를 `[\"a.b\"]` (단일 원소)로 정확히 보존하는지 콘솔 로그
+- [ ] role override를 건 field를 분석 중 제거한(JSON 수정) 후 다시 같은 경로로 추가 → 이전 override가 복원되는지
+- [ ] `guessYAxisUnit`의 regex 3개가 겹치는 케이스(`seqTime`) 시도 → **첫 매치 승리** 순서 확인 (rand → seq → time)
+
+다음: [2. analyzeJson — shape + 필드 추론](/learn/l2-perfgen/02-analyze/) →

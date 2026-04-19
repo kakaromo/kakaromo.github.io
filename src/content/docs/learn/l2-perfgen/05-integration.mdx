@@ -1,0 +1,182 @@
+---
+title: 5. perf-content 소비 + 엔진 축 정리
+description: 15종 파서 컴포넌트 · parserRegistry · BinMapper와 나란히 본 엔진 축 · 세 번째 엔진 후보
+sidebar:
+  order: 5
+---
+
+## 30초 요약
+
+생성된 Svelte 코드는 `frontend/src/lib/components/perf-content/` 에 **손으로 paste** — devtool이 자동 등록 안 함. 그 이유와 함께 **엔진 축 2종(BinMapper · Perf Generator) 나란히 본 비교**와 **세 번째 엔진 후보(iotest)**를 정리.
+
+## perf-content 폴더 — 소비 타겟
+
+```
+frontend/src/lib/components/perf-content/
+├── GenPerf.svelte           ← 손으로 만든 기준 예제
+├── FragmentWrite.svelte      ← 생성 + 수정
+├── WearLeveling.svelte
+├── ... (15+ 컴포넌트)
+├── perfChartUtils.ts         ← baseChartOption, captureChartImage
+├── perfStyles.ts             ← btnBase, btnActive, btnInactive, groupClass
+├── SectionHeader.svelte
+└── parserRegistry.ts         ← parserId → component 매핑
+```
+
+**생성된 컴포넌트가 준수해야 할 규약**:
+
+- Props: `{ data, tcName, fw?, yAxisMax? }` — TestDB L2의 `ResultData`와 호환
+- `perfChartUtils`의 `baseChartOption()` 재사용 (타이틀·툴팁·dataZoom 공통)
+- `perfStyles`의 버튼 클래스로 line/scatter 토글 UI 일관
+- `SectionHeader` 로 섹션 제목 통일
+
+**이 규약을 생성 시점에 박아 넣음** — generate가 `import` 구문을 고정된 문자열로 방출. 사용자가 지우거나 바꾸지 않는 한 규약이 유지됨.
+
+## parserRegistry — 15 파서의 중앙 매핑
+
+```typescript
+// parserRegistry.ts
+import GenPerf from './GenPerf.svelte';
+import FragmentWrite from './FragmentWrite.svelte';
+// ...
+
+export const parserRegistry: Record<string, ComponentType> = {
+  'GenPerf': GenPerf,
+  'FragmentWrite': FragmentWrite,
+  // ... 15+ 엔트리
+};
+
+export function getPerfComponent(parserId: string) {
+  return parserRegistry[parserId] ?? DefaultPerf;
+}
+```
+
+**새 파서 추가 순서**:
+
+1. `/devtools/perf-generator` 에서 JSON → 코드 생성
+2. `perf-content/NewParser.svelte` 로 paste
+3. `parserRegistry.ts` 에 import + entry 추가
+4. TestDB 쪽 `PerformanceParser` row 생성 (parserId = 'NewParser')
+
+**devtool이 자동으로 안 하는 이유**:
+
+- paste한 코드를 사람이 한 번 리뷰해야 함 (boilerplate 생성기의 한계)
+- parserRegistry 위치가 devtool 경계 밖 (다른 팀 소유 가능)
+- **자동화하려면 최소한 파일 시스템 API + git 권한** — 복잡도/위험도 증가
+
+**"사람이 최종 커밋"** 원칙 유지.
+
+## 생성된 코드가 TestDB L2와 연결되는 지점
+
+```
+PerformanceResultDataService.fetchResultData(historyId)
+  ↓
+  returns ResultData(parserId, rawJson, ...)
+  ↓
+  frontend: getPerfComponent(parserId) → Svelte 컴포넌트
+  ↓
+  컴포넌트가 rawJson을 data prop으로 받아 렌더
+```
+
+**Perf Generator로 만든 코드가 TestDB의 데이터 축을 완성**:
+
+- TestDB: DB row + 원격 JSON → ResultData
+- parserRegistry: parserId → 전용 Svelte 컴포넌트
+- Perf Generator: 그 Svelte 컴포넌트를 자동 생성
+
+세 L2가 **"데이터 → UI"** 흐름을 함께 만듦. Perf Generator가 없으면 15 × 300줄 = 수천 줄을 손으로 써야 함.
+
+## BinMapper · Perf Generator 나란히
+
+### 공통 — 엔진 축의 표지
+
+| 특징 | BinMapper | Perf Generator |
+|---|---|---|
+| 단방향 파이프라인 | ✅ Lex → Parse → Read | ✅ Analyze → Generate |
+| Stateless | ✅ 요청마다 새 Parser | ✅ 브라우저 세션만 |
+| 부분집합만 지원 | ✅ C 전체 아님 | ✅ 모든 JSON 아님 |
+| 사용자 보정 여지 | ❌ 입력 그대로 | ✅ Field Mapping · Tab Overrides |
+| 파이프라인 단계 수 | 4 (Lex/Parse/IR/Read) | 2 (Analyze/Generate) |
+
+### 차이 — 엔진 축 내 다양성
+
+| 축 | BinMapper | Perf Generator |
+|---|---|---|
+| 실행 환경 | JVM (백엔드) | 브라우저 (프론트) |
+| 입력 스케일 | 수 KB struct + 수 MB bin | 수 KB~수 MB JSON |
+| 출력 형태 | 트리 데이터 (`MappedResult`) | 소스 코드 문자열 |
+| 출력 소비 | 바로 UI 렌더 | 사람이 복사해 다른 레포 |
+| DB 상태 | PredefinedStruct 사전 있음 | 없음 (세션만) |
+| "한 번 돌고 버림" | 요청마다 완결 | 맞음 |
+| 재호출 | 자주 (같은 struct 여러 파일) | 드묾 (파서당 1-2회) |
+
+**"엔진"이라는 한 축 안에서도 네 가지 서브축**(환경·스케일·출력·재사용성)이 변주 가능. 미래 엔진을 만들 때 "어느 서브축이 어디에 위치하나"를 결정하면 설계가 보임.
+
+## 세 번째 엔진 후보 — iotest syscall
+
+메모리에 기록된 iotest 엔진(SSD I/O 검증용)이 세 번째 엔진이 될 자격:
+
+| 항목 | iotest 추정 |
+|---|---|
+| 입력 | DSL 스크립트(I/O 명령 시퀀스) |
+| 파이프라인 | Parse → Plan → Execute → Report |
+| 출력 | 실행 결과 JSON |
+| 환경 | JVM 또는 Agent (양쪽 가능) |
+| 사용자 보정 | ❌ (DSL 그대로 실행) |
+| 재호출 | ✅ 반복 실행이 핵심 |
+
+iotest가 BinMapper/Perf Generator와 비교해:
+
+- BinMapper처럼 **단방향·Stateless·부분집합만**
+- Perf Generator처럼 **"다른 L2(Performance History)에 결과를 공급"**
+- 자신만의 특징: **파이프라인 중간이 실제 I/O 수행(side effect)** — 앞 두 엔진은 순수 계산
+
+**"엔진이라도 순수/비순수 구분이 있다"** — iotest가 추가되면 엔진 축 안의 세 번째 변주.
+
+## L2 템플릿의 탄력성 — 14 모듈 회고
+
+L2 템플릿(N 페이지 여정 + ArchitectureDiagram + CodeTour + 직접 해보기)이 얼마나 버티는지:
+
+- **기능 축 10**: 서로 다른 도메인(실시간/Job/세션/절차/재사용)을 같은 껍질로
+- **크로스-컷 2** (Auth · TestDB): 요청/데이터 관점을 L2 형태로
+- **엔진 축 2** (BinMapper · Perf Generator): 컴파일러·코드 생성기 패턴을 L2에
+- 모든 14 모듈이 4~6 페이지 안에 핵심을 담음 (중앙값 5)
+
+**어디서 한계 보이는가**:
+
+- 페이지 수 경향 — 엔진 축이 평균보다 약간 길 수도 (BinMapper 5 · Perf Generator 5) → 내부 단계가 명확해서 그럼
+- 프론트 전용 L2(Perf Generator)에는 백엔드 CodeTour 기회가 줄어듦 — 괜찮음, L2가 반드시 JVM을 끌고 올 필요 없음
+
+**14종 후 현재 템플릿에 구조적 결함 없음**. 새 L2 도입 시 이 템플릿을 기본으로, 변주만 고민하면 됨.
+
+## 14 L2 전체 지도
+
+```
+기능 축 (10):
+  실시간: 슬롯 · Metadata
+  Job: Agent 벤치마크
+  터미널: 원격
+  절차: T32 · Pre-Command
+  재사용 레이어: Log Browser · MinIO · Bitbucket
+  데이터 통합: Excel Export
+
+크로스-컷 축 (2):
+  🔐 Auth    — 요청
+  📊 TestDB  — 데이터
+
+엔진 축 (2):
+  🧬 BinMapper      — C struct → ByteBuffer
+  ⚙ Perf Generator — JSON → Svelte 소스
+```
+
+**세 축 각각 2종 이상 확보** — 축 자체가 "우연한 하나"가 아니라 패턴임이 확정.
+
+## 직접 해보기
+
+- [ ] `perf-content/` 에 실제로 있는 컴포넌트 한 개(`FragmentWrite` 등)와 Perf Generator 생성 결과 비교 — 어느 부분을 사람이 고쳤는지
+- [ ] 같은 JSON을 BinMapper 스타일로 바꿔본다면? (struct text + 바이너리) — 두 엔진의 입력 형식 차이가 왜 이런지 추적
+- [ ] parserRegistry.ts에 새 엔트리 추가 → 생성 컴포넌트가 DB의 parserId와 연결되는 흐름 전체 추적
+
+---
+
+**돌아가기**: [Perf Generator 개요](/learn/l2-perfgen/) · [L2 14종 비교](/learn/l2-compare/) · [학습 가이드](/learn/)
