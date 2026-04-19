@@ -137,6 +137,50 @@ const manifest = [
     language: 'ts',
     note: 'runBenchmark / getJobStatus 프론트 API',
   },
+
+  // ── 원격 터미널 (L2 remote) ──
+  {
+    id: 'PortalServer-entity',
+    source: 'src/main/java/com/samsung/move/admin/entity/PortalServer.java',
+    lines: [1, 79],
+    language: 'java',
+    note: 'portal_servers — 접속 대상 서버 + ssh/rdp/vnc 포트 + guacd_host/port',
+  },
+  {
+    id: 'GuacamoleProperties',
+    source: 'src/main/java/com/samsung/move/guacamole/config/GuacamoleProperties.java',
+    lines: [1, 21],
+    language: 'java',
+    note: 'guacamole.* yaml 설정 바인딩',
+  },
+  {
+    id: 'GuacamoleTunnelEndpoint-decl',
+    source: 'src/main/java/com/samsung/move/guacamole/endpoint/GuacamoleTunnelEndpoint.java',
+    lines: [30, 82],
+    language: 'java',
+    note: '@ServerEndpoint 선언 + 필드 + 생성자',
+  },
+  {
+    id: 'GuacamoleTunnelEndpoint-onopen',
+    source: 'src/main/java/com/samsung/move/guacamole/endpoint/GuacamoleTunnelEndpoint.java',
+    lines: [84, 147],
+    language: 'java',
+    note: 'onOpen — 파라미터 파싱 + Lock + VM 조회 + buildConfig + connect',
+  },
+  {
+    id: 'GuacamoleTunnelEndpoint-connect',
+    source: 'src/main/java/com/samsung/move/guacamole/endpoint/GuacamoleTunnelEndpoint.java',
+    lines: [180, 273],
+    language: 'java',
+    note: 'connectDirect + buildConfig + readFromTunnel',
+  },
+  {
+    id: 'GuacamoleTunnelEndpoint-onmessage-close',
+    source: 'src/main/java/com/samsung/move/guacamole/endpoint/GuacamoleTunnelEndpoint.java',
+    lines: [275, 322],
+    language: 'java',
+    note: 'onMessage(heartbeat + 터널 write) + onClose(정리)',
+  },
 ];
 
 async function extractLines(text, lines) {
