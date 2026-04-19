@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/auth/controller/AuthController.java
 // @lines 181-252
 // @note POST /adfs/callback — id_token 파싱 + claims 추출 + PortalUser 생성/갱신 + 세션 저장
-// @synced 2026-04-19T09:04:03.511Z
+// @synced 2026-04-19T09:18:51.178Z
 
     /**
      * ADFS callback — form_post로 id_token 수신, claims 파싱, 세션 생성 후 SPA로 redirect

@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/testdb/entity/PerformanceTestRequest.java
 // @lines 1-70
 // @note FW 메타(컨트롤러·NAND·CS 버전) + getFw() @Transient + Redis setFw 무시
-// @synced 2026-04-19T09:04:03.512Z
+// @synced 2026-04-19T09:18:51.180Z
 
 package com.samsung.move.testdb.entity;
 

@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/testdb/entity/PerformanceTestCase.java
 // @lines 1-57
 // @note 성능 시나리오 정의 — name / fileName / parserId / category / ioType
-// @synced 2026-04-19T09:04:03.514Z
+// @synced 2026-04-19T09:18:51.180Z
 
 package com.samsung.move.testdb.entity;
 

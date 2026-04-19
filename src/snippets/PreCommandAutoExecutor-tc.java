@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/head/precmd/service/PreCommandAutoExecutor.java
 // @lines 85-172
 // @note tryExecuteTcPreCommand — testcaseStatus에서 첫 미완료 position 찾고 TC Pre-Command 실행
-// @synced 2026-04-19T09:04:03.501Z
+// @synced 2026-04-19T09:18:51.167Z
 
     /**
      * testcaseStatus에서 현재 대상 position을 결정하고, TC Pre-Command를 실행.

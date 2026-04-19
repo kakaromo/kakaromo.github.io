@@ -619,6 +619,71 @@ const manifest = [
     language: 'java',
     note: '/api/dashboard/stats — 두 도메인 공통 집계 (trCount/passFail/byFw/byTc/recent)',
   },
+
+  // ── BinMapper (L2 binmapper) ──
+  {
+    id: 'PredefinedStruct-entity',
+    source: 'src/main/java/com/samsung/move/binmapper/entity/PredefinedStruct.java',
+    lines: [1, 48],
+    language: 'java',
+    note: 'predefined_structs — name/category/structText(TEXT) 저장, 재사용 가능한 struct 사전',
+  },
+  {
+    id: 'CppType-readValue',
+    source: 'src/main/java/com/samsung/move/binmapper/model/CppType.java',
+    lines: [160, 197],
+    language: 'java',
+    note: 'enum 13종 + fromString(alias map 100+) + readValue(ByteBuffer) switch 분기',
+  },
+  {
+    id: 'CppStructLexer-tokenize',
+    source: 'src/main/java/com/samsung/move/binmapper/parser/CppStructLexer.java',
+    lines: [1, 80],
+    language: 'java',
+    note: 'KEYWORDS Set + tokenize 메인 루프 (#pragma / __attribute__ / ident / number 분기)',
+  },
+  {
+    id: 'CppStructParser-entry',
+    source: 'src/main/java/com/samsung/move/binmapper/parser/CppStructParser.java',
+    lines: [1, 80],
+    language: 'java',
+    note: 'parse 엔트리 + typedef/struct/union/enum 분기 + pragma pack 상태 유지',
+  },
+  {
+    id: 'BinaryReader-map',
+    source: 'src/main/java/com/samsung/move/binmapper/service/BinaryReaderService.java',
+    lines: [1, 72],
+    language: 'java',
+    note: 'map 엔트리 + resolveEndianness + calculateStructSize (union vs struct, pack 분기)',
+  },
+  {
+    id: 'BinaryReader-mapFields',
+    source: 'src/main/java/com/samsung/move/binmapper/service/BinaryReaderService.java',
+    lines: [74, 187],
+    language: 'java',
+    note: 'mapFields 재귀 — union/bitfield/char 배열/배열/nested struct/primitive 6 분기',
+  },
+  {
+    id: 'BinaryReader-primitive-bitfield',
+    source: 'src/main/java/com/samsung/move/binmapper/service/BinaryReaderService.java',
+    lines: [189, 265],
+    language: 'java',
+    note: 'readPrimitiveField (ASCII 힌트 + enum 라벨) + mapBitfield (storage unit + bit mask)',
+  },
+  {
+    id: 'BinaryReader-align-endian',
+    source: 'src/main/java/com/samsung/move/binmapper/service/BinaryReaderService.java',
+    lines: [267, 322],
+    language: 'java',
+    note: 'getFieldSize/Alignment + align (padding 계산) + resolveEndianness (ELF magic) + readCharArray',
+  },
+  {
+    id: 'BinMapperController',
+    source: 'src/main/java/com/samsung/move/binmapper/controller/BinMapperController.java',
+    lines: [1, 54],
+    language: 'java',
+    note: '/api/binmapper/parse (MultipartFile + 6가지 struct 소스) + parse-struct + parse-header',
+  },
 ];
 
 async function extractLines(text, lines) {
