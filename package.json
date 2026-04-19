@@ -10,7 +10,8 @@
     "build": "astro build",
     "preview": "astro preview",
     "astro": "astro",
-    "sync-snippets": "node scripts/sync-snippets.mjs"
+    "sync-snippets": "node scripts/sync-snippets.mjs",
+    "visual-snapshots": "node scripts/visual-snapshots.mjs"
   },
   "dependencies": {
     "@astrojs/starlight": "^0.38.1",

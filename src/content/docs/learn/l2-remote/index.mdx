@@ -1,0 +1,21 @@
+---
+title: "원격 터미널 & 로그 (예정)"
+description: guacd 경유 RDP/SSH 터미널과 SSH 로그 조회
+sidebar:
+  order: 0
+---
+
+:::caution[아직 작성되지 않았습니다]
+이 L2 모듈은 다음 작업자의 진입점입니다. L1 [key-flows #3](/learn/l1-overview/key-flows/#3-원격-터미널--websocket-양방향-바이너리)의 그림을 확장해 다음 항목을 다룰 예정입니다.
+
+- 세션 인증·생성 (Spring)
+- guacd 터널 생성 + WebSocket 연결
+- 브라우저와 guacd 직결 이후 Spring 경유 없음
+- 로그 조회: `com.samsung.move.logbrowser` — SSH 모드 vs Local 모드
+- `tentacle.*` yaml 설정이 이 흐름에서 어떻게 쓰이는지
+- **핵심 소스**: `com.samsung.move.guacamole.*`, `com.samsung.move.logbrowser.*`, `frontend/src/routes/remote/`
+:::
+
+## 작성할 때의 템플릿
+
+[슬롯 모니터링 L2](/learn/l2-slots/)와 동일 구조. 새로 등장할 L3 개념은 `@ServerEndpoint`, WebSocket, JSch 등.

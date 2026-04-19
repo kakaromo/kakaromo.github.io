@@ -1,0 +1,25 @@
+---
+title: "Agent 벤치마크 실행 (예정)"
+description: Android 디바이스에서 fio/iozone/tiotest를 실행하고 진행률을 실시간 중계
+sidebar:
+  order: 0
+---
+
+:::caution[아직 작성되지 않았습니다]
+이 L2 모듈은 다음 작업자의 진입점입니다. L1 [key-flows #2](/learn/l1-overview/key-flows/#2-android-디바이스-벤치마크--grpc-양방향-스트림)의 그림을 확장해 다음 항목을 다룰 예정입니다.
+
+- 프론트 "Run" 버튼 → Spring `AgentController` → Go Agent gRPC 호출
+- `RunBenchmark` → 디바이스 실행 → 서버 스트림 진행률
+- Spring이 진행률을 SSE로 재중계
+- 장시간(수십 분~시간) 작업의 keepalive·재연결·오작동 감지
+- 결과 저장 → MinIO + DB
+- **핵심 소스**: `com.samsung.move.agent.*`, `frontend/src/routes/agent/`
+:::
+
+## 작성할 때의 템플릿
+
+[슬롯 모니터링 L2](/learn/l2-slots/)와 같은 구조를 따릅니다.
+
+1. `index.mdx` — 데이터 여정 N단계 인터랙티브 다이어그램
+2. 단계별 페이지 — 제일 앞에 30초 요약, CodeTour + 다이어그램, 하단 "직접 해보기"
+3. L3 개념은 새로 필요한 것만 추가 (예: `@Async`, `StreamObserver`, SvelteKit action 등)

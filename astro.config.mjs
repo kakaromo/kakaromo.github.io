@@ -18,6 +18,16 @@ export default defineConfig({
         root: { label: '한국어', lang: 'ko-KR' },
       },
       customCss: ['./src/styles/custom.css', './src/styles/learn.css'],
+      editLink: {
+        baseUrl: 'https://github.com/kakaromo/kakaromo.github.io/edit/master/',
+      },
+      social: [
+        {
+          icon: 'github',
+          label: 'GitHub',
+          href: 'https://github.com/kakaromo/kakaromo.github.io',
+        },
+      ],
       head: [
         {
           tag: 'script',
@@ -66,6 +76,14 @@ export default defineConfig({
                 {
                   label: '슬롯 모니터링 (Head TCP + SSE)',
                   autogenerate: { directory: 'learn/l2-slots' },
+                },
+                {
+                  label: 'Agent 벤치마크 (예정)',
+                  autogenerate: { directory: 'learn/l2-benchmark' },
+                },
+                {
+                  label: '원격 터미널 & 로그 (예정)',
+                  autogenerate: { directory: 'learn/l2-remote' },
                 },
               ],
             },
