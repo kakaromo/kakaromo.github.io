@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/metadata/service/MetadataMonitorService.java
 // @lines 134-234
 // @note @Scheduled checkSlotStateChanges + startMonitoring (TR 기반 제품→command 매핑 + 수집 주기)
-// @synced 2026-04-19T07:53:32.288Z
+// @synced 2026-04-19T08:19:17.627Z
 
     @Scheduled(fixedDelayString = "${metadata.monitor.poll-interval-ms:5000}")
     public void checkSlotStateChanges() {

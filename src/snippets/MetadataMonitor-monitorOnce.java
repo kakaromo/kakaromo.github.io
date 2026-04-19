@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/metadata/service/MetadataMonitorService.java
 // @lines 290-351
 // @note monitorOnce — commandType 분기 + JSON 파싱 + 인메모리 + 파일 저장
-// @synced 2026-04-19T07:53:32.289Z
+// @synced 2026-04-19T08:19:17.627Z
 
     private void monitorOnce(SlotMonitorContext ctx) {
         // Lock으로 동시 실행 방지 (scheduled task + stopMonitoring 최종 수집)

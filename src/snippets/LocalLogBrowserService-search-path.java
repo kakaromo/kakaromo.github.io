@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/logbrowser/service/LocalLogBrowserService.java
 // @lines 206-312
 // @note Local searchInFile (ProcessBuilder rg) + resolveLocalPath (path traversal 방어)
-// @synced 2026-04-19T07:53:32.297Z
+// @synced 2026-04-19T08:19:17.634Z
 
     public List<SearchResult> searchInFile(String tentacleName, String path, String pattern) {
         String vmName = findVm(tentacleName).getName();

@@ -408,6 +408,57 @@ const manifest = [
     language: 'java',
     note: 'GET /{historyId}/excel — data fetch + gRPC call + ResponseEntity<byte[]>',
   },
+
+  // ── Bitbucket 브랜치 모니터 (L2 bitbucket) ──
+  {
+    id: 'BitbucketMonitorProperties',
+    source: 'src/main/java/com/samsung/move/bitbucket/config/BitbucketMonitorProperties.java',
+    lines: [1, 13],
+    language: 'java',
+    note: '@ConfigurationProperties bitbucket.monitor — enabled + defaultTargetPath',
+  },
+  {
+    id: 'BitbucketRepo-entity',
+    source: 'src/main/java/com/samsung/move/bitbucket/entity/BitbucketRepo.java',
+    lines: [1, 67],
+    language: 'java',
+    note: 'portal_bitbucket_repos — serverUrl/projectKey/repoSlug/PAT(평문)/autoDownload/controller',
+  },
+  {
+    id: 'BitbucketBranch-entity',
+    source: 'src/main/java/com/samsung/move/bitbucket/entity/BitbucketBranch.java',
+    lines: [1, 48],
+    language: 'java',
+    note: 'portal_bitbucket_branches — status(DETECTED/DOWNLOADING/DOWNLOADED/FAILED) + filePath + commitDate',
+  },
+  {
+    id: 'BitbucketMonitorService-poll',
+    source: 'src/main/java/com/samsung/move/bitbucket/service/BitbucketMonitorService.java',
+    lines: [33, 108],
+    language: 'java',
+    note: '@Scheduled fixedDelay 5분 polling + pollRepo + autoDownload 분기 (DETECTED 저장 or downloadBranch)',
+  },
+  {
+    id: 'BitbucketApiClient-ssl-list',
+    source: 'src/main/java/com/samsung/move/bitbucket/service/BitbucketApiClient.java',
+    lines: [28, 119],
+    language: 'java',
+    note: 'HttpClient(SSL 무시) + listBranches 페이지네이션 + Bearer PAT + metadata authorTimestamp 추출',
+  },
+  {
+    id: 'BitbucketApiClient-archive',
+    source: 'src/main/java/com/samsung/move/bitbucket/service/BitbucketApiClient.java',
+    lines: [121, 195],
+    language: 'java',
+    note: 'downloadArchive (at=%2f encoded ref, InputStream) + getCommitTimestamp fallback',
+  },
+  {
+    id: 'BitbucketMonitorService-download',
+    source: 'src/main/java/com/samsung/move/bitbucket/service/BitbucketMonitorService.java',
+    lines: [117, 224],
+    language: 'java',
+    note: 'downloadBranch 6단계 — 디렉토리 생성 → ZIP 스트리밍(1MB SSE 진행) → extractZip(Zip Slip 방지) → ZIP 삭제 → DB 업데이트',
+  },
 ];
 
 async function extractLines(text, lines) {

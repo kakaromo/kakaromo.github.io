@@ -1,7 +1,7 @@
 // @source src/main/proto/excel_service.proto
 // @lines 1-24
 // @note RPC GenerateExcel + ExcelRequest/Response 메시지
-// @synced 2026-04-19T07:53:32.298Z
+// @synced 2026-04-19T08:19:17.635Z
 
 syntax = "proto3";
 package portal.excel;

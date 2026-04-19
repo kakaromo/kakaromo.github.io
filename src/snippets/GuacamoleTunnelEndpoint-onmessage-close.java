@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/guacamole/endpoint/GuacamoleTunnelEndpoint.java
 // @lines 275-322
 // @note onMessage(heartbeat + 터널 write) + onClose(정리)
-// @synced 2026-04-19T07:53:32.287Z
+// @synced 2026-04-19T08:19:17.625Z
 
     @OnMessage
     public void onMessage(Session session, String message) {
