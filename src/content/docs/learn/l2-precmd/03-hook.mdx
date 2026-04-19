@@ -1,0 +1,150 @@
+---
+title: 3. 훅 진입점 — StateStore → onSlotStateChanged
+description: HeadSlotStateStore의 updateSlots가 슬롯마다 호출하는 이벤트 훅
+sidebar:
+  order: 3
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import SequenceTimeline from '../../../../components/learn/SequenceTimeline.svelte';
+import fieldsRaw from '../../../../snippets/PreCommandAutoExecutor-fields.java?raw';
+
+## 30초 요약
+
+**`PreCommandAutoExecutor`는 Spring 빈 하나**입니다. `HeadSlotStateStore.updateSlots`가 슬롯마다 `onSlotStateChanged`를 부르고, 이 메서드가 **4가지 분기**를 결정합니다.
+
+1. setLocation 없으면 **무시**
+2. testState가 `init` 아니면 **실행 추적 초기화** + return
+3. SlotPreCommand DB 조회
+4. **TC 우선** → 없으면 슬롯 Pre-Command → 중복 방지 Set로 guard
+
+실행 자체는 **4 스레드 풀**에서 비동기로 SSH 쏨 (단계 5).
+
+## 훅 호출 시퀀스
+
+<SequenceTimeline
+  client:visible
+  height={340}
+  autoplay={true}
+  caption="Head TCP 수신 → StateStore.put → 훅 호출 → SSH 비동기 실행"
+  altText="HeadTcpClient가 Head로부터 슬롯 데이터 청크를 받으면 HeadSlotStateStore.updateSlots를 호출합니다. StateStore는 각 슬롯을 put하면서 PreCommandAutoExecutor.onSlotStateChanged를 동기 호출합니다. 훅은 testState가 init을 포함하는지 확인하고 DB에서 SlotPreCommand를 조회한 뒤, 해당하면 내부 executor 스레드풀에 작업을 submit하고 즉시 반환합니다. 실제 SSH 실행은 별도 스레드에서 이뤄집니다."
+  lanes={[
+    { id: 'head',  label: 'HeadTcpClient', layer: 'be',    sublabel: 'TCP 수신' },
+    { id: 'store', label: 'SlotStateStore', layer: 'state', sublabel: 'ConcurrentHashMap' },
+    { id: 'hook',  label: 'AutoExecutor',   layer: 'be',    sublabel: 'onStateChanged' },
+    { id: 'exec',  label: 'Executor',       layer: 'tx',    sublabel: '4 pool' },
+  ]}
+  messages={[
+    { from: 'head',  to: 'store', label: 'updateSlots(list)',    t: 0,  kind: 'sync' },
+    { from: 'store', to: 'hook',  label: 'onSlotStateChanged',    t: 4,  kind: 'sync' },
+    { from: 'hook',  to: 'hook',  label: 'testState init?',       t: 6,  kind: 'sync' },
+    { from: 'hook',  to: 'store', label: 'findBySetLocation',     t: 10, kind: 'sync' },
+    { from: 'hook',  to: 'exec',  label: 'submit(executeSync)',   t: 14, kind: 'async' },
+    { from: 'hook',  to: 'store', label: 'return (빠름)',          t: 16, kind: 'sync' },
+    { from: 'exec',  to: 'exec',  label: 'SSH adb push/chmod',    t: 50, kind: 'async' },
+  ]}
+/>
+
+**훅은 빠르게 끝나야 합니다** — 슬롯 수십 개를 순회 중이니 한 훅이 SSH를 붙들면 전체가 느려짐. 그래서 **submit만 하고 즉시 return**.
+
+## 훅 함수 — 코드 투어
+
+<CodeTour
+  client:visible
+  language="java"
+  source="PreCommandAutoExecutor (필드 + 훅)"
+  height={560}
+  code={fieldsRaw}
+  steps={[
+    {
+      id: 'bean',
+      title: '@Component + @RequiredArgsConstructor',
+      lines: [6, 14],
+      body: '<p>Spring 싱글톤. 5개 리포지토리 + PreCommandService 주입. 엔티티 4종(SlotPreCommand, SlotInfomation, TestCase × 2)을 모두 조회하는 <strong>오케스트레이터</strong>.</p>',
+    },
+    {
+      id: 'executor',
+      title: '4 스레드풀',
+      lines: [16, 16],
+      body: '<p>Spring 기본 @Scheduled 풀과 분리. <strong>한 번에 최대 4개 슬롯의 Pre-Command가 동시에 실행</strong>. 그 이상은 큐에 대기. 대부분의 운영 상황에 충분.</p>',
+    },
+    {
+      id: 'setloc-pattern',
+      title: 'SET_LOCATION_PATTERN — T3-0 파싱',
+      lines: [18, 18],
+      body: '<p>setLocation에서 <code>tentacleName</code>과 <code>slotNumber</code>를 추출할 정규식. 단계 4에서 사용.</p>',
+    },
+    {
+      id: 'dup-sets',
+      title: '중복 실행 방지 Set 두 개',
+      lines: [20, 24],
+      body: '<p>init이 한 번 들어왔다가 다시 들어오면? <code>executedSlots</code>/<code>executedTcs</code> Set이 <strong>같은 상태로 여러 번 들어오는 것을 방지</strong>. 다음 단계(not init)에 해제되어 재실행 가능.</p>',
+    },
+    {
+      id: 'entry',
+      title: 'onSlotStateChanged — 시그니처',
+      lines: [26, 29],
+      body: '<p>StateStore가 old/new를 모두 넘겨주지만 현재 구현은 new만 사용. setLocation이 없으면 즉시 return — <strong>초기 부팅 중 데이터 일부가 비는 경우 방어</strong>.</p>',
+    },
+    {
+      id: 'not-init',
+      title: 'init 아니면 실행 추적 해제',
+      lines: [31, 36],
+      body: '<p>핵심 불변: <strong>실행은 init 진입 순간 한 번</strong>. init 외 상태로 바뀌면 Set에서 해제 → 다음에 다시 init이 오면 실행 가능. 상태 머신의 전이 표를 코드로 표현.</p>',
+    },
+    {
+      id: 'lookup-sp',
+      title: 'SlotPreCommand 조회',
+      lines: [38, 41],
+      body: '<p>UK(setLocation)로 단건. 없으면 무시(이 슬롯에 등록 없음). <strong>N+1 쿼리는 StateStore 쪽이 아닌 이 훅 안에서 발생</strong>하지만, 슬롯 수가 수십 단위라 캐싱 없이도 감당 가능.</p>',
+    },
+    {
+      id: 'tc-first',
+      title: 'TC 우선 확인',
+      lines: [43, 44],
+      body: '<p><code>tryExecuteTcPreCommand</code>가 true 반환하면 TC를 처리했다는 뜻. 다음 단계에서 상세 분석.</p>',
+    },
+    {
+      id: 'slot-fallback',
+      title: 'TC 없으면 슬롯 Pre-Command',
+      lines: [46, 54],
+      body: '<p><code>executedSlots.add(setLocation)</code>이 <strong>true면 아직 실행 안 했다는 뜻</strong>. Set.add의 반환값으로 guard + 상태 변경을 원자적으로. submit 후 즉시 종료 — 훅은 결과를 기다리지 않음.</p>',
+    },
+  ]}
+/>
+
+## "이벤트 훅" 패턴이란
+
+MOVE가 이 모듈에서 처음으로 쓰는 설계 패턴입니다. 요약하면:
+
+1. **변화의 출처**는 다른 모듈(여기서는 HeadSlotStateStore).
+2. **훅을 주입받은 부수 로직**이 그 변화를 감지해 움직임.
+3. **출처는 훅의 존재를 거의 모른 채** 한 줄 호출만 함.
+
+구현 포인트는 StateStore 쪽 한 줄:
+
+```java
+// HeadSlotStateStore.updateSlots (슬롯 L2에서 본 그것)
+preCommandAutoExecutor.onSlotStateChanged(source, oldData, data);
+```
+
+이 한 줄이 **두 모듈의 유일한 접점**. Pre-Command 모듈이 빠지거나 에러를 던져도 StateStore는 try/catch로 감싸 보호(슬롯 L2 05-state-store.mdx 참고).
+
+## 왜 HeadSlotStateStore에서 직접 실행하지 않는가
+
+"StateStore.updateSlots 안에 바로 SSH 코드를 넣으면 안 되나?" 안 됩니다:
+
+- **StateStore는 상태 저장 전용** — 추가 책임이 늘어나면 "슬롯 상태 관리"와 "부수 동작"이 섞여 읽기 어려워짐
+- **단일 책임 원칙** — 한 클래스의 역할은 하나
+- **테스트 분리** — StateStore 단위 테스트가 SSH까지 모킹하지 않아도 됨
+- **확장성** — 나중에 또 다른 훅(예: 이벤트 로깅, Slack 알림)이 필요하면 같은 방식으로 붙일 수 있음
+
+**"호출 한 줄 + 훅 주입"** 은 확장 포인트를 명시적으로 드러내는 패턴입니다.
+
+## 직접 해보기
+
+- [ ] 슬롯을 init으로 들어가게 하고 → 로그에서 `HeadSlotStateStore.updateSlots` 시점에 Pre-Command 관련 로그가 뒤따르는지 확인
+- [ ] `enabledSlots` Set에 이미 있는 슬롯에 다시 init 이벤트 → 중복 실행되지 않는지 debug 로그로 관찰
+- [ ] Spring 런타임에서 `@Component`가 자동 주입됐는지 — `PreCommandAutoExecutor` 빈을 조회하는 간단 테스트
+
+다음: [4. 우선순위 판정](/learn/l2-precmd/04-priority/) →

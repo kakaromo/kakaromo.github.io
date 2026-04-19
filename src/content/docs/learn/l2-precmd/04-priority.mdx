@@ -1,0 +1,196 @@
+---
+title: 4. 우선순위 판정 — TC position 찾기
+description: testcaseStatus에서 첫 미완료 TC를 찾아 해당 position의 Pre-Command를 실행
+sidebar:
+  order: 4
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import DataFlowPath from '../../../../components/learn/DataFlowPath.svelte';
+import tcRaw from '../../../../snippets/PreCommandAutoExecutor-tc.java?raw';
+
+## 30초 요약
+
+`tryExecuteTcPreCommand`는 이 모듈에서 가장 복잡한 함수입니다. **TC 여러 개의 진행 상태**를 보고 **지금 실행하려는 TC가 어느 position인지** 결정합니다.
+
+1. setLocation 파싱 → `SlotInfomation` DB 조회 (testcaseIds + testcaseStatus 확보)
+2. 선행 슬래시 제거 → 3개 배열 정렬 (`tcIds` / `statuses` / `preCommandIdArr`)
+3. **첫 번째 미완료** status 찾기 → `targetPosition`
+4. 해당 position의 `preCommandId` 유효성 검증
+5. **testToolName 매칭** — 실제 돌고 있는 TC가 맞는지 교차 검증
+6. 중복 방지 Set guard + submit
+
+## 복잡한 이유: TC 여러 개가 순차 실행됨
+
+한 슬롯이 한 테스트 실행 동안 **여러 TC를 순차로 돎**니다. DB는 그 진행을 이렇게 저장:
+
+```
+testcaseIds     = "/42/43/44/45"    (5개 TC)
+testcaseStatus  = "/27/27/0/0/0"    (처음 둘은 PASS, 나머지 NOTSTART)
+tcPreCommandIds = "0,3,0,5,0"       (position 2, 4에만 TC Pre-Command)
+```
+
+첫 미완료 status는 `statuses[2] = 0` (NOTSTART). 그러니 **"지금 init 진입은 TC position=2 직전"** 으로 해석되고, `tcPreCommandIds[2] = 0` → **등록 없음, 무시**. 다음 init이 `position=3`에서 올 때 `tcPreCommandIds[3] = 5`면 → PreCommand id 5 실행.
+
+## 데이터 변형 파이프라인
+
+<DataFlowPath
+  client:visible
+  caption="setLocation에서 실행할 preCommandId까지 — 5단계 변환"
+  altText="setLocation T3-0을 정규식으로 파싱해 tentacleName T3와 slotNumber 0을 추출하고, 이 키로 SlotInfomation을 조회해 testcaseIds 테스트목록과 testcaseStatus 진행상태를 얻습니다. 선행 슬래시를 제거하고 세 배열로 분해한 뒤 statuses에서 첫 번째 미완료 position을 찾고, 해당 position의 preCommandId를 반환합니다. 마지막으로 testToolName이 그 TC name과 일치하는지 교차 검증."
+  stages={[
+    {
+      id: 's1',
+      label: 'setLocation',
+      layer: 'state',
+      language: 'text',
+      sample: '"T3-0"',
+      note: '도메인 키',
+    },
+    {
+      id: 's2',
+      label: 'SlotInfomation',
+      layer: 'state',
+      language: 'text',
+      sample: 'tentacleName=T3, slotNumber=0\ntestcaseIds = "/42/43/44"\ntestcaseStatus = "/27/0/0"',
+      note: 'DB 조회 결과',
+    },
+    {
+      id: 's3',
+      label: '3 배열 분해',
+      layer: 'be',
+      language: 'ts',
+      sample: 'tcIds          = ["42", "43", "44"]\nstatuses       = ["27", "0", "0"]\npreCommandIds  = ["0", "3", "0"]',
+      note: '"/" split, "," split',
+    },
+    {
+      id: 's4',
+      label: '첫 미완료 position',
+      layer: 'be',
+      language: 'ts',
+      sample: 'for (i ...)\n  if (!isCompleted(statuses[i]))\n    target = i  // = 1\n    break',
+      note: '27=PASS 완료, 다음 0이 대상',
+    },
+    {
+      id: 's5',
+      label: 'submit preCommandId',
+      layer: 'tx',
+      language: 'ts',
+      sample: 'id = preCommandIds[target]  // = 3\nexecutor.submit(() =>\n  executeSync(3, source, [slotIdx]))',
+      note: 'position=1, id=3 실행',
+    },
+  ]}
+  transforms={[
+    { label: 'regex' },
+    { label: 'split' },
+    { label: 'scan' },
+    { label: 'submit' },
+  ]}
+/>
+
+## 코드 투어
+
+<CodeTour
+  client:visible
+  language="java"
+  source="PreCommandAutoExecutor.tryExecuteTcPreCommand"
+  height={680}
+  code={tcRaw}
+  steps={[
+    {
+      id: 'null-guard',
+      title: 'CSV 비면 즉시 return false',
+      lines: [12, 13],
+      body: '<p>TC 등록이 없는 슬롯은 여기서 끝 → 호출자가 슬롯 Pre-Command fallback으로. <strong>false/true로 &quot;내가 처리했는가&quot;를 돌려주는 패턴</strong>.</p>',
+    },
+    {
+      id: 'parse-loc',
+      title: 'setLocation 정규식 파싱',
+      lines: [15, 19],
+      body: '<p><code>^([A-Za-z]+\\d+)-(\\d+).*</code>로 <code>T3-0</code> → <code>T3</code> + <code>0</code>. 매치 안 되면 (이상한 포맷) false. <strong>도메인 규약이 코드로 고정</strong>된 지점.</p>',
+    },
+    {
+      id: 'slot-info',
+      title: 'SlotInfomation DB 조회',
+      lines: [21, 33],
+      body: '<p>composite key(<code>tentacleName</code>, <code>slotNumber</code>)로 단건. testcaseIds/Status가 비면 false — <strong>TR 배포 전에는 수행할 TC가 없음</strong>.</p>',
+    },
+    {
+      id: 'strip-slash',
+      title: '선행 슬래시 제거',
+      lines: [35, 37],
+      body: '<p>DB에 <code>"/42/43"</code>처럼 슬래시로 시작해서 저장되는 경우가 있음(Head 프로토콜 레거시). <strong>방어적 prefix 제거</strong> 후 split.</p>',
+    },
+    {
+      id: 'arrays',
+      title: '세 배열 정렬',
+      lines: [38, 41],
+      body: '<p><code>"/", ","</code> 구분자로 각각 split. <code>-1</code> limit로 <strong>trailing empty 유지</strong>. 세 배열의 i번째가 같은 TC를 가리킴.</p>',
+    },
+    {
+      id: 'find-target',
+      title: '첫 미완료 position 스캔',
+      lines: [43, 59],
+      body: '<p>주석에 <strong>27가지 완료 상태 코드</strong>가 명시되어 있음 (PASS, FAIL, 여러 경계 상태…). <code>isCompletedStatus(int)</code> 메서드가 Set lookup으로 판정.</p>',
+    },
+    {
+      id: 'validate-target',
+      title: 'position 유효성 + preCommandId 파싱',
+      lines: [61, 67],
+      body: '<p>배열 경계·숫자 파싱·0이하 체크 3단. 한 개라도 실패하면 false — <strong>해당 position에 등록이 없다</strong>는 뜻으로 해석.</p>',
+    },
+    {
+      id: 'tooling-match',
+      title: 'testToolName 교차 검증',
+      lines: [69, 75],
+      body: '<p><strong>단순히 position만 믿지 않음</strong>. 현재 Head가 보고한 <code>testToolName</code>과 해당 TC의 name이 일치해야 실행. DB가 이미 바뀐 뒤 오래된 슬롯 데이터가 섞이는 케이스 방지.</p>',
+    },
+    {
+      id: 'dedup',
+      title: '중복 실행 방지',
+      lines: [77, 80],
+      body: '<p><code>executedTcs.add("setLocation:position")</code>. 같은 position으로 init이 여러 번 들어와도 한 번만 실행. <strong>Set.add의 원자성</strong>으로 thread-safe.</p>',
+    },
+    {
+      id: 'submit',
+      title: 'executor.submit + return true',
+      lines: [82, 88],
+      body: '<p>비동기 submit 후 즉시 true 반환. 훅은 결과를 기다리지 않음. 이 true가 <strong>호출자에게 &quot;TC를 처리했으니 슬롯 Pre-Command는 skip하라&quot;</strong>는 신호.</p>',
+    },
+    {
+      id: 'catch-all',
+      title: '전체 try/catch',
+      lines: [89, 91],
+      body: '<p>예상 못한 예외 → false 반환. <strong>Pre-Command 모듈이 터지면 StateStore 쪽에도 영향 없도록</strong> 이중 방어 (StateStore에도 try/catch가 있음).</p>',
+    },
+  ]}
+/>
+
+## 27가지 완료 상태 — 왜 이렇게 많은가
+
+TC status는 0~60 정도의 정수 코드. 그중 **완료**로 분류되는 것만 27가지입니다.
+
+- **PASS 계열 8개**: 정상 완료·경고 통과 등
+- **FAIL 계열 11개**: 일반 fail·timeout·boot fail·critical…
+- **종결 계열 8개**: STOP·DISCONNECT·EMERGENCY_STOP…
+
+이 분류 기준은 **프론트 UI의 `tcStatusLabel`과 동일**. 두 곳이 서로 달라지면 "완료됐는데 Pre-Command가 또 실행됨" 같은 버그가 생기므로 **코드 코멘트로 동기화 규칙을 못 박음**. Set으로 코드를 상수화해 변경이 쉽고 검증 테스트도 가능.
+
+## 왜 testToolName 교차 검증을 추가했는가
+
+**position만으로 판정하면 race가 일어납니다.**
+
+실제 발견된 시나리오:
+1. TR이 바뀌어 testcaseIds가 `[42, 43]`에서 `[99, 42, 43]`으로 바뀜.
+2. 하지만 Head가 보낸 슬롯 데이터는 아직 이전 `testToolName=fio`(position=0, tcId=42).
+3. DB와 Head 데이터가 **잠깐 어긋난 시점**에 init이 들어오면 position=0이 tcId=99로 잘못 매칭.
+
+`testToolName == TC.name` 체크로 **"이 슬롯이 진짜 그 TC를 돌고 있는가"** 를 한 번 더 확인. false면 skip — 다음 상태 변화에서 다시 평가.
+
+## 직접 해보기
+
+- [ ] DB에서 `testcaseIds = "/42/43"`, `testcaseStatus = "/0/0"`인 슬롯을 만들고 tc position 0에만 PreCommand 등록
+- [ ] Head를 시뮬레이션해 testToolName이 TC 42의 이름과 일치하는 init 상태 보내기 → position=0이 실행되는지 로그 확인
+- [ ] testToolName을 일부러 다른 값으로 바꿔 → 실행되지 않는지 확인 (race 방어)
+
+다음: [5. SSH 실행 (adb -s usbId)](/learn/l2-precmd/05-exec/) →

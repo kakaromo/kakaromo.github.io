@@ -1,0 +1,81 @@
+---
+title: Pre-Command — 이벤트 훅 기반 상태 머신
+description: 슬롯이 init 상태로 진입할 때 자동으로 사전 명령어를 실행하는 모듈
+sidebar:
+  order: 0
+---
+
+import ArchitectureDiagram from '../../../../components/learn/ArchitectureDiagram.svelte';
+
+## 이 모듈에서 배울 것
+
+"슬롯이 테스트 시작 직전 **init 상태**로 바뀔 때, 미리 등록해둔 **사전 명령어(adb push/chmod 등)가 자동으로 실행**되는 건 어떤 경로로 이뤄지는가? TC별/슬롯별 우선순위는 어떻게 결정되는가?"
+
+여섯 번째 L2입니다. [비교 문서](/learn/l2-compare/)의 체크리스트를 두 번째로 따라가며 작성됐습니다. 앞 L2들과 가장 다른 특징:
+
+- **실시간 스트림이 없음** — SSE/WebSocket/폴링 모두 없음. 핵심은 **이벤트 훅** 하나.
+- **트리거가 도메인 이벤트** — 사용자도 스케줄러도 아닌 "슬롯의 testState 변화".
+- **상태 머신 중심** — 조건(init 진입 + TC 미완료 + 등록 여부)을 조합한 분기가 핵심.
+
+## 여정 한눈에
+
+<ArchitectureDiagram
+  client:visible
+  height={320}
+  caption="Head slot update → onSlotStateChanged 훅 → 우선순위 판정 → 비동기 SSH 실행"
+  altText="Head TCP를 통해 슬롯 데이터가 들어오면 HeadSlotStateStore.updateSlots가 각 슬롯마다 PreCommandAutoExecutor.onSlotStateChanged를 호출합니다. 이 훅은 testState가 init을 포함하는지 확인하고, SlotPreCommand를 조회해 TC Pre-Command를 우선 검토한 뒤, 없으면 슬롯 Pre-Command를 실행합니다. 실행은 별도 스레드풀에서 SSH로 VM에 adb 명령을 보내는 방식."
+  nodes={[
+    { id: 's1', label: '1. 데이터 모델',    sublabel: 'PreCommand + SlotPreCommand', layer: 'state', x: 0,   y: 80,  href: '/learn/l2-precmd/01-model/' },
+    { id: 's2', label: '2. 편집 API',       sublabel: 'assign/unassign × 2',         layer: 'be',    x: 200, y: 80,  href: '/learn/l2-precmd/02-api/' },
+    { id: 's3', label: '3. 훅 진입점',      sublabel: 'updateSlots → onStateChanged', layer: 'state', x: 400, y: 0,   href: '/learn/l2-precmd/03-hook/' },
+    { id: 's4', label: '4. 우선순위 판정',  sublabel: 'TC > Slot · position 찾기',    layer: 'be',    x: 400, y: 160, href: '/learn/l2-precmd/04-priority/' },
+    { id: 's5', label: '5. SSH 실행',        sublabel: 'adb -s usbId',                layer: 'tx',    x: 600, y: 80,  href: '/learn/l2-precmd/05-exec/' },
+  ]}
+  edges={[
+    { from: 's1', to: 's2', label: 'read',   kind: 'sync' },
+    { from: 's1', to: 's3', label: 'query',  kind: 'sync' },
+    { from: 's3', to: 's4', label: 'init?',  kind: 'sync' },
+    { from: 's4', to: 's5', label: 'submit', kind: 'async' },
+  ]}
+/>
+
+## 앞 다섯 L2와의 차이
+
+| 축 | 슬롯 | 벤치마크 | 원격 | Metadata | T32 Dump | **Pre-Command** |
+|---|---|---|---|---|---|---|
+| 트리거 | Head push | 사용자 Run | 세션 | 자동 감지 | 사용자 Run | **도메인 이벤트 (init)** |
+| 브라우저 ↔ Spring | SSE | REST+SSE | WebSocket | HTTP | POST+SSE | **CRUD만 (실시간 없음)** |
+| 핵심 계층 | 중계 | 중계 | 릴레이 | 수집 | Stepper | **이벤트 훅 + 상태 머신** |
+| 실행 시점 | 상시 | job 시작 | 세션 | 분 주기 | 단발 | **init 진입 순간** |
+| 프론트 UX | 대시보드 | Job Card | 터미널 | 히트맵 | Stepper | **드롭다운·다이얼로그** |
+
+**실시간 스트림이 없기 때문에 프론트 $effect 패턴이 축소**됩니다. 편집 UI의 fetch 패턴만 남음. 이 "없음"이 오히려 학습 가치 — 모든 L2가 실시간이어야 한다는 강요 없음을 보여줌.
+
+## 핵심 규칙: 두 가지 우선순위
+
+MOVE에는 **두 종류의 Pre-Command 등록**이 있습니다.
+
+- **슬롯 Pre-Command**: 해당 슬롯이 init에 들어갈 때마다 실행
+- **TC Pre-Command**: 특정 testCase 직전에만 실행
+
+**우선순위: TC > Slot**. TC 등록이 있으면 슬롯 것은 skip. 충돌을 피하기 위해 **한 쪽 등록 시 반대쪽을 자동 해제**합니다.
+
+이 규칙이 단계 2의 API와 단계 4의 자동 실행 판정을 관통하는 설계입니다.
+
+## 학습 순서와 예상 시간
+
+| 단계 | 제목 | 성격 | 시간 |
+|---|---|---|---|
+| 1 | 데이터 모델 (PreCommand · SlotPreCommand) | 코드 투어 | 10분 |
+| 2 | 편집 API (assign/unassign 양립성) | 코드 투어 | 12분 |
+| 3 | 훅 진입점 (StateStore → onSlotStateChanged) | 코드 투어 | 8분 |
+| 4 | 우선순위 판정 (TC position 찾기) | 코드 투어 | 15분 |
+| 5 | SSH 실행 (adb -s usbId + VM 경유) | 코드 투어 | 8분 |
+
+총 약 **53분**. 실시간 스트림이 없어 개념이 상대적으로 단순하지만, **도메인 로직(상태 코드·position 매칭)**이 무겁습니다.
+
+## 새로 등장할 L3 개념
+
+**없음**. 기존 사전 재사용. 새로 만나는 것은 "**이벤트 훅 패턴**"이라는 설계 기법인데, 이건 프레임워크 개념이 아니라 **MOVE의 자체 패턴**이라 L3 대신 본 튜토리얼 안에서 설명.
+
+다음: [1. 데이터 모델](/learn/l2-precmd/01-model/) →

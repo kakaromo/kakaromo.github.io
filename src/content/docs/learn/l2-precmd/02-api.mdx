@@ -1,0 +1,159 @@
+---
+title: 2. 편집 API & 양립성
+description: assign / unassign × 2 — 슬롯·TC 등록 시 반대쪽을 자동 해제
+sidebar:
+  order: 2
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import slotCtrlRaw from '../../../../snippets/PreCommandController-slot.java?raw';
+import tcCtrlRaw from '../../../../snippets/PreCommandController-tc.java?raw';
+
+## 30초 요약
+
+REST API 4종 + 1동기:
+
+- `GET /slots` / `POST /slots/assign` / `POST /slots/unassign`
+- `GET /tc` / `POST /tc/assign` / `POST /tc/unassign`
+- `POST /tc/sync` — testcaseIds 변경 시 CSV를 통째 갱신
+
+핵심 **양립성 규칙**:
+
+- 슬롯 assign → 기존 `tcPreCommandIds` **자동 null**
+- TC assign → 기존 `preCommand` **자동 null**
+- unassign 시 나머지 필드가 모두 비면 **행 자체 삭제**
+
+## 슬롯 assign/unassign
+
+<CodeTour
+  client:visible
+  language="java"
+  source="PreCommandController (슬롯)"
+  height={600}
+  code={slotCtrlRaw}
+  steps={[
+    {
+      id: 'list',
+      title: 'GET /slots — 복수 조회',
+      lines: [6, 22],
+      body: '<p>프론트가 슬롯 N개의 상태를 한 번에 확인. 반환값에 <code>hasTcPreCommand</code> 불리언이 포함되어 <strong>등록 전 사용자에게 "TC Pre-Command가 있는데 덮어쓸까요?"</strong> 경고가 가능.</p>',
+    },
+    {
+      id: 'assign-lookup',
+      title: 'POST /slots/assign — 기존 행 조회',
+      lines: [24, 29],
+      body: '<p><code>@Transactional</code>로 양립성 해제가 원자적이게. <code>findBySetLocation</code>으로 기존 행 유무 확인 — UK 덕분에 최대 1개.</p>',
+    },
+    {
+      id: 'assign-override',
+      title: '있으면 덮어쓰고 TC 초기화',
+      lines: [30, 34],
+      body: '<p>핵심 줄: <code>existing.setTcPreCommandIds(null)</code>. <strong>슬롯과 TC는 동시에 활성화되지 않는다</strong>는 도메인 규칙을 DB 쓰기로 강제.</p>',
+    },
+    {
+      id: 'assign-insert',
+      title: '없으면 새 행 생성',
+      lines: [35, 42],
+      body: '<p>Lombok builder로 setLocation + preCommand만 세팅. <code>tcPreCommandIds</code>는 null로 시작.</p>',
+    },
+    {
+      id: 'has-tc',
+      title: 'has-tc 프리체크 API',
+      lines: [45, 54],
+      body: '<p>프론트 버튼 클릭 전에 호출. <strong>confirm 대화상자를 띄울지 결정</strong>하는 용도. hasTc=true면 "TC 등록이 초기화됩니다. 계속하시겠어요?".</p>',
+    },
+    {
+      id: 'unassign',
+      title: 'unassign — TC 유무에 따라 delete vs save',
+      lines: [56, 71],
+      body: '<p>슬롯 해제 시 <strong>TC 등록이 남아 있으면 preCommand만 null, 행 유지</strong>. 둘 다 없으면 행 delete. <strong>의미 없는 빈 행을 만들지 않는</strong> 정리 로직.</p>',
+    },
+    {
+      id: 'records',
+      title: 'Request record — AssignRequest / UnassignRequest',
+      lines: [73, 74],
+      body: '<p>Java 16+ <code>record</code>. T32 L2의 <code>DumpRequest</code>와 동일 패턴. 여러 슬롯을 한 번에 처리하는 bulk API.</p>',
+    },
+  ]}
+/>
+
+## TC assign/unassign/sync
+
+<CodeTour
+  client:visible
+  language="java"
+  source="PreCommandController (TC)"
+  height={600}
+  code={tcCtrlRaw}
+  steps={[
+    {
+      id: 'get-tc',
+      title: 'GET /tc — CSV 읽기',
+      lines: [8, 13],
+      body: '<p>해당 setLocation의 tcPreCommandIds CSV를 그대로 반환. 없으면 빈 문자열. 프론트는 이 CSV를 파싱해 <code>TcPreCommandCell</code> 드롭다운 상태를 복원.</p>',
+    },
+    {
+      id: 'tc-assign-ensure',
+      title: 'assign — 행이 없으면 만들고',
+      lines: [15, 25],
+      body: '<p><code>service.findById</code>로 preCommandId 유효성 검증. setLocation에 행이 없으면 <strong>비어있는 SlotPreCommand를 즉시 만듦</strong>. 이 행은 슬롯·TC 모두 미세팅이지만 다음 라인에서 TC가 들어감.</p>',
+    },
+    {
+      id: 'tc-assign-null-slot',
+      title: '슬롯 Pre-Command 자동 해제',
+      lines: [27, 28],
+      body: '<p>핵심 줄: <code>sp.setPreCommand(null)</code>. 슬롯 assign과 대칭. <strong>도메인 규칙이 한 방향이 아닌 양방향</strong>임을 보여주는 증거.</p>',
+    },
+    {
+      id: 'tc-assign-csv',
+      title: 'CSV 배열 position 갱신',
+      lines: [30, 34],
+      body: '<p><code>parseTcIds(csv, minSize)</code>로 최소 길이 보장한 배열을 얻고 해당 position만 교체. <strong>"0,3,0,5,0"</strong>처럼 기존 다른 position 값은 보존.</p>',
+    },
+    {
+      id: 'tc-unassign',
+      title: 'unassign — 0으로 치환 + 정리',
+      lines: [38, 54],
+      body: '<p>해당 position을 <code>"0"</code>으로. 모든 position이 0이고 슬롯 Pre-Command도 없으면 <strong>행 자체 삭제</strong>. 슬롯 unassign과 같은 정리 원칙.</p>',
+    },
+    {
+      id: 'tc-sync',
+      title: 'POST /tc/sync — 통째 갱신',
+      lines: [56, 66],
+      body: '<p>프론트가 testcaseIds를 바꿀 때 호출. <strong>CSV를 파싱하지 않고 통째로 덮어쓰기</strong>. 길이 맞추기·position 재배치는 프론트가 책임. 서버는 저장만.</p>',
+    },
+    {
+      id: 'tc-records',
+      title: 'Record — TcAssignRequest / TcUnassignRequest / TcSyncRequest',
+      lines: [68, 70],
+      body: '<p>세 record 모두 <code>setLocation</code> + 추가 필드. tc/assign은 <code>tcPosition</code> int, tc/sync는 <code>tcPreCommandIds</code> CSV.</p>',
+    },
+  ]}
+/>
+
+## 양립성이 서버·DB 양쪽에서 강제되는 이유
+
+직관적으로는 **프론트에서 조건 분기**만 하면 될 것 같습니다. MOVE는 **서버·DB 양쪽**에서 강제합니다.
+
+- **멀티 탭**: 같은 슬롯을 두 탭에서 동시에 편집할 수 있음. 프론트 만 체크하면 race.
+- **다른 클라이언트**: API는 Admin 외에도 스크립트·CI에서 호출 가능. 프론트만 신뢰 못 함.
+- **데이터 정합성**: 슬롯과 TC가 모두 세팅된 행이 남으면 단계 4의 우선순위 판정에서 TC가 언제나 이기는 무의미한 상태.
+
+**Transaction + 자동 해제**를 API 기본 정책으로 삼아 "UI가 이 규칙을 의식하지 않아도 되게" 만든 설계.
+
+## 삭제 조건 — 빈 행 금지
+
+`unassign`은 두 가지 결과가 있습니다:
+
+- **행 유지**: 반대쪽이 여전히 세팅되어 있음
+- **행 삭제**: 슬롯·TC 모두 비어있음
+
+이 정리 덕에 `SELECT * FROM portal_slot_pre_commands`에는 **의미 있는 행만 남음**. 디버깅·통계에서 가치.
+
+## 직접 해보기
+
+- [ ] 슬롯에 Pre-Command를 등록 → `tc/assign`을 쏘면 슬롯 쪽이 null로 바뀌는지 MySQL 조회
+- [ ] 양쪽 모두 unassign → 행 자체가 사라지는지 확인
+- [ ] 프론트에서 confirm 대화상자가 뜨는 흐름 — `slots/has-tc` 호출 여부 DevTools Network 확인
+
+다음: [3. 훅 진입점](/learn/l2-precmd/03-hook/) →

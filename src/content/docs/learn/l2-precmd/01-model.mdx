@@ -1,0 +1,158 @@
+---
+title: 1. 데이터 모델 — PreCommand + SlotPreCommand
+description: 명령 템플릿과 슬롯·TC 매핑을 두 엔티티로 분리
+sidebar:
+  order: 1
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import cmdRaw from '../../../../snippets/PreCommand-entity.java?raw';
+import slotCmdRaw from '../../../../snippets/SlotPreCommand-entity.java?raw';
+
+## 30초 요약
+
+두 엔티티로 나눕니다.
+
+- **`PreCommand`**: 재사용 가능한 **명령 템플릿** — 이름 + 명령어 배열(JSON). 예: `["adb push tiotest /dev", "adb shell chmod +x /dev/tiotest"]`.
+- **`SlotPreCommand`**: `setLocation`(UK)을 키로 **슬롯별 등록** — 슬롯 Pre-Command 한 개 + TC별 Pre-Command ID 배열(CSV).
+
+**핵심 결정**: 슬롯과 TC 할당을 **한 테이블에 합쳤습니다**. 별도 테이블로 분리하지 않은 이유는 "한 슬롯 = 한 행" 구조로 양립성 체크를 DB가 보장하기 위함.
+
+## PreCommand — 명령 템플릿
+
+<CodeTour
+  client:visible
+  language="java"
+  source="PreCommand.java"
+  height={420}
+  code={cmdRaw}
+  steps={[
+    {
+      id: 'header',
+      title: '@Entity portal_pre_commands',
+      lines: [16, 22],
+      body: '<p>MOVE 표준 Lombok 4종. 한 행 = 재사용 가능한 명령 템플릿 하나.</p>',
+    },
+    {
+      id: 'name-desc',
+      title: 'name + description',
+      lines: [24, 32],
+      body: '<p><code>name</code>은 UI에 표시되는 레이블 (예: "tiotest 설치"). UK는 아님 — 같은 이름을 다른 variant로 둘 수 있음. description은 옵션.</p>',
+    },
+    {
+      id: 'commands',
+      title: 'commands — JSON 배열 문자열',
+      lines: [34, 36],
+      body: '<p><code>TEXT</code> 컬럼에 JSON 배열을 문자열로 저장. <strong>왜 별도 테이블이 아닌가</strong> — 대부분의 템플릿이 2~5개 명령이고, 실행 시 한 번에 순차 실행되므로 관계형 장점이 크지 않음. 파싱은 서비스 계층에서 Jackson으로.</p>',
+    },
+    {
+      id: 'timestamps',
+      title: 'timestamps',
+      lines: [38, 52],
+      body: '<p>다른 엔티티와 동일한 <code>@PrePersist</code>/<code>@PreUpdate</code>.</p>',
+    },
+  ]}
+/>
+
+예시 `commands` JSON:
+
+```json
+[
+  "adb push tiotest-0.52 /dev",
+  "adb shell chmod +x /dev/tiotest-0.52"
+]
+```
+
+실행 시 각 명령에 **`-s {usbId}`** 가 자동 삽입됩니다 (단계 5에서 상세). 즉 템플릿에는 `adb`로 시작하는 명령을 쓰고, 런타임이 해당 슬롯의 디바이스 식별자를 끼워 넣음.
+
+## SlotPreCommand — 슬롯·TC 매핑
+
+<CodeTour
+  client:visible
+  language="java"
+  source="SlotPreCommand.java"
+  height={520}
+  code={slotCmdRaw}
+  steps={[
+    {
+      id: 'javadoc',
+      title: '설계 의도 — Javadoc 주석',
+      lines: [16, 26],
+      body: '<p>코드 위 주석에 <strong>테이블의 역할·우선순위·CSV 포맷</strong>이 명시되어 있음. 이 모듈을 처음 만나는 개발자에게 요약 제공.</p>',
+    },
+    {
+      id: 'table-uk',
+      title: '@Table + UK(set_location)',
+      lines: [27, 34],
+      body: '<p><code>@UniqueConstraint(columnNames = {&quot;set_location&quot;})</code>로 <strong>한 슬롯은 한 행만</strong>. UK가 없으면 중복 등록이 가능해져 어느 것을 실행할지 모호.</p>',
+    },
+    {
+      id: 'set-location',
+      title: 'setLocation — 슬롯 식별자',
+      lines: [40, 41],
+      body: '<p>예: <code>"T3-0"</code> (tentacle T3의 슬롯 0). 이 문자열이 <strong>Head TCP 데이터와 DB 양쪽에서 같은 의미로 쓰이는 링킹 키</strong>.</p>',
+    },
+    {
+      id: 'slot-precmd',
+      title: '슬롯 Pre-Command FK (nullable)',
+      lines: [43, 46],
+      body: '<p><code>@ManyToOne</code>. <strong>nullable인 이유</strong>: TC Pre-Command만 쓰는 경우도 있음. 둘 다 null이면 이 행 자체가 의미 없으니 삭제될 수 있음(단계 2).</p>',
+    },
+    {
+      id: 'tc-precmd-ids',
+      title: 'tcPreCommandIds — CSV 포맷',
+      lines: [48, 50],
+      body: '<p><code>"0,3,0,5,0"</code> 형식. 각 숫자는 해당 TC position의 Pre-Command ID. <strong>0이면 미등록</strong>. testcaseIds(슬롯 진행 테스트 목록)와 <strong>길이가 1:1 대응</strong>되어야 함 — testcaseIds 변경 시 sync API로 맞춤.</p>',
+    },
+    {
+      id: 'created-at',
+      title: 'createdAt — updatedAt 없음',
+      lines: [52, 58],
+      body: '<p>업데이트 시각은 트래킹하지 않음 — <strong>빈번히 바뀌는 CSV 필드</strong>라 매번 updatedAt을 건드리면 의미 저하. 삭제·변경 이력이 중요하면 별도 audit 테이블 도입 후보.</p>',
+    },
+  ]}
+/>
+
+## 왜 tcPreCommandIds가 CSV인가
+
+직관적으로는 **테이블을 분리**하는 것이 "정석"입니다.
+
+```
+portal_slot_pre_command_tcs (
+  slot_pre_command_id  FK,
+  tc_position          INT,
+  pre_command_id       FK,
+  PRIMARY KEY (slot_pre_command_id, tc_position)
+)
+```
+
+MOVE는 하지 않았습니다:
+
+- **통째 교체가 기본** — TC 목록이 바뀌면 array를 새로 만들어 저장. 부분 UPDATE가 흔하지 않음.
+- **조회가 단순** — 한 setLocation에 대해 `SELECT tcPreCommandIds`면 끝.
+- **테이블 수 절약** — Spring Data JPA의 EAGER join이 더 늘어나는 부담.
+- **position이 index** — 관계형 PK가 `(parent, position)` 합성 키가 되는데, 이걸 ORM으로 다루면 오히려 복잡.
+
+단점은 **DB 레벨에서 integrity 보장이 약해짐**(잘못된 ID를 넣어도 FK 체크 없음). 서비스 계층에서 `preCommandRepo.existsById`로 커버.
+
+## 테이블 간 관계 요약
+
+```
+portal_pre_commands (템플릿)
+   ↑
+   │ ManyToOne (preCommand)
+   │
+portal_slot_pre_commands (setLocation UK)
+   ├── preCommand_id   → portal_pre_commands.id   (슬롯 Pre-Command)
+   └── tcPreCommandIds = "0,3,0,5,0"              (TC Pre-Command CSV)
+```
+
+슬롯 한 개에 최대 두 종류(슬롯 + TC 여러 개)가 등록 가능하지만 **우선순위가 TC > Slot**이므로 현실적으로는 **한 쪽만 세팅**하는 것이 일반적. API도 "한 쪽 등록 시 반대쪽을 자동 해제"하도록 만듭니다 — 단계 2에서 상세.
+
+## 직접 해보기
+
+- [ ] MySQL에서 `SELECT * FROM portal_pre_commands` → 현재 템플릿 목록 확인
+- [ ] `SELECT set_location, pre_command_id, tc_pre_command_ids FROM portal_slot_pre_commands` → CSV 포맷 실제 값 확인 (예: "0,12,0,0,7")
+- [ ] 같은 setLocation으로 두 번째 행을 삽입 시도 → UK 제약으로 실패하는지 검증
+
+다음: [2. 편집 API & 양립성](/learn/l2-precmd/02-api/) →
