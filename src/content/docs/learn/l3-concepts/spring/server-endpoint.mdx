@@ -1,0 +1,114 @@
+---
+title: "@ServerEndpoint"
+description: Jakarta WebSocket API의 어노테이션 기반 WebSocket 엔드포인트
+sidebar:
+  order: 8
+---
+
+## 이 프로젝트에서의 용례
+
+- **`GuacamoleTunnelEndpoint`** — RDP/VNC/SSH 터미널을 위한 양방향 WebSocket. Spring과 guacd를 잇는 관문.
+- **`/api/terminal/ssh`** — JSch 기반 SSH WebSocket (별도 엔드포인트).
+
+## Spring MVC와의 차이
+
+| 축 | `@RestController` | `@ServerEndpoint` |
+|---|---|---|
+| 표준 | Spring Web MVC | Jakarta WebSocket API (JSR 356) |
+| 모델 | 요청-응답 | 라이프사이클 훅 (@OnOpen/@OnMessage/@OnClose/@OnError) |
+| DI | Spring이 직접 생성 | **기본은 직접 `new`** — Spring DI 필요 시 configurator 필요 |
+| 바인딩 | `ServerEndpointExporter` 빈이 자동 등록 | 같음 |
+| 스코프 | 기본 싱글톤 | **연결당 인스턴스가 기본** (주의!) |
+
+## 최소 예시
+
+```java
+@ServerEndpoint("/ws/echo")
+public class EchoEndpoint {
+
+    @OnOpen
+    public void onOpen(Session session) {
+        System.out.println("opened: " + session.getId());
+    }
+
+    @OnMessage
+    public void onMessage(Session session, String message) throws IOException {
+        session.getBasicRemote().sendText("echo: " + message);
+    }
+
+    @OnClose
+    public void onClose(Session session, CloseReason reason) {
+        System.out.println("closed: " + reason.getReasonPhrase());
+    }
+
+    @OnError
+    public void onError(Session session, Throwable t) {
+        t.printStackTrace();
+    }
+}
+```
+
+Spring Boot 설정:
+
+```java
+@Configuration
+public class WebSocketConfig {
+    @Bean
+    public ServerEndpointExporter serverEndpointExporter() {
+        return new ServerEndpointExporter();
+    }
+}
+```
+
+`ServerEndpointExporter`가 classpath에서 `@ServerEndpoint` 클래스를 스캔·등록합니다.
+
+## Spring 빈 주입 — configurator 필요
+
+기본 Jakarta WebSocket은 엔드포인트 인스턴스를 **직접 `new`** 합니다. 생성자에 Spring 빈을 주입받으려면 `ServerEndpointConfig.Configurator`를 작성해야 합니다.
+
+```java
+public class SpringWebSocketConfigurator extends ServerEndpointConfig.Configurator {
+    private static ApplicationContext context;
+
+    public static void setContext(ApplicationContext ctx) { context = ctx; }
+
+    @Override
+    public <T> T getEndpointInstance(Class<T> endpointClass) {
+        return context.getBean(endpointClass);
+    }
+}
+```
+
+그리고 `@ServerEndpoint(..., configurator = SpringWebSocketConfigurator.class)` 로 지정. MOVE의 `GuacamoleTunnelEndpoint`가 이 방식으로 DI를 받습니다.
+
+## 스코프 함정
+
+기본 Jakarta WebSocket은 **연결마다 새 인스턴스**를 만듭니다 — 즉 `@ServerEndpoint` 클래스의 필드가 연결별로 분리됩니다. 하지만 Spring DI를 쓰면 **싱글톤으로 한 인스턴스를 모든 연결이 공유**하게 됩니다.
+
+이 차이 때문에 MOVE는 **세션별 상태를 `ConcurrentHashMap<Session, X>` 에 저장**합니다 — 싱글톤 엔드포인트가 여러 세션을 다루는 구조.
+
+```java
+private final Map<Session, GuacamoleTunnel> sshTunnels = new ConcurrentHashMap<>();
+```
+
+`@OnClose`에서 반드시 `remove` 해야 누수 없음.
+
+## 주의할 점
+
+- **동일 세션 동시 send 금지**: `getAsyncRemote().sendText()` 병렬 호출 시 `TEXT_FULL_WRITING` 예외. MOVE는 세션별 `synchronized`로 직렬화.
+- **버퍼 크기**: 기본 메시지 버퍼는 작음(수 KB). 큰 프레임을 받으려면 `session.setMaxTextMessageBufferSize(1024 * 1024)`.
+- **idle timeout**: 기본 값이 있어 유휴 연결이 끊길 수 있음. 장기 세션은 `session.setMaxIdleTimeout(0)`.
+- **SecurityContext 없음**: WebSocket은 Spring Security 필터 체인 밖. 인증 정보는 WebSocket 핸드셰이크 시점의 HttpSession을 캡처해야 함.
+- **graceful shutdown**: 애플리케이션 종료 시 각 세션을 `close()`로 정리. 그렇지 않으면 재시작 후 좀비 연결이 남음.
+
+## 대안 — Spring의 WebSocketHandler
+
+Spring에는 `@ServerEndpoint` 대신 `WebSocketHandler`를 등록하는 방법도 있습니다. Spring이 세션·에러·메시지를 직접 관리하므로 DI가 자연스럽지만, 기존 Jakarta WebSocket 라이브러리(Apache Guacamole 등)와의 호환성이 떨어질 수 있습니다.
+
+MOVE가 `@ServerEndpoint`를 고른 이유는 Apache Guacamole 예제 코드가 이 패턴이기 때문 — 표준을 따라가는 쪽이 업그레이드·레퍼런스 비용이 낮습니다.
+
+## 공식 문서
+
+- [Jakarta WebSocket Specification](https://jakarta.ee/specifications/websocket/)
+- [Spring Framework — WebSocket](https://docs.spring.io/spring-framework/reference/web/websocket.html)
+- [ServerEndpointExporter JavaDoc](https://docs.spring.io/spring-framework/docs/current/javadoc-api/org/springframework/web/socket/server/standard/ServerEndpointExporter.html)

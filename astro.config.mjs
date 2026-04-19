@@ -82,7 +82,7 @@ export default defineConfig({
                   autogenerate: { directory: 'learn/l2-benchmark' },
                 },
                 {
-                  label: '원격 터미널 & 로그 (예정)',
+                  label: '원격 터미널 (WebSocket + guacd)',
                   autogenerate: { directory: 'learn/l2-remote' },
                 },
               ],
