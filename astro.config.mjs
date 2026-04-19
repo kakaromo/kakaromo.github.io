@@ -73,7 +73,7 @@ export default defineConfig({
               label: 'L2 — 기능 모듈',
               collapsed: true,
               items: [
-                { label: '🔎 L2 11종 비교', slug: 'learn/l2-compare' },
+                { label: '🔎 L2 12종 비교', slug: 'learn/l2-compare' },
                 {
                   label: '슬롯 모니터링 (Head TCP + SSE)',
                   autogenerate: { directory: 'learn/l2-slots' },
@@ -117,6 +117,10 @@ export default defineConfig({
                 {
                   label: '🔐 인증·권한 (ADFS + 17 권한 인터셉터)',
                   autogenerate: { directory: 'learn/l2-auth' },
+                },
+                {
+                  label: '📊 TestDB (성능·호환성 결과 모델)',
+                  autogenerate: { directory: 'learn/l2-testdb' },
                 },
               ],
             },
