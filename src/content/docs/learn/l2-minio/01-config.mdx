@@ -1,0 +1,125 @@
+---
+title: 1. 설정 + 클라이언트 Bean
+description: MinioProperties + MinioConfig · 총 33줄의 간결한 부트스트랩
+sidebar:
+  order: 1
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import propsRaw from '../../../../snippets/MinioProperties.java?raw';
+import configRaw from '../../../../snippets/MinioConfig.java?raw';
+
+## 30초 요약
+
+- **`MinioProperties`** — yaml `minio.*` 바인딩 (endpoint · port · useSsl · accessKey · secretKey)
+- **`MinioConfig`** — `MinioClient.builder()`로 싱글턴 빈 생성, 프로퍼티 주입
+
+두 파일 합쳐 **33줄**. Spring Boot의 설정 바인딩 + Bean 등록 관용구만으로 완결됩니다.
+
+## MinioProperties — yaml 바인딩
+
+<CodeTour
+  client:visible
+  language="java"
+  source="MinioProperties.java"
+  height={280}
+  code={propsRaw}
+  steps={[
+    {
+      id: 'config',
+      title: '@ConfigurationProperties(prefix = "minio")',
+      lines: [6, 10],
+      body: '<p>yaml의 <code>minio.*</code>가 여기 필드로 바인딩. Lombok <code>@Getter @Setter</code>로 접근자 자동. <strong>타입 안전 + IDE 자동완성</strong>이 장점.</p>',
+    },
+    {
+      id: 'fields',
+      title: '5 필드 — 합리적 기본값',
+      lines: [11, 15],
+      body: '<p><code>endpoint = "http://127.0.0.1"</code>, <code>port = 9000</code>, <code>useSsl = false</code>, <code>accessKey = "admin"</code>, <code>secretKey = "changeme"</code>. <strong>로컬 개발에서 설정 없이도 동작</strong>. prod는 yaml로 override.</p>',
+    },
+  ]}
+/>
+
+예시 yaml:
+
+```yaml title="application-dev.yaml"
+minio:
+  endpoint: http://192.168.1.248
+  port: 9000
+  use-ssl: false
+  access-key: dev-user
+  secret-key: <dev-secret>
+```
+
+## MinioConfig — Bean 등록
+
+<CodeTour
+  client:visible
+  language="java"
+  source="MinioConfig.java"
+  height={280}
+  code={configRaw}
+  steps={[
+    {
+      id: 'configuration',
+      title: '@Configuration + @Bean',
+      lines: [6, 9],
+      body: '<p>Spring 표준 Bean 공장 패턴. <code>MinioClient</code>는 <strong>생성 비용이 있는 싱글턴</strong>이라 앱 생명주기 동안 하나만 필요.</p>',
+    },
+    {
+      id: 'builder',
+      title: 'MinioClient.builder() — endpoint + credentials',
+      lines: [10, 16],
+      body: '<p>SDK의 fluent builder. <code>endpoint(url, port, ssl)</code>, <code>credentials(access, secret)</code>, <code>build()</code>. <strong>총 3줄</strong>로 초기화 완결. 내부적으로 HTTP 클라이언트와 자격 증명을 묶은 호출 엔진이 만들어짐.</p>',
+    },
+  ]}
+/>
+
+## 왜 이렇게 짧은가
+
+**SDK의 고수준 추상화 덕분**. `io.minio:minio 8.5.14`가:
+
+- HTTP 클라이언트
+- 자격 증명 서명
+- XML 응답 파싱
+- 오류 처리
+
+를 모두 내부에 숨겨서 포털은 **"버킷/오브젝트 이름 + 스트림"** 수준에서만 상호작용하면 됩니다.
+
+비교: Bitbucket L2의 `BitbucketApiClient`는 **직접 HttpClient로** HTTP 호출·JSON 파싱·SSL 설정까지 작성해야 했음. MinIO는 "이미 만들어진 SDK"가 있어 Client 설정이 이렇게 짧음.
+
+## prod/dev 환경 분리 전략
+
+현재 MOVE의 구조:
+
+| 환경 | MinIO 위치 | 접속 |
+|---|---|---|
+| dev | 단일 VM (192.168.x.x:9000) | 공유 dev 자원 |
+| prod | 전용 인스턴스 | 고정 IP |
+
+yaml 프로파일 기반(`application-dev.yaml` / `application-prod.yaml`)으로 분기. **설정 키는 동일**, 값만 다름 — 코드 경로는 환경 무관.
+
+## Bean 1개 · 서비스 1개 구조
+
+```
+MinioConfig (@Configuration)
+    │ @Bean
+    ▼
+MinioClient (싱글턴)
+    │ @Autowired (via @RequiredArgsConstructor)
+    ▼
+MinioStorageService (@Service)
+    │ 호출
+    ▼
+MinioController / MinioUploadController
+```
+
+**단계마다 딱 하나**의 주체. Spring DI가 자동으로 연결하므로 우리가 작성하는 건 필드 선언 + 생성자뿐.
+
+## 직접 해보기
+
+- [ ] `application-dev.yaml`에 `minio.access-key`를 임의 변경해서 재시작 → 로그에 접근 불가 에러 확인
+- [ ] MinIO 서버를 죽이고 브라우저에서 `/api/minio/buckets` GET → 연결 실패 응답 관찰
+- [ ] Actuator `/beans`에서 `minioClient` 빈이 정확히 하나 등록되어 있는지 확인
+
+다음: [2. 스토리지 서비스 (CRUD)](/learn/l2-minio/02-service/) →

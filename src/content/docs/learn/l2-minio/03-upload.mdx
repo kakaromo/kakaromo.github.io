@@ -1,0 +1,139 @@
+---
+title: 3. 업로드 — MultipartFile + 2GB 압축 강제
+description: 사용자가 브라우저에서 파일을 올리고, 2GB 이상이면 압축 확장자만 허용
+sidebar:
+  order: 3
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import uploadRaw from '../../../../snippets/MinioUploadController.java?raw';
+
+## 30초 요약
+
+`MinioUploadController.upload`는 **53줄짜리 단일 엔드포인트**.
+
+1. `@RequestParam MultipartFile` — Spring이 HTTP multipart 파싱
+2. **2GB 이상이면 압축 확장자 체크** — 아니면 400
+3. prefix + 파일명으로 object key 조립
+4. `uploadObject` 호출 → 완료 응답
+
+Spring Multipart 기본 한도(`spring.servlet.multipart.max-file-size`)가 매우 커야 2GB 업로드 가능 — **application.yaml에 1TB로 설정되어 있음** (CLAUDE.md 참고).
+
+## 코드 투어
+
+<CodeTour
+  client:visible
+  language="java"
+  source="MinioUploadController.java"
+  height={520}
+  code={uploadRaw}
+  steps={[
+    {
+      id: 'class',
+      title: '@RestController + /api/minio',
+      lines: [13, 18],
+      body: '<p><code>MinioController</code>와 같은 prefix이지만 <strong>파일 하나만 담당</strong>하는 별도 클래스. 업로드 로직이 복잡해지면 분리가 유지보수에 유리.</p>',
+    },
+    {
+      id: 'constants',
+      title: '2GB 임계 + 허용 확장자 10종',
+      lines: [20, 23],
+      body: '<p><strong>2GB 이상은 이미 압축된 파일만</strong> 허용. 대용량 텍스트 로그를 그대로 업로드해 스토리지가 터지는 사고를 예방. 확장자 목록은 주류 압축 포맷 커버.</p>',
+    },
+    {
+      id: 'mapping',
+      title: '@PostMapping /buckets/{bucket}/upload',
+      lines: [25, 29],
+      body: '<p>bucket은 path, prefix는 query, file은 form field. <strong>multipart/form-data</strong> 컨텐츠 타입. prefix 기본값 빈 문자열 — 루트 업로드 허용.</p>',
+    },
+    {
+      id: 'size-check',
+      title: '2GB 검증 — 대소문자 무시',
+      lines: [31, 40],
+      body: '<p><code>file.getSize() &gt;= 2GB</code> → 파일명 소문자로 normalize → <code>anyMatch(endsWith)</code>로 확장자 체크. 실패 시 <strong>한국어 메시지로 400 응답</strong>. <code>.tar.gz</code>처럼 두 단어 확장자도 포함됨.</p>',
+    },
+    {
+      id: 'object-key',
+      title: 'prefix + filename 조립',
+      lines: [42, 44],
+      body: '<p>prefix가 비었으면 원본 파일명 그대로, 아니면 앞에 prefix 붙임. <strong>prefix 끝에 <code>/</code>를 붙이는 건 호출자 책임</strong> — 방어 코드 없음. 실수하면 <code>folderfile.zip</code> 같은 이상한 이름 생성 가능.</p>',
+    },
+    {
+      id: 'upload-call',
+      title: 'storageService.uploadObject 호출',
+      lines: [46, 46],
+      body: '<p>단계 2의 래퍼. <code>file.getInputStream()</code>은 <strong>디스크 임시 파일이나 메모리 버퍼</strong>에서 스트림 제공 — Spring이 이미 저장해둔 것.</p>',
+    },
+    {
+      id: 'response',
+      title: '응답 — Map 기반 JSON',
+      lines: [48, 51],
+      body: '<p><code>{"success": true, "message": "Uploaded: ..."}</code>. 표준 ApiResponse DTO 없이 Map으로 간단 처리. 규모가 커지면 record 도입이 이상적.</p>',
+    },
+  ]}
+/>
+
+## 왜 MultipartFile인가 (raw InputStream 대신)
+
+Spring에는 두 업로드 패턴이 있습니다.
+
+| 축 | `MultipartFile` | `InputStream` body |
+|---|---|---|
+| 요청 형식 | multipart/form-data | raw (application/octet-stream) |
+| 메타 정보 | filename · contentType 자동 | 헤더로 직접 |
+| 임시 저장 | Spring이 처리 (메모리/디스크) | 스트림 직접 |
+| 브라우저 `<input type="file">` | 자연스러움 | 별도 JS 필요 |
+
+**사용자 업로드 UI**가 주 경로이므로 MultipartFile 선택이 맞음. **Agent gRPC UploadTrace**는 별도 경로(proto 기반, 단계 5)라 여기 통과 안 함.
+
+## 2GB 검증의 숨은 효과
+
+이 한 검증이 하는 일:
+
+1. **비용 관리** — 큰 텍스트 파일(trace, core dump)을 그대로 보관하면 스토리지 폭발
+2. **전송 효율** — 압축 상태로 넘겨 네트워크도 절약
+3. **관례 강제** — "로그는 압축해서 업로드"라는 팀 규칙을 기술적으로 자동 적용
+
+예외적인 경우(예: 미디어 파일)라면 이 검증이 방해 — **임계값·확장자를 yaml로 외부화**하면 유연성 향상. 현재 하드코딩 상수는 기술 부채로 표시.
+
+## prefix의 "트레일링 슬래시" 주의
+
+```java
+String objectName = prefix.isEmpty()
+    ? file.getOriginalFilename()
+    : prefix + file.getOriginalFilename();
+```
+
+호출자가 `prefix=traces/`를 보내야 `traces/fio-001.zip`이 됨. `prefix=traces`로 보내면 `tracesfio-001.zip` — **Foot-gun**.
+
+방어 로직을 추가한다면:
+
+```java
+String safePrefix = prefix.isEmpty() ? ""
+    : (prefix.endsWith("/") ? prefix : prefix + "/");
+```
+
+**현재는 프론트 UI가 항상 /를 붙이도록** 신뢰. API 직접 호출자가 실수하면 디버깅이 귀찮아짐.
+
+## Spring Multipart 한도 vs MinIO 한도
+
+Spring Boot가 업로드를 받으려면 **application 설정**이 허용해야 함:
+
+```yaml title="application.yaml"
+spring:
+  servlet:
+    multipart:
+      max-file-size: 1TB
+      max-request-size: 1TB
+```
+
+(CLAUDE.md에 기록된 MOVE 설정). 이 값이 없으면 Spring 기본 1MB에서 413 에러. MinIO 쪽은 기본적으로 **거의 무제한**이므로 Spring 한도가 실질 bottleneck.
+
+## 직접 해보기
+
+- [ ] 100MB 일반 파일 업로드 → 성공 (2GB 미만)
+- [ ] 3GB 일반 텍스트 파일 업로드 → **400 + 한국어 메시지** 확인
+- [ ] 3GB `.tar.gz` 파일 업로드 → 성공 (압축 확장자 통과)
+- [ ] 빈 prefix + 비어있는 filename 업로드 시도 → 동작 관찰 (방어 코드 없음)
+
+다음: [4. 다운로드 + 폴더 ZIP](/learn/l2-minio/04-download/) →

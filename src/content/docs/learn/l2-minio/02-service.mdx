@@ -1,0 +1,153 @@
+---
+title: 2. 스토리지 서비스 — CRUD 래퍼
+description: MinioStorageService가 SDK 호출을 9 메서드로 래핑
+sidebar:
+  order: 2
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import svcRaw from '../../../../snippets/MinioStorageService.java?raw';
+
+## 30초 요약
+
+`MinioStorageService`는 **SDK를 감싸는 얇은 서비스 레이어** (150줄). 컨트롤러가 MinioClient를 직접 쓰지 않고 이 서비스를 통해 호출하는 구조.
+
+**9 메서드**:
+
+| 영역 | 메서드 |
+|---|---|
+| 버킷 | `listBuckets` / `createBucket` / `deleteBucket` |
+| 탐색 | `listObjects` (1 depth) / `listObjectsRecursive` (전체) |
+| 읽기 | `downloadObject` (InputStream) / `statObject` (메타) |
+| 쓰기 | `uploadObject` (stream) / `createFolder` (0 bytes 마커) |
+| 삭제 | `deleteObject` |
+
+Log Browser의 `LogBrowserService` (8 메서드 + 3 record)와 **의도가 같음** — SDK를 일관된 API로 감쌈.
+
+## 코드 투어
+
+<CodeTour
+  client:visible
+  language="java"
+  source="MinioStorageService.java"
+  height={700}
+  code={svcRaw}
+  steps={[
+    {
+      id: 'class',
+      title: '@Service + MinioClient 주입',
+      lines: [14, 19],
+      body: '<p><code>@RequiredArgsConstructor</code>로 final MinioClient 주입. 1 의존성으로 단순. 모든 메서드가 이 하나의 SDK 인스턴스를 공유.</p>',
+    },
+    {
+      id: 'list-buckets',
+      title: 'listBuckets — 최상위 목록',
+      lines: [21, 25],
+      body: '<p><code>minioClient.listBuckets()</code> → Bucket stream → 이름만 매핑. 가장 단순한 메서드. <strong>Admin UI의 버킷 선택 드롭다운</strong>에 쓰임.</p>',
+    },
+    {
+      id: 'create-delete-bucket',
+      title: 'createBucket + deleteBucket',
+      lines: [27, 38],
+      body: '<p>create는 <code>bucketExists</code> 선체크로 멱등성 없이 중복 방지. delete는 직접 <code>removeBucket</code> — 빈 버킷이어야 성공하므로 사전 정리가 호출자 책임.</p>',
+    },
+    {
+      id: 'list-objects',
+      title: 'listObjects — 1 depth (delimiter="/")',
+      lines: [40, 70],
+      body: '<p>핵심 포인트 <code>.delimiter("/")</code> — 파일 시스템 탐색 스타일. <strong>prefix에 해당하는 "현재 폴더"의 직속 자식들만 반환</strong>. <code>Item.isDir()</code>로 폴더/파일 구분. <code>LinkedHashMap</code>으로 필드 순서 유지 — JSON 응답 가독성.</p>',
+    },
+    {
+      id: 'list-recursive',
+      title: 'listObjectsRecursive — 전체 트리',
+      lines: [72, 105],
+      body: '<p><code>.recursive(true)</code> + <code>delimiter</code> 없음. 하위 전부 순회. 폴더 마커(0 bytes "/" 끝) 스킵 — <strong>실제 파일만</strong> 반환. 폴더 다운로드 ZIP 생성에 쓰임 (단계 4).</p>',
+    },
+    {
+      id: 'delete',
+      title: 'deleteObject — 단일 삭제',
+      lines: [107, 113],
+      body: '<p>한 줄. SDK가 "존재 안 하면 no-op" 정책이라 멱등. 일괄 삭제는 호출자가 루프.</p>',
+    },
+    {
+      id: 'create-folder',
+      title: 'createFolder — 0 bytes 마커',
+      lines: [115, 123],
+      body: '<p>MinIO는 실제 디렉토리가 아님 — "<code>foo/bar/</code>" prefix는 <strong>같은 prefix의 객체가 하나라도 있으면</strong> 존재. 빈 폴더를 만들려면 <code>name="foo/bar/"</code> + <code>content=0 bytes</code>로 마커 생성.</p>',
+    },
+    {
+      id: 'download',
+      title: 'downloadObject — InputStream 반환',
+      lines: [125, 131],
+      body: '<p>SDK의 <code>getObject</code>는 바로 <code>InputStream</code> 반환. <strong>대용량 파일도 메모리에 로드 안 함</strong>. 호출자 try-with-resources로 close 필수.</p>',
+    },
+    {
+      id: 'stat',
+      title: 'statObject — 메타데이터만',
+      lines: [133, 139],
+      body: '<p>크기 · content-type · 수정일. <strong>Content-Length 헤더 설정용</strong>(단계 4). body 다운로드 없이 HEAD 요청 효과.</p>',
+    },
+    {
+      id: 'upload',
+      title: 'uploadObject — stream + size + contentType',
+      lines: [141, 149],
+      body: '<p><code>stream(inputStream, size, -1)</code>의 3번째 인자(partSize)는 <strong>자동 결정</strong>. size가 명시되므로 SDK가 멀티파트 / 단일 파트 선택. content-type 기본값은 <code>application/octet-stream</code>.</p>',
+    },
+  ]}
+/>
+
+## listObjects vs listObjectsRecursive — 왜 나눴는가
+
+두 함수가 거의 같아 보이지만 **용도가 완전히 다름**:
+
+| 함수 | 사용처 | 파라미터 핵심 |
+|---|---|---|
+| `listObjects` | UI 폴더 탐색 | `delimiter="/"` — 1 depth |
+| `listObjectsRecursive` | ZIP 다운로드 · 배치 처리 | `recursive(true)` — 전체 |
+
+**delimiter 있으면** MinIO가 prefix 매칭 결과에서 공통 prefix(`foo/bar/...`)를 폴더로 집약. **없으면** 원본 경로 그대로 모두 반환. 한 함수로 묶으면 분기 코드가 호출자마다 필요 → 나누는 게 더 깔끔.
+
+## InputStream 반환 패턴 — 누가 close?
+
+`downloadObject`는 `InputStream`을 돌려주고 끝. **close 책임은 호출자**.
+
+- 컨트롤러 (`MinioController.downloadObject`): `InputStreamResource`로 감싸 Spring이 응답 후 close
+- 폴더 ZIP (`downloadFolder`): `try-with-resources`로 각 항목 소비 후 close
+- Agent gRPC 업로드 경로: Go Agent가 보낸 스트림을 직접 `uploadObject`에 전달
+
+**SDK가 close 책임을 호출자에게 넘김** → 래퍼 없이 자원 관리 투명. Log Browser의 `SftpInputStream` 래퍼와 다른 접근.
+
+## createFolder의 0 bytes 마커
+
+```java
+minioClient.putObject(
+    PutObjectArgs.builder()
+        .object(path)                                   // "foo/bar/"
+        .stream(InputStream.nullInputStream(), 0, -1)   // 0 bytes
+        .build());
+```
+
+S3/MinIO는 **진짜 디렉토리 개념이 없음**. 폴더는 "같은 prefix를 가진 객체 집합"의 추상. 빈 폴더를 UI에 표시하려면 `"foo/bar/"`로 끝나는 **0 bytes 객체**를 마커로 둠. `listObjectsRecursive`는 이 마커를 **`endsWith("/")`** 로 걸러냄.
+
+## 9 메서드 전체 테이블
+
+| 메서드 | 반환 | 내부 SDK |
+|---|---|---|
+| `listBuckets` | `List<String>` | `listBuckets()` |
+| `createBucket` | void | `bucketExists` + `makeBucket` |
+| `deleteBucket` | void | `removeBucket` |
+| `listObjects` | `List<Map>` | `listObjects` + delimiter="/" |
+| `listObjectsRecursive` | `List<Map>` | `listObjects` + recursive(true) |
+| `deleteObject` | void | `removeObject` |
+| `createFolder` | void | `putObject` (0 bytes) |
+| `downloadObject` | `InputStream` | `getObject` |
+| `statObject` | `StatObjectResponse` | `statObject` |
+| `uploadObject` | void | `putObject` (stream) |
+
+## 직접 해보기
+
+- [ ] MinIO Console(9001)에서 버킷 하나 만들고 `listBuckets()` 호출 → 이름 확인
+- [ ] 빈 폴더 만들기: `createFolder("bucket", "foo/bar/")` → 다음 `listObjects("bucket", "foo/")`에서 `bar/`가 폴더로 등장
+- [ ] 큰 파일(수 MB) 업로드 후 downloadObject + transferTo로 힙 사용량 측정 — 스트리밍 확인
+
+다음: [3. 업로드 (Multipart + 2GB 검증)](/learn/l2-minio/03-upload/) →

@@ -1,0 +1,111 @@
+---
+title: 4. 다운로드 + 폴더 ZIP
+description: 단일 파일 InputStreamResource · 폴더는 recursive + ZipOutputStream
+sidebar:
+  order: 4
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import dlRaw from '../../../../snippets/MinioController-download.java?raw';
+
+## 30초 요약
+
+두 엔드포인트가 **대비를 이룹니다**.
+
+- **`/download`** — 단일 파일. `InputStreamResource` 래퍼로 **Spring이 응답 후 close**. UTF-8 filename 헤더.
+- **`/download-folder`** — prefix 하위 모든 파일을 **ZipOutputStream으로 한 번에** 브라우저에 스트리밍. 메모리에 ZIP을 올리지 않음.
+
+Log Browser L2의 `/download-dir`과 **같은 ZIP 스트리밍 전략**이지만 **MinIO 쪽은 각 object마다 SDK 호출**이 추가됨.
+
+## 코드 투어
+
+<CodeTour
+  client:visible
+  language="java"
+  source="MinioController (download)"
+  height={640}
+  code={dlRaw}
+  steps={[
+    {
+      id: 'is-admin',
+      title: 'isAdmin 헬퍼 — session role 체크',
+      lines: [3, 6],
+      body: '<p>다음 단계(단계 5)의 가시성 필터와 같은 헬퍼. 세션에 저장된 <code>PortalUser.role</code>로 "ADMIN" 여부 판정. <strong>컨트롤러 여러 메서드가 공유하는 방어 로직</strong>.</p>',
+    },
+    {
+      id: 'folder-mapping',
+      title: '/download-folder — 파라미터 + ZIP 이름',
+      lines: [8, 17],
+      body: '<p>prefix를 받아 <strong>마지막 세그먼트를 폴더명</strong>으로 추출. <code>a/b/c/</code> → <code>c.zip</code>. UTF-8 인코딩 후 Content-Disposition 헤더 세팅. <code>HttpServletResponse</code>로 <strong>직접 스트리밍 응답</strong>.</p>',
+    },
+    {
+      id: 'list-recursive',
+      title: 'listObjectsRecursive 호출',
+      lines: [23, 23],
+      body: '<p>단계 2의 메서드. prefix 하위 <strong>모든 파일의 경로와 크기</strong>. 메타데이터만 먼저 가져오고 실제 컨텐츠는 루프에서 개별로.</p>',
+    },
+    {
+      id: 'zip-stream',
+      title: 'ZipOutputStream으로 response.getOutputStream 감쌈',
+      lines: [25, 41],
+      body: '<p>응답 스트림에 직접 ZIP 쓰기 — <strong>메모리 중간 버퍼 없음</strong>. 각 파일에 대해 <code>downloadObject</code> → <code>is.transferTo(zos)</code>로 복사. try-with-resources로 자동 close.</p>',
+    },
+    {
+      id: 'entry-name',
+      title: 'entry 이름 — prefix 자르기',
+      lines: [30, 33],
+      body: '<p>prefix가 <code>a/b/</code>이면 ZIP 내부 경로는 <code>b/c/d.txt</code>처럼 **폴더명부터 시작**. 이 처리 덕에 unzip했을 때 "해당 폴더가 그대로 나타남".</p>',
+    },
+    {
+      id: 'download-single',
+      title: '/download — 단일 파일',
+      lines: [44, 60],
+      body: '<p><code>statObject</code>로 <strong>크기 선조회</strong> → <code>downloadObject</code> 스트림 → <code>InputStreamResource</code>로 래핑. Content-Length 설정으로 브라우저가 다운로드 진행률 표시 가능.</p>',
+    },
+    {
+      id: 'content-disposition',
+      title: 'UTF-8 filename 인코딩',
+      lines: [53, 56],
+      body: '<p><code>filename*=UTF-8&apos;&apos;{encoded}</code> RFC 5987 문법. <strong>한글 파일명 지원</strong>. <code>URLEncoder</code>로 특수문자 이스케이프.</p>',
+    },
+    {
+      id: 'response',
+      title: 'ResponseEntity + InputStreamResource',
+      lines: [57, 61],
+      body: '<p>Spring이 <code>InputStreamResource</code>를 처리할 때 스트림을 소비 후 <strong>자동 close</strong>. octet-stream MIME으로 "바이너리 다운로드" 명시.</p>',
+    },
+  ]}
+/>
+
+## Log Browser의 `/download-dir`과의 비교
+
+두 모듈 다 "폴더를 ZIP으로" 라는 같은 UX이지만 구현 방식이 다름:
+
+| 축 | Log Browser `/download-dir` | **MinIO `/download-folder`** |
+|---|---|---|
+| 파일 목록 조회 | `listFiles` (SSH ls) | `listObjectsRecursive` (S3 API) |
+| 각 파일 읽기 | SSH SFTP | S3 GetObject (HTTP) |
+| ZIP 생성 | **Local 모드만** ZipOutputStream. SSH는 **원격 zip + SFTP** 편법 | **항상** ZipOutputStream (한 방식) |
+| 스트리밍 | Local은 메모리 버퍼, SSH는 편법 | HttpServletResponse.outputStream 직접 |
+
+**MinIO 쪽이 더 깔끔**. 한 전략으로 통일 가능한 건 S3 API 덕분 — 두 전략이 모두 같은 HTTP 기반.
+
+## 폴더 ZIP의 성능 특성
+
+N개 파일이 있는 폴더를 ZIP으로 다운로드:
+
+- **S3 GetObject N번** — 각 파일마다 HTTP round-trip
+- **순차 처리** — 병렬 읽기 없음 (의도적으로 단순)
+- **응답 스트리밍** — 브라우저에 즉시 전달 시작
+
+N이 매우 크면(수백 파일) 병목이 될 수 있지만 실 사용 케이스(벤치마크 1회 결과)는 보통 수십 파일로 문제 없음.
+
+**개선 가능성**: `CompletableFuture`로 병렬 GetObject 후 순서대로 ZIP에 쓰면 빨라짐. 복잡도 증가 vs 이득을 보고 결정.
+
+## 직접 해보기
+
+- [ ] `/api/minio/buckets/test/download?objectName=foo.txt` → 브라우저가 `foo.txt`로 다운로드 시작
+- [ ] 한글 이름 파일 업로드 후 다운로드 → filename이 **깨지지 않는지** (UTF-8 인코딩)
+- [ ] 폴더 `traces/fio-001/`에 파일 10개 있다고 가정 → `/download-folder?prefix=traces/fio-001/` → ZIP 안에 `fio-001/` 하위 구조 그대로
+
+다음: [5. 가시성 + 소비 모듈](/learn/l2-minio/05-consume/) →

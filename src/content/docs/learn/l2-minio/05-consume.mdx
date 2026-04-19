@@ -1,0 +1,166 @@
+---
+title: 5. 가시성 + 소비 모듈
+description: Admin bucket visibility 토글 · Agent gRPC UploadTraceToMinio 접점
+sidebar:
+  order: 5
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import listVisRaw from '../../../../snippets/MinioController-list-visibility.java?raw';
+
+## 30초 요약
+
+MinIO는 세 주체가 소비합니다.
+
+- **포털 사용자** (브라우저 File Storage UI) — 업로드·다운로드·탐색
+- **Admin** — 버킷 가시성(`BucketVisibility`) 토글로 **일반 사용자에게 어떤 버킷을 숨길지** 제어
+- **Agent (gRPC)** — `UploadTraceToMinio` · `UploadBenchmarkToMinio` RPC로 벤치마크/trace 결과를 자동 업로드
+
+이 중 가장 흥미로운 것은 **가시성 필터 로직**과 **Agent gRPC의 간접 연동**.
+
+## 버킷 가시성 — Admin/User 분기
+
+<CodeTour
+  client:visible
+  language="java"
+  source="MinioController.listBuckets"
+  height={600}
+  code={listVisRaw}
+  steps={[
+    {
+      id: 'mapping',
+      title: 'GET /buckets — HttpSession 기반',
+      lines: [10, 12],
+      body: '<p>Spring Security 통과 후 <code>HttpSession</code>에 <code>portalUser</code>가 저장되어 있음. 전역 인증 미들웨어가 있고, 여기서는 역할만 체크.</p>',
+    },
+    {
+      id: 'all-buckets',
+      title: 'MinIO에서 전체 버킷 목록 조회',
+      lines: [13, 13],
+      body: '<p>단계 2의 <code>listBuckets</code>. MinIO 서버의 <strong>실제 버킷 이름들</strong>. Admin/User 분기 전 공통 단계.</p>',
+    },
+    {
+      id: 'admin-path',
+      title: 'Admin: 전체 + visibility 병합',
+      lines: [15, 26],
+      body: '<p><code>BucketVisibilityRepository</code>에서 DB의 가시성 맵을 HashMap으로 로드 → 버킷 이름을 키로 참조. <strong>DB에 없는 버킷은 기본 true</strong>(<code>getOrDefault(.., true)</code>). Admin은 <strong>visible 플래그까지 포함한 객체 배열</strong> 수신.</p>',
+    },
+    {
+      id: 'user-path',
+      title: 'User: 숨김 버킷 필터링',
+      lines: [27, 37],
+      body: '<p>DB에서 <code>visible=false</code>인 버킷 이름만 Set으로 추출 → <code>allBuckets.filter(!hidden.contains)</code>. User는 <strong>이름 문자열 배열</strong>만 받아 플래그를 모름. UI가 버킷 존재 자체를 모르게 됨.</p>',
+    },
+  ]}
+/>
+
+## BucketVisibility — 가시성 메타 DB
+
+```java
+@Entity
+@Table(name = "portal_bucket_visibility")
+public class BucketVisibility {
+    @Id Long id;
+    String bucketName;  // UK
+    boolean visible;    // true = 사용자에게 보임
+    LocalDateTime updatedAt;
+}
+```
+
+MinIO 자체는 **모든 버킷이 동등**하게 존재. 가시성은 **MOVE가 별도 DB에 얹은 메타데이터**. 이유:
+
+- MinIO에 bucket policy를 세밀히 걸면 관리 복잡도↑
+- 포털 UI에서 "이 버킷은 특정 팀만"같은 룰을 **코드 수정 없이** 토글하고 싶음
+- 실제 접근 제어가 아니라 **UI 숨김** 수준 (URL 직접 치면 접근 가능)
+
+**"가벼운 UI 레이어 필터링"** 을 의도. 보안이 중요하면 MinIO 레벨 policy가 필요.
+
+## Agent gRPC 접점 — `UploadTraceToMinio`
+
+Agent L2의 proto에 이미 정의되어 있음:
+
+```proto
+// device_agent.proto (발췌)
+service DeviceAgent {
+  // ...
+  rpc UploadTraceToMinio(UploadTraceRequest) returns (UploadTraceResponse);
+  rpc UploadBenchmarkToMinio(UploadBenchmarkRequest) returns (UploadBenchmarkResponse);
+}
+
+message UploadTraceRequest {
+  string job_id = 1;
+  string bucket = 2;
+  string object_prefix = 3;
+  // ...
+}
+```
+
+**흐름**:
+
+1. Agent가 trace 수집 완료 → **Go 서비스가 직접** MinIO S3 API로 업로드 (포털 경유 안 함)
+2. Go 서비스는 포털과 동일한 MinIO credential을 환경변수로 보유
+3. 업로드 성공 후 Agent가 Spring에 `UploadTraceResponse`로 `object_name` 반환
+4. Spring은 `JobExecution` DB에 경로 저장
+5. 사용자가 결과 보기 버튼 → `/api/minio/.../download-folder?prefix=traces/{jobId}/`
+
+**중요한 통찰**: **포털은 업로드 경로에 관여하지 않음**. Go Agent가 MinIO에 쓸 수 있도록 credential 공유만 필요. 다운로드만 포털이 제공.
+
+이 패턴의 이점:
+- 큰 trace 파일(수 GB)이 포털 JVM을 거치지 않음
+- Go가 S3 SDK로 직접 → 성능 · 메모리 효율
+- 포털은 **메타데이터 관리**(JobExecution) + **다운로드 UI** 만 담당
+
+## 세 소비자의 경로 요약
+
+```
+             [포털 User]           [Admin]              [Agent (Go)]
+                 │                    │                       │
+                 │ MultipartFile      │ visibility toggle     │ Go S3 SDK
+                 ▼                    ▼                       ▼
+         /api/minio/upload     /api/minio/buckets     (direct MinIO 9000)
+                 │                    │                       │
+                 │                    │                       │
+                 ▼                    ▼                       ▼
+         MinioStorageService ◄── MinioClient ─────────► MinIO Server
+                 ▲                                             │
+                 │                                             │
+          [다운로드 UI]                                         │
+          /api/minio/download                                  │
+         /download-folder ◄────── Agent trace 결과 조회 ───────┘
+```
+
+**세 주체가 같은 스토리지를 공유**하지만 경로는 완전히 분리. 쓰기는 각자, 읽기는 포털 API로 통일.
+
+## 열 L2의 재사용 관계 최종도
+
+```
+T32 Dump ──┬──→ Bitbucket (브랜치 드롭다운)
+           └──→ Log Browser (결과 폴더 + ZIP)
+
+Agent 벤치마크 ──┬──→ Go Agent (gRPC trace/bench)
+                └──→ MinIO (결과 저장, Go → S3 직접)
+
+Excel Export ──→ Log Browser (JSON 파일)
+               + PerformanceResultDataService (공유)
+
+MinIO 사용자 UI ──┐
+Admin UI ─────────┤──→ MinIO (버킷/객체 CRUD)
+Agent (Go) ───────┘
+```
+
+두 재사용 레이어가 완성됨:
+- **하부 파일 시스템**: Log Browser (SSH/Local)
+- **하부 오브젝트 스토리지**: **MinIO** (S3 호환)
+
+## 직접 해보기
+
+- [ ] Admin으로 로그인 → `/api/minio/buckets` → 각 버킷의 `visible` 플래그 확인
+- [ ] 일반 사용자로 로그인 → 같은 엔드포인트 → visible=false 버킷은 결과에 없어야 함
+- [ ] `BucketVisibility` DB에서 한 버킷을 toggle → 사용자 화면에서 **즉시** 사라지는지 (cache 없음 검증)
+- [ ] Agent 벤치마크 실행 후 `portal_job_executions`에서 MinIO 경로 확인 → 해당 prefix로 `download-folder` 호출
+
+---
+
+**L2 MinIO 튜토리얼 완료**. 돌아가기:
+
+- [L2 9종 비교](/learn/l2-compare/) · [Log Browser L2](/learn/l2-logbrowser/) · [Agent 벤치마크 L2](/learn/l2-benchmark/) · 기타 L2
