@@ -1,0 +1,177 @@
+---
+title: 3. adb shell 4가지 수집 방식
+description: commandType으로 분기해 tool / sysfs / raw / keyvalue 각 방식을 실행하고 JSON 배열에 누적
+sidebar:
+  order: 3
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import DataFlowPath from '../../../../components/learn/DataFlowPath.svelte';
+import monRaw from '../../../../snippets/MetadataMonitor-monitorOnce.java?raw';
+
+## 30초 요약
+
+`monitorOnce(ctx)`가 주기마다 호출됩니다. 한 실행에서:
+
+1. Context의 command 목록을 순회
+2. 각 `commandType`에 맞는 executor 메서드 호출 (tool / sysfs / raw / keyvalue)
+3. JSON 문자열을 파싱 → `time` 필드 추가 → 인메모리 리스트에 누적
+4. SFTP로 VM에 `debug_<typeKey>.json` 저장
+
+**전체가 `ReentrantLock`으로 보호**됩니다 — @Scheduled task와 `stopMonitoring`의 최종 수집이 겹치는 것을 막기 위해서.
+
+## 데이터 변형 체인
+
+<DataFlowPath
+  client:visible
+  caption="1 주기의 monitorOnce가 command 1개에 대해 수행하는 변환"
+  altText="Command 엔티티의 commandTemplate과 commandType을 꺼내 MetadataCommandExecutor가 adb shell을 호출합니다. 결과 문자열이 JSON이면 파싱해 Map으로 만들고, time 필드를 추가한 후 slot별 CopyOnWriteArrayList에 append하며 동시에 SFTP로 VM에 저장합니다."
+  stages={[
+    {
+      id: 's1',
+      label: 'UfsMetadataCommand',
+      layer: 'state',
+      language: 'text',
+      sample: 'commandType = "sysfs"\ncommandTemplate =\n  "/sys/block/sda/stat\\n/sys/block/sda/size"',
+      note: 'DB 한 행',
+    },
+    {
+      id: 's2',
+      label: 'executor 분기',
+      layer: 'be',
+      language: 'java',
+      sample: 'if ("sysfs"...)\n  executeSysfsRead(...)\nelse if ("raw"...)\n  executeRaw(...)\nelse if ("keyvalue"...)\n  executeKeyValue(...)\nelse executeCommand(...)',
+      note: 'commandType 기준',
+    },
+    {
+      id: 's3',
+      label: 'adb shell 결과',
+      layer: 'hw',
+      language: 'text',
+      sample: '123 456 789 ...\n12345678',
+      note: 'plaintext 또는 JSON',
+    },
+    {
+      id: 's4',
+      label: 'JSON 파싱 + time',
+      layer: 'be',
+      language: 'json',
+      sample: '{\n  "stat": "123 456 789 ...",\n  "size": "12345678",\n  "time": 300\n}',
+      note: 'Map<String, Object>',
+    },
+    {
+      id: 's5',
+      label: '인메모리 + 파일',
+      layer: 'state',
+      language: 'text',
+      sample: 'monitoredData["pa-health"]\n  .add(parsed)\n+ SFTP put\n  /home/octo/tentacle/slot0/\n  log/debug_pa-health.json',
+      note: 'append-only 배열',
+    },
+  ]}
+  transforms={[
+    { label: 'switch' },
+    { label: 'shell' },
+    { label: 'parse' },
+    { label: 'append' },
+  ]}
+/>
+
+## monitorOnce — 한 주기의 수집
+
+<CodeTour
+  client:visible
+  language="java"
+  source="MetadataMonitorService.monitorOnce"
+  height={660}
+  code={monRaw}
+  steps={[
+    {
+      id: 'lock',
+      title: 'tryLock — 중복 실행 차단',
+      lines: [7, 11],
+      body: '<p><code>ReentrantLock.tryLock()</code>으로 <strong>같은 슬롯에 대한 동시 실행</strong>을 방지. @Scheduled task가 아직 안 끝났는데 다음 주기가 돌기 시작하거나, stopMonitoring이 마지막 수집을 호출할 때 겹침. 실패하면 조용히 스킵.</p>',
+    },
+    {
+      id: 'loop-commands',
+      title: 'command 목록 순회',
+      lines: [13, 14],
+      body: '<p>한 슬롯에 여러 타입이 매핑되어 있으면 여기서 모두 돌면서 수집. 개별 실패는 try/catch로 격리되어 다른 타입 수집을 막지 않음.</p>',
+    },
+    {
+      id: 'dispatch',
+      title: 'commandType 4-way 분기',
+      lines: [15, 29],
+      body: '<p><code>sysfs</code> / <code>raw</code> / <code>keyvalue</code> / (기본) <code>tool</code>. <strong>대부분의 복잡도는 executor 안에 숨어있고</strong> 서비스는 디스패치만 담당. 확장 시 새 타입을 추가하면 이 if-else 한 개만 늘어남.</p>',
+    },
+    {
+      id: 'non-json-skip',
+      title: 'non-JSON 스킵 — 방어 로직',
+      lines: [31, 37],
+      body: '<p>executor가 항상 JSON을 내도록 의도했지만 장비가 이상 출력을 내는 경우가 있음. <code>{</code> 또는 <code>[</code>로 시작하지 않으면 warn + skip. 한 주기 놓쳐도 다음 주기가 다시 시도.</p>',
+    },
+    {
+      id: 'parse-add-time',
+      title: 'JSON 파싱 + time 필드 주입',
+      lines: [39, 43],
+      body: '<p>Jackson <code>TypeReference&lt;&gt;</code>로 <code>Map&lt;String, Object&gt;</code>. <code>parsed.put("time", elapsedSeconds)</code>로 <strong>히트맵 x축에 쓸 시각</strong>을 매 샘플에 박아넣음. <code>elapsedSeconds</code>는 서비스 시작 기준 누적 초.</p>',
+    },
+    {
+      id: 'append-inmem',
+      title: '인메모리 누적 — CopyOnWriteArrayList',
+      lines: [45, 46],
+      body: '<p>타입별로 별도 리스트. CopyOnWrite라 <strong>쓰는 동안 읽기가 안전</strong>. 프론트가 REST로 읽을 때 lock 없이 스냅샷 가져감. 쓰기 비용은 add 시 전체 복사이지만 주기가 느려(분 단위) 부담 없음.</p>',
+    },
+    {
+      id: 'sftp-save',
+      title: 'SFTP 저장 — debug_&lt;typeKey&gt;.json',
+      lines: [48, 53],
+      body: '<p>전체 배열을 pretty JSON으로 VM의 <code>/home/octo/tentacle/slot{N}/log/</code>에 쓰기. <strong>MOVE 재시작 시 인메모리는 사라지지만 파일은 남아</strong> 이력 보관용. 프론트 &quot;파일에서 불러오기&quot; API가 이 파일을 읽음.</p>',
+    },
+    {
+      id: 'error-isolation',
+      title: 'command별 실패 격리',
+      lines: [55, 58],
+      body: '<p>한 command 실패가 다른 command 수집을 막지 않음. 에러 로그만 남기고 continue. <strong>부분 실패가 허용되는 설계</strong> — 일부 장비가 특정 sysfs를 지원하지 않는 것이 흔한 현실.</p>',
+    },
+    {
+      id: 'elapsed-advance',
+      title: 'elapsedSeconds 전진',
+      lines: [60, 63],
+      body: '<p>슬롯별 주기만큼 <code>elapsedSeconds</code>를 추가. 다음 주기에서 <code>time</code> 필드에 반영. <strong>sleep time이 아니라 "의도된 주기"</strong>를 더하는 이유: 장비 응답이 느려 실제 경과는 더 클 수 있지만 히트맵의 x축은 균등한 간격이 보기 좋음.</p>',
+    },
+    {
+      id: 'unlock',
+      title: 'finally — unlock',
+      lines: [64, 66],
+      body: '<p>예외가 나도 반드시 해제. <strong>try-finally + ReentrantLock</strong>이 자바에서 안전 해제의 표준 패턴.</p>',
+    },
+  ]}
+/>
+
+## 왜 4가지 executor 메서드를 서비스 밖에 분리했나
+
+`MetadataCommandExecutor`에 실제 실행 로직이 있고, 서비스는 **분기만** 합니다. 이 분리의 이득:
+
+- **각 방식이 각자 복잡함**: sysfs는 여러 경로 읽고 regex 추출. keyvalue는 들여쓰기 기반 파싱. raw는 단순.
+- **테스트 용이**: 서비스 테스트는 executor를 mock. executor 테스트는 입력 문자열만 갖고 단위 검증.
+- **재사용**: 다른 도구(Admin의 1회성 명령 실행)가 같은 executor를 씀.
+
+이 L2 튜토리얼은 executor 내부 구현(정규식·파싱)까지는 깊이 들어가지 않습니다 — 패턴만 알면 세부는 파일을 직접 열어 따라갈 수 있습니다.
+
+## "time" 필드가 중요한 이유
+
+수집된 JSON 하나하나가 **타임스탬프를 자체 보유**하게 되면서:
+
+- 프론트가 과거 파일을 다시 읽어도 x축이 자연스러움
+- 샘플 간 주기가 달라도(슬롯별 override) 각자의 time이 따로 기록됨
+- **히트맵의 x축 = time, y축 = 배열 index, 값 = 숫자**라는 단순한 매핑이 가능
+
+이 작은 결정이 단계 5의 프론트 히트맵을 단순하게 만듭니다.
+
+## 직접 해보기
+
+- [ ] MOVE 로그에서 `monitorOnce skipped for slot [...] — already running` 메시지 관찰 (수집이 주기보다 오래 걸릴 때)
+- [ ] VM에 SSH로 접속해 `/home/octo/tentacle/slot0/log/debug_pa-health.json` 열기 → JSON 배열, 각 요소에 `time` 필드 포함 확인
+- [ ] 일부러 장비가 응답 못하는 path를 command에 넣어 → 해당 타입만 warn + 나머지 타입은 정상 수집되는지 관찰
+
+다음: [4. REST API (인메모리 조회)](/learn/l2-metadata/04-rest-api/) →

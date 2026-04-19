@@ -85,6 +85,10 @@ export default defineConfig({
                   label: '원격 터미널 (WebSocket + guacd)',
                   autogenerate: { directory: 'learn/l2-remote' },
                 },
+                {
+                  label: 'UFS Metadata 모니터링 (Scheduled + adb)',
+                  autogenerate: { directory: 'learn/l2-metadata' },
+                },
               ],
             },
             {

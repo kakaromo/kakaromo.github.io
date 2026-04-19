@@ -1,0 +1,78 @@
+---
+title: UFS Metadata 모니터링 — 5단계 여정
+description: 테스트 실행 중인 슬롯의 UFS 메타데이터를 주기적으로 수집해 히트맵으로 시각화
+sidebar:
+  order: 0
+---
+
+import ArchitectureDiagram from '../../../../components/learn/ArchitectureDiagram.svelte';
+
+## 이 모듈에서 배울 것
+
+"**테스트가 돌고 있는 슬롯**에서 UFS 메타데이터(PA, SMART, WA 등)를 주기적으로 읽어와 시계열 데이터로 누적하고, 프론트 **히트맵·라인 차트**로 시각화하기까지 어떤 계층을 거치는가?"
+
+네 번째 L2입니다. 앞의 세 L2와 달리 이 모듈의 핵심은 **트리거 없는 자동 수집**과 **데이터 집계의 수학적 구조(배열 index × 시간 t)**입니다.
+
+## 여정 한눈에
+
+<ArchitectureDiagram
+  client:visible
+  height={320}
+  caption="슬롯 running 감지 → 주기 실행기 시작 → adb shell 4가지 방식으로 수집 → 인메모리·파일 → 프론트 히트맵"
+  altText="MetadataMonitorService의 @Scheduled가 5초마다 슬롯 상태를 체크해 running 전환을 감지하면, 제품별 매핑에서 command 목록을 뽑아 슬롯별 ScheduledExecutorService에 주기 task를 등록합니다. 각 주기 실행은 commandType(tool/sysfs/raw/keyvalue) 4가지로 분기해 adb shell을 통해 UFS 메타데이터를 수집하고, JSON 파싱 후 인메모리 + SFTP 파일에 저장합니다. 프론트는 /api/metadata/slot/... 로 조회해 ECharts 히트맵/라인 차트를 렌더합니다."
+  nodes={[
+    { id: 's1', label: '1. 엔티티·타입',     sublabel: '4가지 commandType',        layer: 'state', x: 0,    y: 80,  href: '/learn/l2-metadata/01-entities/' },
+    { id: 's2', label: '2. 스케줄러',         sublabel: '@Scheduled + Executor',   layer: 'be',    x: 200,  y: 80,  href: '/learn/l2-metadata/02-scheduler/' },
+    { id: 's3', label: '3. 수집 로직',        sublabel: 'adb shell 4가지 방식',     layer: 'tx',    x: 400,  y: 0,   href: '/learn/l2-metadata/03-collection/' },
+    { id: 's4', label: '4. REST API',         sublabel: 'in-memory 조회',          layer: 'be',    x: 400,  y: 160, href: '/learn/l2-metadata/04-rest-api/' },
+    { id: 's5', label: '5. 히트맵',           sublabel: 'ECharts · 배열×시간',     layer: 'fe',    x: 600,  y: 80,  href: '/learn/l2-metadata/05-heatmap/' },
+  ]}
+  edges={[
+    { from: 's1', to: 's2', label: 'read',    kind: 'sync' },
+    { from: 's2', to: 's3', label: 'schedule', kind: 'async' },
+    { from: 's3', to: 's4', label: 'store',   kind: 'sync' },
+    { from: 's4', to: 's5', label: 'HTTP',    kind: 'sync' },
+  ]}
+/>
+
+## 앞 세 L2와의 차이
+
+| 축 | 슬롯 | 벤치마크 | 원격 | **Metadata** |
+|---|---|---|---|---|
+| 트리거 | Head 능동 push | 사용자 Run | 사용자 접속 | **슬롯 running 상태 감지** (자동) |
+| 전송층 | TCP+SSE | gRPC+SSE | WebSocket | **없음 (HTTP GET 폴링)** |
+| 수집 타이밍 | 실시간 | job 단위 | 프레임 | **주기(초·분), 동적 조정** |
+| 데이터 형태 | 이벤트 | 진행률 | 바이너리 | **JSON 배열 × 시간** |
+| 프론트 UX | 테이블 | 진행률 바 | 터미널 | **히트맵·라인 차트** |
+| 식별자 | source | jobId | vm+protocol | **tentacleName:slotNumber** |
+
+가장 큰 차이는 **사용자 인터랙션이 없다**는 것입니다. 스케줄러가 슬롯 상태 변화를 감지해서 자동으로 시작·중지하고, 수집된 데이터는 사용자가 열어봤을 때 시각화됩니다.
+
+## 왜 adb shell 방식이 4가지나 되는가
+
+UFS 메타데이터는 공급사·펌웨어마다 노출 경로가 제각각입니다.
+
+- **tool**: 전용 도구를 설치해서 JSON으로 돌려주는 경우 (가장 깔끔)
+- **sysfs**: 커널 sysfs 파일을 `cat`으로 읽는 경우 (가장 원시적)
+- **raw**: 파일이나 명령어 출력을 **통째로** 받아 value에 그대로 넣는 경우 (테이블·비트맵)
+- **keyvalue**: `key: value` 텍스트를 자동 파싱 (사람이 읽을 수 있는 출력)
+
+**한 시스템 안에서 네 형태가 다 필요한** 현실을 받아들인 설계입니다. 엔티티에 `commandType` 컬럼 하나 추가하고 서비스에서 분기하는 비용이, 네 형태를 하나로 억지로 맞추는 비용보다 작습니다.
+
+## 학습 순서와 예상 시간
+
+| 단계 | 제목 | 성격 | 시간 |
+|---|---|---|---|
+| 1 | 엔티티 & 4가지 command_type | 읽기 | 8분 |
+| 2 | 스케줄러 & 슬롯 상태 감지 | 코드 투어 | 15분 |
+| 3 | adb shell 4가지 수집 방식 | 코드 투어 | 12분 |
+| 4 | REST API (인메모리 조회) | 코드 투어 | 8분 |
+| 5 | 프론트 히트맵 (ECharts) | 읽기 + 의사코드 | 12분 |
+
+총 약 **55분**. 앞 L2에서 본 `@Scheduled`, `@ConfigurationProperties`, `ConcurrentHashMap` 등은 빠르게 훑고 넘기세요.
+
+## 새로 등장할 L3 개념
+
+이 모듈이 소개하는 **새 개념은 없습니다** — 기존 L3 사전의 `@Scheduled`·`@Entity`·`@ConfigurationProperties`·`$state`·`$derived`·`$effect`만으로 설명됩니다. 이는 "**네 번째 모듈이 추가 개념 없이도 작성 가능**"한 상태에 도달했음을 뜻합니다.
+
+다음: [1. 엔티티 & 4가지 command_type](/learn/l2-metadata/01-entities/) →

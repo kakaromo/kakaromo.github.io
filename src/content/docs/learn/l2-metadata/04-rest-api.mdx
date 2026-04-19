@@ -1,0 +1,122 @@
+---
+title: 4. REST API — 인메모리 조회
+description: 프론트가 수집 상태·시계열 데이터를 얻는 HTTP GET 경로 — 폴링 친화적 설계
+sidebar:
+  order: 4
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import ctrlRaw from '../../../../snippets/MetadataController-slot.java?raw';
+
+## 30초 요약
+
+프론트는 SSE/WebSocket 대신 **HTTP GET 폴링**으로 데이터를 가져옵니다.
+
+- **GET `/api/metadata/slot/{tentacleName}/{slotNumber}`** — 상태 요약 (모니터링 여부, elapsed, 타입별 entry 수)
+- **GET `/api/metadata/slot/{tentacleName}/{slotNumber}/{typeKey}`** — 특정 타입의 시계열 JSON 배열
+
+수집은 이미 백엔드에서 자동이고, 프론트는 **"필요할 때 최신 스냅샷만 받아온다"** 입장. 실시간 필요도가 낮아 SSE를 쓸 이유가 없습니다.
+
+## 왜 SSE가 아닌가
+
+앞 세 L2는 모두 SSE/WebSocket을 썼습니다. 이 모듈만 HTTP 폴링을 쓰는 이유:
+
+| 축 | SSE 모듈 (슬롯/벤치마크) | Metadata |
+|---|---|---|
+| 갱신 주기 | 1초 이하 | 수분(기본 5분) |
+| 이벤트 수 | 초당 수십~수백 | 분당 몇 개 |
+| 실시간성 요구 | 높음 | 낮음 |
+| 연결 관리 복잡도 | 감수 필요 | 불필요 |
+
+분 단위 주기를 위해 SSE를 상시 연결해 두는 것은 오버엔지니어링. 사용자가 대시보드를 열어둔 동안에만 30초 폴링으로 충분합니다 — 단계 5에서 봅니다.
+
+## 컨트롤러 구조
+
+<CodeTour
+  client:visible
+  language="java"
+  source="MetadataController.java"
+  height={620}
+  code={ctrlRaw}
+  steps={[
+    {
+      id: 'class-header',
+      title: '@RestController + @RequestMapping',
+      lines: [6, 9],
+      body: '<p>모든 엔드포인트가 <code>/api/metadata</code> prefix. 슬롯별 조회는 <code>/slot/{tentacleName}/{slotNumber}</code> 경로 패턴으로 통일.</p>',
+    },
+    {
+      id: 'deps',
+      title: '의존성 주입',
+      lines: [11, 14],
+      body: '<p>type 조회(<code>typeService</code>) · 모니터 상태(<code>monitorService</code>) · 일회성 실행(<code>commandExecutor</code>) · 설정(<code>props</code>). <code>@RequiredArgsConstructor</code>로 final 필드 4개가 생성자 주입.</p>',
+    },
+    {
+      id: 'types-list',
+      title: 'GET /types — 활성 타입 카탈로그',
+      lines: [16, 20],
+      body: '<p>프론트 초기 로드용. Admin이 enable/disable한 최신 상태 반영. 응답 캐싱 없음 — 목록 변화가 빈번하지 않아 최적화 불필요.</p>',
+    },
+    {
+      id: 'types-by-product',
+      title: 'GET /types/for-product — 제품별 필터',
+      lines: [22, 29],
+      body: '<p>쿼리 파라미터로 controller/nandType/cellType을 받아 해당 제품에 매핑된 타입만 반환. 프론트가 슬롯의 HEAD OOB 값으로 호출.</p>',
+    },
+    {
+      id: 'types-by-tr',
+      title: 'GET /types/for-tr — TR 기반 (더 정확)',
+      lines: [31, 40],
+      body: '<p>TR(테스트 요청)은 이 슬롯이 무엇을 테스트 중인지 <strong>명시적으로 알려주는 설정</strong>. 슬롯의 HEAD OOB 값보다 <strong>신뢰도가 높아</strong> 프론트는 가능하면 이 엔드포인트를 사용.</p>',
+    },
+    {
+      id: 'slot-status',
+      title: 'GET /slot/{t}/{n} — 수집 상태 요약',
+      lines: [42, 62],
+      body: '<p>모니터링 컨텍스트가 없으면 <code>{monitoring: false}</code> 단일 키. 있으면 <strong>entryCounts</strong>(타입별 수집 샘플 수)까지 포함 — 프론트가 "어느 타입이 얼마나 쌓였는지" 표시하기 좋게.</p>',
+    },
+    {
+      id: 'slot-data',
+      title: 'GET /slot/{t}/{n}/{typeKey} — 시계열 데이터',
+      lines: [64, 79],
+      body: '<p>특정 타입의 <code>monitoredData.get(typeKey)</code> 배열을 그대로 반환. CopyOnWriteArrayList라 <strong>응답 직렬화 중에 추가 쓰기가 와도 안전</strong>. 각 요소는 단계 3에서 추가한 <code>time</code> 필드를 포함.</p>',
+    },
+  ]}
+/>
+
+## 엔드포인트 한 장 요약
+
+이 튜토리얼에 나온 것 외에 Controller가 제공하는 다른 엔드포인트들:
+
+| Method | Path | 용도 |
+|---|---|---|
+| GET | `/api/metadata/file` | VM에 저장된 JSON 파일 읽기 (MOVE 재시작 후에도 이력) |
+| PUT | `/api/metadata/slot/{t}/{n}/enabled` | 슬롯별 수집 on/off 토글 |
+| PUT | `/api/metadata/slot/{t}/{n}/interval` | 슬롯별 주기 변경 (최소 10초) |
+| PUT | `/api/metadata/slot/{t}/{n}/excluded-types` | 타입별 제외 설정 |
+
+프론트는 초기화 → 상태 조회 → 타입 선택 → 데이터 조회 순서로 호출합니다. 단계 5의 `MetadataDialog.svelte`가 이 조합을 사용.
+
+## 슬롯 식별 규약 — tentacleName vs source
+
+Head 내부에서는 슬롯 키가 `"source:slotIndex"` 형식이지만, **사용자에게는 `tentacleName`이 더 친숙**합니다. `source`가 Head 연결 이름(`compatibility-1`)이라면 `tentacleName`은 그 아래 묶인 설비 그룹 이름(`T1`).
+
+컨트롤러는 `tentacleName`을 받아 내부적으로 `source`를 찾아주는 `findContextBySlot` 헬퍼를 씁니다 — **외부 경로와 내부 키 규약을 분리**해, 내부 구조가 바뀌어도 URL은 안정적.
+
+## 왜 `monitoring: false`를 404가 아닌 200으로
+
+직관적으로는 "모니터링 중이 아니면 존재하지 않음"이라 404가 맞아 보입니다. 하지만 MOVE는 **200 + `{monitoring: false}`** 로 보냅니다.
+
+- 프론트가 **에러 처리 없이 `.monitoring` 필드만 체크**하면 됨
+- 404는 "잘못된 경로" 같은 진짜 에러와 구분되기 어려움
+- 슬롯은 존재하지만 아직 모니터링을 안 시작한 상태를 "200"이 더 정확히 표현
+
+단, 타입 데이터(`/slot/{t}/{n}/{typeKey}`)는 **`findContextBySlot` 자체가 실패하면 404** — 완전히 없는 슬롯이면 진짜 에러로 간주.
+
+## 직접 해보기
+
+- [ ] `curl /api/metadata/slot/T1/0` → JSON 포맷·entryCounts 확인
+- [ ] 수집 중인 슬롯에서 `curl /api/metadata/slot/T1/0/pa-health` → 배열 길이가 시간 지남에 따라 증가하는지 반복 확인
+- [ ] 존재하지 않는 슬롯(`/slot/DOESNOT/99`)으로 호출 → 200 + `monitoring: false` 받음
+
+다음: [5. 프론트 히트맵 (ECharts)](/learn/l2-metadata/05-heatmap/) →
