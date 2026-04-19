@@ -9,8 +9,11 @@ sidebar:
 import ArchitectureDiagram from '../../../components/learn/ArchitectureDiagram.svelte';
 import CodeTour from '../../../components/learn/CodeTour.svelte';
 import ConceptPopover from '../../../components/learn/ConceptPopover.svelte';
+import SequenceTimeline from '../../../components/learn/SequenceTimeline.svelte';
+import DataFlowPath from '../../../components/learn/DataFlowPath.svelte';
+import BeforeAfterSlider from '../../../components/learn/BeforeAfterSlider.svelte';
 
-이 페이지는 Phase 1 시각화 컴포넌트 3종의 동작 확인용이며 프로덕션 빌드에서는 제외됩니다 (`draft: true`).
+이 페이지는 시각화 컴포넌트의 동작 확인용이며 프로덕션 빌드에서는 제외됩니다 (`draft: true`).
 
 ---
 
@@ -131,12 +134,172 @@ Spring Boot의 <ConceptPopover client:visible term="@Scheduled" concept="spring/
 
 ---
 
+---
+
+## 4. SequenceTimeline — 시퀀스 애니메이션
+
+<SequenceTimeline
+  client:visible
+  height={360}
+  autoplay={true}
+  caption="SSE 구독 시점부터 1초 간격 업데이트 3회까지의 메시지 흐름"
+  altText="Browser가 Spring에 GET /api/head/slots/stream을 보내면 Spring은 init 이벤트를 즉시 응답합니다. 이후 @Scheduled가 매초 StateStore에서 version을 읽고, 바뀐 경우에만 update 이벤트를 Browser에 전송합니다."
+  lanes={[
+    { id: 'br',    label: 'Browser',    layer: 'fe', sublabel: 'EventSource' },
+    { id: 'sp',    label: 'Spring',     layer: 'be', sublabel: 'SseController' },
+    { id: 'st',    label: 'StateStore', layer: 'state', sublabel: 'version' },
+  ]}
+  messages={[
+    { from: 'br', to: 'sp', label: 'GET /stream',     t: 0,  kind: 'sync' },
+    { from: 'sp', to: 'st', label: 'getVersion',      t: 5,  kind: 'sync' },
+    { from: 'sp', to: 'br', label: 'event: init',     t: 10, kind: 'async' },
+    { from: 'sp', to: 'st', label: 'getVersion',      t: 40, kind: 'sync' },
+    { from: 'sp', to: 'br', label: 'event: update',   t: 45, kind: 'async' },
+    { from: 'sp', to: 'st', label: 'getVersion',      t: 70, kind: 'sync' },
+    { from: 'sp', to: 'st', label: '↻ same',          t: 72, kind: 'sync', note: '변화 없음 → 스킵' },
+    { from: 'sp', to: 'st', label: 'getVersion',      t: 100, kind: 'sync' },
+    { from: 'sp', to: 'br', label: 'event: update',   t: 105, kind: 'async' },
+  ]}
+/>
+
+---
+
+## 5. DataFlowPath — 데이터 변형 체인
+
+<DataFlowPath
+  client:visible
+  caption="Head 메시지 한 건이 브라우저 상태가 되기까지의 변형 과정"
+  altText="Head가 보낸 원시 텍스트가 파서에서 HeadSlotData 객체가 되고, StateStore의 ConcurrentHashMap 엔트리로 저장된 뒤 JSON 페이로드로 직렬화되어 브라우저의 $state 배열에 들어갑니다."
+  stages={[
+    {
+      id: 's1',
+      label: 'Head 원시 텍스트',
+      layer: 'hw',
+      language: 'text',
+      sample: 'update[0]2h15m`SM-A536B`85%`8.2GB`fio`write`1`Running`...^',
+      note: 'backtick 구분 32필드, ^end^로 청크 종료',
+    },
+    {
+      id: 's2',
+      label: 'HeadSlotData (Java)',
+      layer: 'be',
+      language: 'java',
+      sample: 'HeadSlotData {\n  slotIndex: 0,\n  runningTime: "2h15m",\n  state: "1",\n  testState: "Running"\n}',
+      note: 'Parser가 순수 함수로 변환',
+    },
+    {
+      id: 's3',
+      label: 'StateStore 엔트리',
+      layer: 'state',
+      language: 'text',
+      sample: 'slots["compatibility:0"] = HeadSlotData\nversion = 142',
+      note: 'ConcurrentHashMap + AtomicLong',
+    },
+    {
+      id: 's4',
+      label: 'SSE JSON',
+      layer: 'tx',
+      language: 'json',
+      sample: '{\n  "slots": [ {...} ],\n  "version": 142,\n  "connections": [...]\n}',
+      note: 'ObjectMapper 직렬화',
+    },
+    {
+      id: 's5',
+      label: '브라우저 $state',
+      layer: 'fe',
+      language: 'ts',
+      sample: 'slots = $state<HeadSlotData[]>([\n  { slotIndex: 0, state: "1", ... }\n])',
+      note: 'dedup 후 할당 → UI 자동 갱신',
+    },
+  ]}
+  transforms={[
+    { label: 'parse' },
+    { label: 'put' },
+    { label: 'serialize' },
+    { label: 'dedup' },
+  ]}
+/>
+
+---
+
+## 6. BeforeAfterSlider — 리팩토링 diff
+
+<BeforeAfterSlider
+  client:visible
+  mode="split"
+  height={360}
+  caption="3,494줄 → 2,572줄 (Phase 4 기준) 요약 의사코드"
+  before={{
+    title: 'Phase 0 (3,494 lines, $state 98개)',
+    language: 'svelte',
+    code: `<script>
+  // slots/+page.svelte
+  let slots = $state([]);
+  let showMemoDialog = $state(false);
+  let memoTarget = $state(null);
+  let showMakeSetDialog = $state(false);
+  let makeSetTarget = $state(null);
+  let contextMenuOpen = $state(false);
+  let contextMenuX = $state(0);
+  let contextMenuY = $state(0);
+  let contextMenuSlot = $state(null);
+  let dragStart = $state(null);
+  let dragEnd = $state(null);
+  let selectedSlots = $state(new Set());
+  // ... $state 98개 + 3,400줄
+  function openMemo(slot) { /* ... */ }
+  function openMakeSet(slot) { /* ... */ }
+  function handleContextMenu(e, slot) { /* 80 lines */ }
+  function handleDragStart(e) { /* 60 lines */ }
+  function handleDragMove(e) { /* 70 lines */ }
+  // ...
+</script>
+`,
+    highlight: [[8, 12]],
+  }}
+  after={{
+    title: 'Phase 4 (2,572 lines, 재사용 모듈 5개 분리)',
+    language: 'svelte',
+    code: `<script>
+  // slots/+page.svelte — 핵심 상태만 남김
+  import SlotContextMenu from './SlotContextMenu.svelte';
+  import { rubberBandSelect } from './rubberBandSelect';
+  import SetTcSheet from './SetTcSheet.svelte';
+  import SetTrSheet from './SetTrSheet.svelte';
+
+  let slots = $state([]);
+  let selectedSlots = $state(new Set());
+  let sheetTarget = $state(null);
+  // $state 수십 개로 축소
+</script>
+
+<!-- 드래그 선택은 액션으로 -->
+<div use:rubberBandSelect={{ onSelect }}>
+  {#each slots as slot}
+    <SlotCard {slot} />
+  {/each}
+</div>
+
+<SlotContextMenu ... />
+<SetTcSheet ... />
+<SetTrSheet ... />
+`,
+    highlight: [[3, 6], [16, 17]],
+  }}
+/>
+
+---
+
 ## 테스트 체크리스트
 
 - [ ] 다이어그램 노드 호버 시 연결선만 강조, 나머지 dim
 - [ ] 다이어그램 노드 Tab 포커스 → Enter 시 해당 L2 페이지로 이동
 - [ ] CodeTour 스크롤 시 코드 하이라이트가 step 따라 이동
+- [ ] CodeTour Shiki 문법 하이라이팅이 라이트/다크에서 모두 적용
 - [ ] CodeTour step 제목 클릭 → 해당 step 위로 스크롤
 - [ ] ConceptPopover 호버/포커스 시 요약 표시, Esc 시 닫힘, Enter/클릭 시 L3 페이지 이동
+- [ ] SequenceTimeline 재생·정지·속도 변경, 처음/끝 이동 버튼 동작
+- [ ] DataFlowPath 카드 호버 시 인접 화살표 함께 강조
+- [ ] BeforeAfterSlider split 모드 스크롤 싱크, slider 모드 드래그
 - [ ] 다크모드 토글 시 색·콘트라스트 OK
-- [ ] `prefers-reduced-motion` 켠 상태에서 애니메이션/부드러운 스크롤 꺼짐
+- [ ] `prefers-reduced-motion` 켠 상태에서 애니메이션/부드러운 스크롤/자동재생 꺼짐

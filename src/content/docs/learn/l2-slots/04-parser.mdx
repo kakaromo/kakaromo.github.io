@@ -6,6 +6,7 @@ sidebar:
 ---
 
 import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import DataFlowPath from '../../../../components/learn/DataFlowPath.svelte';
 import parserRaw from '../../../../snippets/HeadMessageParser.java?raw';
 
 ## 30초 요약
@@ -42,6 +43,62 @@ update[0]2h15m`SM-A536B`85%`8.2GB`fio`write`1`Running`usage`...^
 </div>
 
 전체 필드 정의는 아래 코드 투어에서 순서대로 보입니다. 외울 필요는 없고, **"어느 위치가 어떤 의미인지 여기 한 곳에서만 결정된다"** 는 사실이 중요합니다.
+
+## 파서가 하는 변형 한눈에
+
+<DataFlowPath
+  client:visible
+  caption="한 청크가 HeadSlotData 리스트가 되기까지"
+  altText="정규식이 initslots와 update 패턴을 찾아낸 뒤, backtick으로 필드를 나누고, 필드 15의 세미콜론 서브필드를 다시 분리해 HeadSlotData 객체로 조립합니다."
+  stages={[
+    {
+      id: 'raw',
+      label: '원시 청크',
+      layer: 'hw',
+      language: 'text',
+      sample: 'update[0]2h15m`SM-A536B`85%`...^end^\nupdate[1]...',
+      note: '여러 슬롯 메시지가 한 청크에 포함',
+    },
+    {
+      id: 'match',
+      label: '정규식 매치',
+      layer: 'be',
+      language: 'text',
+      sample: 'INIT_SLOT_PATTERN.matcher\nUPDATE_SLOT_PATTERN.matcher\n→ slotIndex 0, body',
+      note: '두 패턴 모두 적용, update가 init을 덮어씀',
+    },
+    {
+      id: 'split',
+      label: 'backtick 분리',
+      layer: 'be',
+      language: 'text',
+      sample: 'fields = [\n  "2h15m",\n  "SM-A536B",\n  "85%",\n  ... (32개)\n]',
+      note: 'split("`", -1)로 trailing 유지',
+    },
+    {
+      id: 'sub',
+      label: '필드 15 서브 분리',
+      layer: 'be',
+      language: 'text',
+      sample: 'fields[15] = "a;b;c;d"\n→ preIdGlobalCxt=a\n   bootCxt=b\n   smartReport=c\n   osv=d',
+      note: '세미콜론 서브 구분자',
+    },
+    {
+      id: 'dto',
+      label: 'HeadSlotData',
+      layer: 'state',
+      language: 'java',
+      sample: 'HeadSlotData {\n  slotIndex: 0,\n  runningTime: "2h15m",\n  state: "1",\n  connection: 1,  // 파생\n  testState: "Running"\n}',
+      note: 'state 숫자에서 connection/testState 파생',
+    },
+  ]}
+  transforms={[
+    { label: 'regex' },
+    { label: 'split' },
+    { label: 'split(;)' },
+    { label: 'setters' },
+  ]}
+/>
 
 ## 코드 투어
 

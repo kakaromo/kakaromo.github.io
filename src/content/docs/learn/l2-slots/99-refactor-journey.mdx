@@ -5,6 +5,8 @@ sidebar:
   order: 99
 ---
 
+import BeforeAfterSlider from '../../../../components/learn/BeforeAfterSlider.svelte';
+
 ## 이 페이지는 무엇인가
 
 지금까지의 7단계는 "**어떤 구조로 되어 있는가**"였습니다. 이 페이지는 "**그 구조에 도달하기까지 어떤 판단을 했는가**"에 대한 심화 자료입니다.
@@ -32,6 +34,97 @@ sidebar:
 리팩토링 커밋은 행동을 바꾸지 않습니다. 바꿀 거면 **별도 커밋**으로.
 
 </div>
+
+## 전후 비교 (의사코드)
+
+아래는 "드래그 선택"과 "컨텍스트 메뉴" 로직이 Phase 4에서 어떻게 외부 모듈로 빠졌는지를 요약한 의사코드입니다. 실제 코드는 훨씬 길고, 프로퍼티·콜백이 여러 개 오갑니다 — [원본 문서](/developer/slots-refactor/)에서 상세.
+
+<BeforeAfterSlider
+  client:visible
+  mode="split"
+  height={380}
+  caption="좌: 인라인 상태·핸들러 폭발 / 우: action + 컴포넌트 분리"
+  before={{
+    title: 'Phase 0 — 모든 게 페이지 안',
+    language: 'svelte',
+    code: `<script>
+  // /testdb/slots/+page.svelte (3,494줄 · $state 98개 중 일부)
+  let selectedSlots = $state(new Set());
+  let contextMenuOpen = $state(false);
+  let contextMenuX = $state(0);
+  let contextMenuY = $state(0);
+  let contextMenuSlot = $state(null);
+
+  let dragStart = $state(null);
+  let dragEnd = $state(null);
+  let isDragging = $state(false);
+
+  function handleMouseDown(e) { /* 20줄 */ }
+  function handleMouseMove(e) { /* 40줄 */ }
+  function handleMouseUp(e) { /* 30줄 */ }
+  function openContextMenu(e, slot) { /* 25줄 */ }
+  function onContextAction(action) { /* 60줄 switch */ }
+</script>
+
+<div
+  onmousedown={handleMouseDown}
+  onmousemove={handleMouseMove}
+  onmouseup={handleMouseUp}
+>
+  {#each slots as slot}
+    <div oncontextmenu={(e) => openContextMenu(e, slot)}>
+      ...
+    </div>
+  {/each}
+</div>
+
+{#if contextMenuOpen}
+  <div style="left:{contextMenuX}px; top:{contextMenuY}px">
+    <!-- 80줄의 메뉴 항목 -->
+  </div>
+{/if}
+`,
+    highlight: [[2, 10], [13, 17]],
+  }}
+  after={{
+    title: 'Phase 4 — action + 컴포넌트 분리',
+    language: 'svelte',
+    code: `<script>
+  // /testdb/slots/+page.svelte
+  import SlotContextMenu from './SlotContextMenu.svelte';
+  import { rubberBandSelect } from './rubberBandSelect';
+
+  let selectedSlots = $state(new Set());
+  let contextTarget = $state(null);
+
+  function onSelectionChange(set) {
+    selectedSlots = set;
+  }
+</script>
+
+<!-- 드래그 선택은 use:action으로 -->
+<div use:rubberBandSelect={{ onSelectionChange }}>
+  {#each slots as slot}
+    <div oncontextmenu={(e) => contextTarget = { slot, e }}>
+      ...
+    </div>
+  {/each}
+</div>
+
+<SlotContextMenu
+  target={contextTarget}
+  onClose={() => contextTarget = null}
+/>
+`,
+    highlight: [[3, 4], [14, 14], [22, 25]],
+  }}
+/>
+
+핵심 변화:
+
+- **인라인 핸들러 3개 + 상태 8개 → `use:rubberBandSelect` 액션 1개**
+- **메뉴 표시 플래그·좌표·타겟 여러 개 → `SlotContextMenu` 컴포넌트 하나 + `target` 단일 상태**
+- 페이지는 "슬롯을 어떻게 그리고, 선택 변화에 어떻게 반응할지"만 남음
 
 ## Phase 개요
 

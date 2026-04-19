@@ -7,6 +7,7 @@ sidebar:
 
 import CodeTour from '../../../../components/learn/CodeTour.svelte';
 import ConceptPopover from '../../../../components/learn/ConceptPopover.svelte';
+import SequenceTimeline from '../../../../components/learn/SequenceTimeline.svelte';
 import sseRaw from '../../../../snippets/HeadSseController.java?raw';
 
 ## 30초 요약
@@ -22,6 +23,31 @@ import sseRaw from '../../../../snippets/HeadSseController.java?raw';
    - `stateStore.getVersion()` 조회
    - 각 wrapper의 `lastVersion`보다 크면 `update` 이벤트 전송 + `lastVersion` 갱신
 3. 에러가 나면 해당 wrapper만 제거 (다른 클라이언트는 영향 없음)
+
+아래 시퀀스에서 초기 연결 후 몇 주기 동안 **버전이 바뀐 경우에만** `update`가 나가는 패턴을 재생해 볼 수 있습니다.
+
+<SequenceTimeline
+  client:visible
+  height={360}
+  autoplay={true}
+  caption="연결 직후 init + 이후 version 변화 감지 시에만 update 전송"
+  altText="Browser가 Spring의 /api/head/slots/stream에 GET을 보내면 Spring은 StateStore에서 version을 읽어 init 이벤트로 현재 스냅샷을 전송합니다. 이후 @Scheduled가 주기마다 getVersion 호출로 변화를 확인하고, 바뀐 경우에만 update 이벤트를 Browser로 보냅니다. 변화가 없는 주기는 조용히 스킵됩니다."
+  lanes={[
+    { id: 'br',    label: 'Browser',    layer: 'fe', sublabel: 'EventSource' },
+    { id: 'ctrl',  label: 'SseController', layer: 'tx', sublabel: '@Scheduled 1s' },
+    { id: 'store', label: 'StateStore', layer: 'state', sublabel: 'ConcurrentHashMap' },
+  ]}
+  messages={[
+    { from: 'br',    to: 'ctrl',  label: 'GET /stream',     t: 0,   kind: 'sync' },
+    { from: 'ctrl',  to: 'store', label: 'getVersion',      t: 8,   kind: 'sync' },
+    { from: 'ctrl',  to: 'br',    label: 'event: init',     t: 15,  kind: 'async' },
+    { from: 'ctrl',  to: 'store', label: 'getVersion',      t: 45,  kind: 'sync', note: 't=45 tick' },
+    { from: 'ctrl',  to: 'br',    label: 'event: update',   t: 50,  kind: 'async' },
+    { from: 'ctrl',  to: 'store', label: 'getVersion',      t: 80,  kind: 'sync', note: '변화 없음' },
+    { from: 'ctrl',  to: 'store', label: 'getVersion',      t: 115, kind: 'sync' },
+    { from: 'ctrl',  to: 'br',    label: 'event: update',   t: 120, kind: 'async' },
+  ]}
+/>
 
 ## 코드 투어
 
