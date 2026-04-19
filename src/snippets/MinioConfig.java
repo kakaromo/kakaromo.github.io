@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/minio/config/MinioConfig.java
 // @lines 1-18
 // @note MinioClient.builder() — io.minio:minio 8.5.14 SDK 래퍼
-// @synced 2026-04-19T09:32:45.530Z
+// @synced 2026-04-19T09:49:20.695Z
 
 package com.samsung.move.minio.config;
 

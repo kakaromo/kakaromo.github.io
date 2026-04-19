@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/head/controller/HeadSseController.java
 // @lines 31-168
 // @note EmitterWrapper + stream + @Scheduled pushUpdates + buildPayload
-// @synced 2026-04-19T09:32:45.509Z
+// @synced 2026-04-19T09:49:20.673Z
 
 @RestController
 @RequestMapping("/api/head")

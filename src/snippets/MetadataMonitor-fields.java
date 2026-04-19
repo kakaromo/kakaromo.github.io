@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/metadata/service/MetadataMonitorService.java
 // @lines 40-133
 // @note 슬롯별 활성 모니터 · excluded types · 8개 스레드풀 + SlotMonitorContext
-// @synced 2026-04-19T09:32:45.518Z
+// @synced 2026-04-19T09:49:20.682Z
 
     private final UfsMetadataCommandRepository commandRepo;
     private final UfsProductMetadataRepository productMetadataRepo;

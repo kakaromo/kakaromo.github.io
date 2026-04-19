@@ -1,0 +1,74 @@
+// @source src/main/proto/device_agent.proto
+// @lines 96-164
+// @note BenchmarkTool enum(IOTEST=4) + RunBenchmarkRequest(params map) + JobProgress(stream용)
+// @synced 2026-04-19T09:49:20.710Z
+
+  BENCHMARK_TOOL_UNSPECIFIED = 0;
+  BENCHMARK_TOOL_FIO = 1;
+  BENCHMARK_TOOL_IOZONE = 2;
+  BENCHMARK_TOOL_TIOTEST = 3;
+  BENCHMARK_TOOL_IOTEST = 4;
+}
+
+enum JobState {
+  JOB_STATE_UNKNOWN = 0;
+  JOB_STATE_QUEUED = 1;
+  JOB_STATE_PUSHING_TOOLS = 2;
+  JOB_STATE_RUNNING = 3;
+  JOB_STATE_COLLECTING = 4;
+  JOB_STATE_COMPLETED = 5;
+  JOB_STATE_FAILED = 6;
+  JOB_STATE_PARTIALLY_FAILED = 7;
+  JOB_STATE_CANCELLED = 8;
+  JOB_STATE_REPARSING = 9;
+}
+
+message RunBenchmarkRequest {
+  repeated string device_ids = 1;
+  BenchmarkTool tool = 2;
+  map<string, string> params = 3;
+  string job_name = 4;
+  string busy_policy = 5;           // "reject"(default), "wait", "force"
+  int32 retry_count = 6;            // 실패 시 재시도 횟수 (0=재시도 없음)
+  int32 retry_delay_seconds = 7;    // 재시도 간격 (기본 60초)
+}
+
+message RunBenchmarkResponse {
+  string job_id = 1;
+}
+
+message GetJobStatusRequest {
+  string job_id = 1;
+}
+
+message GetJobStatusResponse {
+  string job_id = 1;
+  JobState state = 2;
+  int32 total_devices = 3;
+  int32 completed_devices = 4;
+  int32 failed_devices = 5;
+  repeated DeviceJobStatus device_statuses = 6;
+}
+
+message DeviceJobStatus {
+  string device_id = 1;
+  JobState state = 2;
+  string message = 3;
+  int32 progress_percent = 4;
+}
+
+message SubscribeJobProgressRequest {
+  string job_id = 1;
+}
+
+message JobProgress {
+  string job_id = 1;
+  string device_id = 2;
+  JobState state = 3;
+  string message = 4;
+  int32 progress_percent = 5;
+  string error = 6;
+  map<string, double> metrics = 7;   // benchmark step 완료 시 결과 포함
+  string raw_output = 8;             // benchmark step의 raw output
+  int32 retry_attempt = 9;           // 현재 재시도 횟수 (0=첫 시도)
+}

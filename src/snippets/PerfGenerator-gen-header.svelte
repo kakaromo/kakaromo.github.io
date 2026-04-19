@@ -1,7 +1,7 @@
 // @source frontend/src/lib/components/PerfGenerator.svelte
 // @lines 304-395
 // @note generateObjectOfArrays — interface 조립 + tabDefs + chartOption 문자열 템플릿 조립
-// @synced 2026-04-19T09:32:45.544Z
+// @synced 2026-04-19T09:49:20.708Z
 
 	function generateObjectOfArrays(hasDataFields: boolean, cyclePath: string[]): string {
 		const sample = mergedTabs[0];

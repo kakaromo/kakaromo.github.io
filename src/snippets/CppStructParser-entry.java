@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/binmapper/parser/CppStructParser.java
 // @lines 1-80
 // @note parse 엔트리 + typedef/struct/union/enum 분기 + pragma pack 상태 유지
-// @synced 2026-04-19T09:32:45.539Z
+// @synced 2026-04-19T09:49:20.704Z
 
 package com.samsung.move.binmapper.parser;
 

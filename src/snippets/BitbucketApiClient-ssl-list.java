@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/bitbucket/service/BitbucketApiClient.java
 // @lines 28-119
 // @note HttpClient(SSL 무시) + listBranches 페이지네이션 + Bearer PAT + metadata authorTimestamp 추출
-// @synced 2026-04-19T09:32:45.529Z
+// @synced 2026-04-19T09:49:20.694Z
 
 
     private final HttpClient httpClient;

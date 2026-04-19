@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/head/precmd/controller/PreCommandController.java
 // @lines 60-128
 // @note 슬롯 CRUD — list / assign(TC 자동 초기화) / unassign
-// @synced 2026-04-19T09:32:45.523Z
+// @synced 2026-04-19T09:49:20.688Z
 
     @GetMapping("/slots")
     public List<Map<String, Object>> listSlotAssignments(@RequestParam List<String> setLocations) {

@@ -742,6 +742,50 @@ const manifest = [
     language: 'svelte',
     note: 'Props + tabData $derived (shape 분기) + cycleAccessor / data/stat 필드 선별',
   },
+
+  // ── iotest syscall 엔진 (L2 iotest · 세 번째 엔진 — side-effect 포함) ──
+  {
+    id: 'IOTestPreset-entity',
+    source: 'src/main/java/com/samsung/move/agent/entity/IOTestPreset.java',
+    lines: [1, 38],
+    language: 'java',
+    note: 'portal_iotest_presets — name/description/category/configJson(MEDIUMTEXT) 단일 컬럼 DSL 저장',
+  },
+  {
+    id: 'iotest-types',
+    source: 'frontend/src/routes/agent/iotest/types.ts',
+    lines: [1, 79],
+    language: 'ts',
+    note: 'IOTestConfig/Thread/Command 타입 · 재귀 commands (loop/if 중첩) · ProgressEvent · ThreadProgress',
+  },
+  {
+    id: 'iotest-opdefs-head',
+    source: 'frontend/src/routes/agent/iotest/opDefs.ts',
+    lines: [1, 75],
+    language: 'ts',
+    note: 'OpDef 인터페이스 + 20+ op 등록 — open/close/read/write 필드 스펙 (fd · offset 템플릿 · pattern)',
+  },
+  {
+    id: 'iotest-presets-sample',
+    source: 'frontend/src/routes/agent/iotest/presets.ts',
+    lines: [1, 68],
+    language: 'ts',
+    note: 'IOTEST_PRESETS 배열 + 3 예시 (Offset Write · Offset R/W · Misaligned R/W) — {{i}} 템플릿 사용',
+  },
+  {
+    id: 'IOTestPresetController',
+    source: 'src/main/java/com/samsung/move/agent/controller/AgentController.java',
+    lines: [1291, 1333],
+    language: 'java',
+    note: '/agent/iotest-presets CRUD + configJson Map/String 자동 변환 빌더',
+  },
+  {
+    id: 'RunBenchmark-proto',
+    source: 'src/main/proto/device_agent.proto',
+    lines: [96, 164],
+    language: 'text',
+    note: 'BenchmarkTool enum(IOTEST=4) + RunBenchmarkRequest(params map) + JobProgress(stream용)',
+  },
 ];
 
 async function extractLines(text, lines) {

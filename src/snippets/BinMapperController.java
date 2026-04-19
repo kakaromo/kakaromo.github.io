@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/binmapper/controller/BinMapperController.java
 // @lines 1-54
 // @note /api/binmapper/parse (MultipartFile + 6가지 struct 소스) + parse-struct + parse-header
-// @synced 2026-04-19T09:32:45.541Z
+// @synced 2026-04-19T09:49:20.705Z
 
 package com.samsung.move.binmapper.controller;
 

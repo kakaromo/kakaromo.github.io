@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/logbrowser/service/SshLogBrowserService.java
 // @lines 59-97
 // @note SSH listFiles — ChannelSftp.ls + 폴더 먼저 정렬
-// @synced 2026-04-19T09:32:45.524Z
+// @synced 2026-04-19T09:49:20.689Z
 
     @Override
     public List<FileEntry> listFiles(String tentacleName, String path) {

@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/minio/controller/MinioController.java
 // @lines 28-80
 // @note GET /buckets — Admin은 visibility 토글 전체, User는 visible 만
-// @synced 2026-04-19T09:32:45.531Z
+// @synced 2026-04-19T09:49:20.696Z
 
 @Slf4j
 @RestController

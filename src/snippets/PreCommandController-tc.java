@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/head/precmd/controller/PreCommandController.java
 // @lines 130-194
 // @note TC CRUD — assign(슬롯 자동 해제) / unassign — position 기반
-// @synced 2026-04-19T09:32:45.523Z
+// @synced 2026-04-19T09:49:20.688Z
 
     // ── TC별 사전 명령어 등록 (setLocation + position 기반) ──
 

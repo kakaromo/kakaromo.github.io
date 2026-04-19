@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/binmapper/entity/PredefinedStruct.java
 // @lines 1-48
 // @note predefined_structs — name/category/structText(TEXT) 저장, 재사용 가능한 struct 사전
-// @synced 2026-04-19T09:32:45.537Z
+// @synced 2026-04-19T09:49:20.703Z
 
 package com.samsung.move.binmapper.entity;
 

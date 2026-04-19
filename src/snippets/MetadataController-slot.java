@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/metadata/controller/MetadataController.java
 // @lines 18-91
 // @note REST API — types / for-tr / slot 상태 / slot 데이터
-// @synced 2026-04-19T09:32:45.519Z
+// @synced 2026-04-19T09:49:20.683Z
 
 @RestController
 @RequestMapping("/api/metadata")

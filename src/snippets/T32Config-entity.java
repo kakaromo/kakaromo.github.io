@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/t32/entity/T32Config.java
 // @lines 1-88
 // @note portal_t32_configs — 서버 그룹·JTAG/T32PC·명령 템플릿·경로 매핑
-// @synced 2026-04-19T09:32:45.519Z
+// @synced 2026-04-19T09:49:20.684Z
 
 package com.samsung.move.t32.entity;
 

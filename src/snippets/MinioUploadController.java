@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/minio/controller/MinioUploadController.java
 // @lines 1-53
 // @note POST /upload — MultipartFile + 2GB 압축 강제 검증 + prefix 경로 조립
-// @synced 2026-04-19T09:32:45.531Z
+// @synced 2026-04-19T09:49:20.696Z
 
 package com.samsung.move.minio.controller;
 

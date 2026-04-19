@@ -1,7 +1,7 @@
 // @source frontend/src/lib/components/PerfPreview.svelte
 // @lines 1-80
 // @note Props + tabData $derived (shape 분기) + cycleAccessor / data/stat 필드 선별
-// @synced 2026-04-19T09:32:45.545Z
+// @synced 2026-04-19T09:49:20.708Z
 
 <script lang="ts">
 	import { untrack } from 'svelte';
