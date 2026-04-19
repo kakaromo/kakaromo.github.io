@@ -1,0 +1,205 @@
+---
+title: 2. ADFS 콜백 + HttpSession 생성
+description: id_token 파싱 · claims 추출 · PortalUser 자동 등록 · 세션 저장 · SPA redirect
+sidebar:
+  order: 2
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import SequenceTimeline from '../../../../components/learn/SequenceTimeline.svelte';
+import userRaw from '../../../../snippets/PortalUser-entity.java?raw';
+import cbRaw from '../../../../snippets/AuthController-adfs-callback.java?raw';
+
+## 30초 요약
+
+ADFS가 form_post로 id_token을 보내면 `POST /api/auth/adfs/callback`이 받아:
+
+1. 에러 체크 → 에러 있으면 `/?adfs_error=...`로 redirect
+2. **JWT payload 파싱** (서명 검증 생략)
+3. claims에서 `userid · loginid · username · mail` 추출
+4. `PortalUser` 조회 또는 자동 생성
+5. 신규 사용자면 **17 권한 전체 부여**
+6. `HttpSession`에 PortalUser 저장 + 120분 timeout 적용
+7. **HTML + JS replace**로 SPA로 이동
+
+redirect가 아니라 **HTML 응답**인 이유: 세션 쿠키가 확실히 설정되도록.
+
+## 전체 시퀀스
+
+<SequenceTimeline
+  client:visible
+  height={360}
+  autoplay={true}
+  caption="사용자 → ADFS → Spring 세션 생성까지"
+  altText="사용자가 /adfs/login으로 시작해 ADFS 로그인 페이지에 도달하고, AD 인증 후 ADFS가 form_post로 id_token을 /callback에 POST합니다. Spring이 JWT payload를 파싱해 claims를 추출하고 PortalUser를 조회 또는 생성합니다. 신규면 17 권한을 전체 부여하고 HttpSession에 PortalUser를 저장 후 SPA 경로로 HTML + JS replace로 이동시킵니다."
+  lanes={[
+    { id: 'user',  label: 'Browser',    layer: 'fe',    sublabel: '사용자' },
+    { id: 'sp',    label: 'Spring',     layer: 'be',    sublabel: 'AuthController' },
+    { id: 'adfs',  label: 'ADFS',       layer: 'tx',    sublabel: 'SSO' },
+    { id: 'db',    label: 'DB',         layer: 'state', sublabel: 'portal_users' },
+  ]}
+  messages={[
+    { from: 'user', to: 'sp',   label: 'GET /adfs/login',       t: 0,   kind: 'sync' },
+    { from: 'sp',   to: 'user', label: '302 authorize URL',     t: 5,   kind: 'sync' },
+    { from: 'user', to: 'adfs', label: 'GET authorize',         t: 10,  kind: 'sync' },
+    { from: 'adfs', to: 'user', label: '200 (로그인 페이지)',    t: 15,  kind: 'sync' },
+    { from: 'user', to: 'adfs', label: 'POST credentials',      t: 40,  kind: 'sync' },
+    { from: 'adfs', to: 'user', label: 'HTML form_post',        t: 60,  kind: 'sync' },
+    { from: 'user', to: 'sp',   label: 'POST /callback id_token', t: 65, kind: 'sync' },
+    { from: 'sp',   to: 'sp',   label: 'parseJwtPayload',       t: 70,  kind: 'sync' },
+    { from: 'sp',   to: 'db',   label: 'createOrUpdateFromAdfs', t: 75, kind: 'sync' },
+    { from: 'sp',   to: 'db',   label: 'grantAllPermissions',   t: 80,  kind: 'sync', note: '신규만' },
+    { from: 'sp',   to: 'user', label: '200 HTML replace → SPA', t: 90, kind: 'sync' },
+  ]}
+/>
+
+## PortalUser — 세션에 저장될 객체
+
+<CodeTour
+  client:visible
+  language="java"
+  source="PortalUser.java"
+  height={560}
+  code={userRaw}
+  steps={[
+    {
+      id: 'entity',
+      title: '@Entity portal_users',
+      lines: [11, 17],
+      body: '<p>MOVE 표준 Lombok 조합. AD와 무관한 로컬 사용자도 지원하도록 <code>password</code> 필드가 nullable.</p>',
+    },
+    {
+      id: 'username',
+      title: 'username — UK 로그인 ID',
+      lines: [22, 24],
+      body: '<p>사용자의 loginid (samsung AD 계정). <strong>UK + not null</strong>. ADFS가 변경을 요청하면 이 값이 업데이트될 수 있음 (메소드 이름도 username setter).</p>',
+    },
+    {
+      id: 'adfs-id',
+      title: 'adfsUserId — 불변 고유 식별자',
+      lines: [26, 28],
+      body: '<p>ADFS의 "userid" claim. <strong>계정 이름이 바뀌어도 변하지 않는 고유 값</strong>. 매번 <code>findByAdfsUserId</code>로 조회해 동일 사용자 구분.</p>',
+    },
+    {
+      id: 'password',
+      title: 'password — nullable (로컬 로그인만)',
+      lines: [30, 31],
+      body: '<p>ADFS 사용자는 null. 로컬 로그인 필요한 경우(예: Developer 계정)만 BCrypt 해시 저장. MOVE 프로덕션에서는 대부분 null.</p>',
+    },
+    {
+      id: 'display-email',
+      title: 'displayName + email',
+      lines: [33, 37],
+      body: '<p>UI에 표시될 이름 + 알림·이메일용. ADFS claim에서 추출. <strong>기본값 없음</strong> — 없으면 null 허용.</p>',
+    },
+    {
+      id: 'role',
+      title: 'role — USER/ADMIN',
+      lines: [39, 41],
+      body: '<p>기본 USER. Admin UI에서 수동 승격. <strong>ADMIN은 모든 인터셉터 통과</strong> (단계 4). 두 값만 사용 — 세분화 계층 없음.</p>',
+    },
+  ]}
+/>
+
+## 콜백 함수 — id_token 처리
+
+<CodeTour
+  client:visible
+  language="java"
+  source="AuthController.adfsCallback"
+  height={700}
+  code={cbRaw}
+  steps={[
+    {
+      id: 'mapping',
+      title: 'POST /adfs/callback — form params',
+      lines: [4, 11],
+      body: '<p>ADFS가 form_post로 보내는 필드 4개: <code>id_token</code>, <code>code</code>, <code>error</code>, <code>error_description</code>. 모두 optional — ADFS 프로토콜 특성.</p>',
+    },
+    {
+      id: 'error',
+      title: '에러 path — redirect to /',
+      lines: [13, 18],
+      body: '<p>ADFS가 에러 응답하면 사용자에게 <strong>메시지를 쿼리로 전달</strong>하며 / 로 돌려보냄. SPA가 쿼리를 읽어 토스트 표시.</p>',
+    },
+    {
+      id: 'missing-token',
+      title: 'id_token 없으면 에러',
+      lines: [20, 23],
+      body: '<p>response_type=id_token이 지정되어 있으므로 정상 응답에는 반드시 id_token이 있어야 함. 없으면 <code>no_id_token</code>.</p>',
+    },
+    {
+      id: 'parse-jwt',
+      title: 'JWT payload 파싱 (서명 검증 생략)',
+      lines: [25, 30],
+      body: '<p><code>parseJwtPayload</code>는 <strong>base64 디코딩만</strong>. 서명 검증 생략은 내부망 ADFS 신뢰 가정. 공용 ADFS에 연결한다면 JWKS로 서명 검증 필수.</p>',
+    },
+    {
+      id: 'extract-claims',
+      title: 'claims 추출 — 3 단계 fallback',
+      lines: [36, 50],
+      body: '<p><strong>userid → sub</strong>, <strong>loginid → upn → adfsUserId</strong>, <strong>username → commonname → loginId</strong>, <strong>mail → email</strong>. ADFS 설정마다 claim 이름이 달라 여러 대안 시도.</p>',
+    },
+    {
+      id: 'create-update',
+      title: 'PortalUser 자동 생성/갱신',
+      lines: [55, 57],
+      body: '<p><code>createOrUpdateFromAdfs(adfsUserId, loginId, displayName, email)</code> — 있으면 갱신, 없으면 생성. <strong>첫 ADFS 로그인 시 DB에 자동 등록</strong>. 관리자가 사전 생성 불필요.</p>',
+    },
+    {
+      id: 'grant-all',
+      title: '신규 사용자 → 17 권한 전체 부여',
+      lines: [58, 60],
+      body: '<p>권한이 하나도 없으면 <code>grantAllPermissions</code>. <strong>첫 로그인은 다 열어줌</strong>. 이후 Admin이 민감 권한 회수. 보수적 반대 패턴(기본 닫힘)과 다름 — 내부 신뢰 기반.</p>',
+    },
+    {
+      id: 'session',
+      title: 'HttpSession 저장 + 타임아웃',
+      lines: [62, 63],
+      body: '<p><code>session.setAttribute("portalUser", portalUser)</code> → 이후 모든 요청이 <code>session.getAttribute</code>로 조회. <code>applySessionTimeout</code>이 120분 기본값을 적용.</p>',
+    },
+    {
+      id: 'html-replace',
+      title: 'HTML + JS replace — SPA로 이동',
+      lines: [65, 72],
+      body: '<p>302 redirect 대신 <strong>200 HTML 응답에 <code>window.location.replace</code></strong>. 이유: 일부 브라우저에서 302 연쇄 중 쿠키 손실 — HTML 반환이 안전. baseUrl은 프로파일별 (운영/개발 도메인).</p>',
+    },
+  ]}
+/>
+
+## HttpSession vs JWT — 왜 세션을 쓰는가
+
+MOVE는 **세션 쿠키** 방식. JWT Access Token을 헤더로 넣는 방식도 가능:
+
+| 축 | 세션 쿠키 | JWT Bearer |
+|---|---|---|
+| 상태 | 서버에 저장 | 클라이언트가 들고 있음 |
+| 취소 | **세션 파기로 즉시 로그아웃** | TTL 만료까지 유효 |
+| 확장 | Redis 공유 필요 | stateless, 확장 쉬움 |
+| CSRF | 취약 (쿠키 자동 첨부) | 안전 (헤더 조작 불가) |
+| 모바일 / 서드파티 | 쿠키 관리 필요 | 헤더 주입 쉬움 |
+
+MOVE는 **단일 포털 + 내부망** 전제라 세션이 맞음:
+
+- 확장성 요구 없음 (현재 in-memory로 충분)
+- **즉시 로그아웃**이 중요 (민감 계정 회수)
+- 브라우저 단일 사용처
+
+## 120분 타임아웃 + 카운트다운
+
+```java
+private void applySessionTimeout(HttpSession session) {
+    int minutes = sessionConfigService.getTimeoutMinutes(); // 기본 120
+    session.setMaxInactiveInterval(minutes * 60);
+}
+```
+
+프론트는 `/api/auth/session-info`를 호출해 남은 시간을 받고 **1초 타이머**로 카운트다운. 5분 남으면 연장 버튼 표시. **백엔드의 진실 vs 프론트의 동기화**를 주기적 재조회 없이 유지하는 단순한 패턴.
+
+## 직접 해보기
+
+- [ ] ADFS 콜백 로그에서 `id_token claims: {userid=..., loginid=..., mail=...}` 확인
+- [ ] 첫 로그인 직후 `SELECT * FROM portal_users WHERE username=?` → 레코드 + createdAt 확인
+- [ ] `SELECT COUNT(*) FROM user_permissions WHERE user_id=?` → 17 확인
+
+다음: [3. 17 권한 정의](/learn/l2-auth/03-permissions/) →

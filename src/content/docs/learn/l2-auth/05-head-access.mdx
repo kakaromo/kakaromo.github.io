@@ -1,0 +1,190 @@
+---
+title: 5. Head 접근 제한 + 권한 요청 플로우
+description: UserHeadAccess 테이블로 슬롯 소스 필터링 · PermissionRequest로 자기 신청 승인
+sidebar:
+  order: 5
+---
+
+import ConceptPopover from '../../../../components/learn/ConceptPopover.svelte';
+
+## 30초 요약
+
+`UserPermission`(단계 3·4)는 **기능 권한**을, `UserHeadAccess`는 **데이터 권한**을 담당합니다.
+
+- **UserHeadAccess** — (user_id, head_connection_id) 매핑. 이 행이 **없으면 해당 Head의 슬롯·SSE 데이터가 필터링**됨.
+- **PermissionRequest** — 사용자가 "저에게 X를 주세요"라고 요청하면 Admin이 검토 후 승인/거부. 승인 시 권한·Head 접근을 일괄 부여.
+
+Slots L2의 `HeadSseController.filterByUserHeadAccess`가 이 테이블을 조회해 **응답 슬롯 배열을 잘라내는** 지점이 있음(이 L2와 슬롯 L2의 접점).
+
+## UserHeadAccess — 데이터 필터링
+
+```java
+@Entity
+@Table(name = "portal_user_head_access",
+       uniqueConstraints = @UniqueConstraint(columnNames = {"user_id", "head_connection_id"}))
+public class UserHeadAccess {
+    @Id Long id;
+    Long userId;
+    Long headConnectionId;
+    LocalDateTime createdAt;
+}
+```
+
+2 필드 + UK. 존재 자체가 접근 허용을 의미.
+
+**사용 예** — `HeadSseController` 안에서:
+
+```java
+// 슬롯 L2 06-sse-push.mdx 참고
+private void filterByUserHeadAccess(HttpSession session, List<Map<String, Object>> statuses) {
+    PortalUser user = (PortalUser) session.getAttribute("portalUser");
+    if (user == null) return;
+    List<UserHeadAccess> accessList = userHeadAccessRepository.findByUserId(user.getId());
+    if (accessList.isEmpty()) return;      // 매핑 없으면 전체 허용 (fallback)
+    // 허용된 head connection ID → name 변환
+    Set<Long> allowedIds = new HashSet<>();
+    for (UserHeadAccess access : accessList) allowedIds.add(access.getHeadConnectionId());
+    Set<String> allowedNames = new HashSet<>();
+    for (var conn : connectionService.findAll()) {
+        if (allowedIds.contains(conn.getId())) allowedNames.add(conn.getName());
+    }
+    statuses.removeIf(s -> !allowedNames.contains(s.get("name")));
+}
+```
+
+**핵심 설계**: `accessList.isEmpty() → return` (매핑 없으면 **전체 허용**). 기본값이 "모두 보기"이고, 제한하려면 **명시적으로 행을 추가**. 신입이 가입 직후 아무것도 못 보는 UX를 피한 선택.
+
+## 왜 기능 권한 + 데이터 권한을 분리하는가
+
+- **기능 권한** — "이 API를 호출할 수 있는가" (엔드포인트 단위)
+- **데이터 권한** — "이 데이터를 볼 수 있는가" (리소스 단위)
+
+"슬롯 메뉴에 들어갈 수는 있지만 HeadX의 슬롯은 숨기자"는 요구는 **둘 다 필요**. 하나로 합치면:
+
+- 권한 키가 N×M으로 폭발 (`menu:slots:HeadA`, `menu:slots:HeadB`, …)
+- Head 추가 시 권한 키 추가 필요 → DB + 배포
+
+두 테이블로 분리해 **기능 권한은 고정, 데이터 권한은 확장**.
+
+## PermissionRequest — 자기 신청 승인 플로우
+
+```java
+@Entity
+@Table(name = "portal_permission_requests")
+public class PermissionRequest {
+    @Id Long id;
+    Long userId;                                // 요청자
+    String reason;                               // 자유 입력 ("compatibility 테스트 필요")
+    String status;                               // PENDING / APPROVED / REJECTED
+    Long reviewedBy;                             // Admin user id
+    String reviewComment;                        // Admin 메모
+    LocalDateTime createdAt;
+    LocalDateTime reviewedAt;
+}
+```
+
+**플로우**:
+
+1. 사용자가 메뉴를 보니 기능이 막혀 있음 → "접근 요청" 버튼
+2. `POST /api/auth/request-access` with `{ reason }` → PermissionRequest 생성(`PENDING`)
+3. Admin이 `/api/admin/permission-requests`에서 검토
+4. 승인 시 — 권한 · Head 접근을 일괄 부여 + status `APPROVED`
+5. 사용자가 다음 로그인 또는 세션 연장 시 반영
+
+**자기 서비스 + 승인 워크플로우**. 관리자가 매번 DB 수정할 필요 없이, 요청이 들어오면 클릭 한 번으로 처리.
+
+## 프론트 — 두 개의 세션 store
+
+```ts
+// lib/stores/auth.svelte.ts
+export const authStore = (() => {
+  let user = $state<PortalUser | null>(null);
+  let permissions = $state<Record<string, boolean>>({});
+  let authenticated = $state(false);
+
+  async function fetchMe() {
+    const res = await fetch('/api/auth/me');
+    const data = await res.json();
+    user = data.user;
+    permissions = data.permissions ?? {};
+    authenticated = !!data.authenticated;
+  }
+
+  function hasPermission(key: string) { return permissions[key] === true; }
+  function hasMenu(name: string) { return hasPermission(`menu:${name}`); }
+  function hasAction(key: string) { return hasPermission(`action:${key}`); }
+
+  return { get user() { return user; }, hasPermission, hasMenu, hasAction, fetchMe };
+})();
+```
+
+```ts
+// lib/stores/session.svelte.ts
+export const sessionStore = (() => {
+  let expiresAt = $state(0);
+  let showWarning = $state(false);
+
+  async function refresh() {
+    const info = await fetch('/api/auth/session-info').then(r => r.json());
+    expiresAt = Date.now() + info.remainingSeconds * 1000;
+  }
+
+  $effect(() => {
+    const id = setInterval(() => {
+      const remaining = expiresAt - Date.now();
+      showWarning = remaining < 5 * 60 * 1000 && remaining > 0;
+      if (remaining <= 0) location.href = '/api/auth/adfs/logout-url';
+    }, 1000);
+    return () => clearInterval(id);
+  });
+
+  return { get expiresAt() { return expiresAt; }, get showWarning() { return showWarning; }, refresh };
+})();
+```
+
+- **authStore** — "누구이고 무엇을 할 수 있는가"
+- **sessionStore** — "얼마나 더 앉아 있을 수 있는가"
+
+두 관심사 분리. 메뉴 필터·버튼 disable에는 authStore, 헤더 카운트다운에는 sessionStore.
+
+## <ConceptPopover client:visible term="$effect" concept="svelte/effect"><p>반응형 의존성이 바뀔 때 실행되고 cleanup으로 이전 실행을 정리합니다.</p></ConceptPopover>의 마지막 대표 사용처
+
+세션 카운트다운이 이 튜토리얼 전체에서 **`$effect`의 가장 단순한 사례**:
+
+```ts
+$effect(() => {
+  const id = setInterval(() => { /* tick */ }, 1000);
+  return () => clearInterval(id);
+});
+```
+
+의존성이 없고 cleanup이 한 줄. Metadata 폴링 L2와 같은 패턴.
+
+## 11 L2 관통 — 공통 크로스-컷
+
+| L2 | 이 Auth L2와의 접점 |
+|---|---|
+| 슬롯 | HeadSseController가 UserHeadAccess로 source 필터링 |
+| Agent 벤치마크 | `action:agent:benchmark` · `scenario` · `trace` |
+| 원격 | `menu:remote` · `action:remote:connect` |
+| Metadata | (Slots 하위 메뉴) |
+| T32 Dump | Admin 영역 |
+| Pre-Command | `action:slots:pre_command` |
+| Log Browser | (SSH 자격증명은 별도) |
+| Excel Export | `action:performance:excel_export` |
+| Bitbucket | Admin 영역 |
+| MinIO | `menu:storage` · `action:storage:run` + BucketVisibility |
+
+**모든 L2가 최소 한 권한**으로 이 모듈에 연결. Auth L2의 ALL_PERMISSIONS 17개는 **앞 L2 전체의 권한 색인**.
+
+## 직접 해보기
+
+- [ ] Admin UI에서 사용자에게 Head 하나만 접근 허용 → 슬롯 페이지에 다른 Head 사라지는지
+- [ ] 일반 사용자로 권한 없는 기능에 들어가 → "접근 요청" 버튼 + Admin 승인 플로우 검증
+- [ ] PermissionRequest 테이블에서 PENDING → APPROVED 전이 시 승인 시점 저장되는지
+
+---
+
+**L2 인증·권한 튜토리얼 완료**. 11 L2 모두 읽은 것을 축하합니다.
+
+- [L2 10종 비교](/learn/l2-compare/) · [슬롯 L2](/learn/l2-slots/) (UserHeadAccess 소비 지점) · 기타 L2

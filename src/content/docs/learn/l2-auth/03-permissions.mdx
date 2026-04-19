@@ -1,0 +1,118 @@
+---
+title: 3. 17 권한 정의 — 메뉴 8 + 액션 9
+description: "LinkedHashMap 상수 하나에 전체 권한 키 정의 · 사용자별 granted boolean"
+sidebar:
+  order: 3
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import permsRaw from '../../../../snippets/UserPermissionService-constants.java?raw';
+
+## 30초 요약
+
+`UserPermissionService.ALL_PERMISSIONS`는 **정적 LinkedHashMap**:
+
+- **메뉴 권한 8개**: `menu:dashboard` · `menu:compatibility` · `menu:performance` · `menu:slots` · `menu:remote` · `menu:binMapper` · `menu:storage` · `menu:agent`
+- **액션 권한 9개**: `action:performance:excel_export` · `action:performance:compare` · `action:remote:connect` · `action:slots:initslot` · `action:slots:pre_command` · `action:agent:benchmark` · `action:agent:scenario` · `action:agent:trace` · `action:storage:run`
+
+**권한 키는 코드 상수** — DB에 등록은 사용자가 해당 권한을 가졌는지(`user_permissions` 테이블) 여부만. 17개는 앞 L2들에 1:1 대응됨.
+
+## 코드 투어
+
+<CodeTour
+  client:visible
+  language="java"
+  source="UserPermissionService (상수 + 조회)"
+  height={620}
+  code={permsRaw}
+  steps={[
+    {
+      id: 'service',
+      title: '@Service — 권한 조회/변경 허브',
+      lines: [13, 17],
+      body: '<p>UserPermission repository 하나만 의존. <strong>전체 권한 로직의 중심</strong> — Controller/Interceptor/Admin UI 모두 이 서비스를 거침.</p>',
+    },
+    {
+      id: 'all-perms-decl',
+      title: 'ALL_PERMISSIONS — LinkedHashMap',
+      lines: [19, 22],
+      body: '<p><code>LinkedHashMap</code>이라 <strong>삽입 순서가 UI 표시 순서</strong>. 사용자 권한 관리 화면에서 이 순서대로 나옴. 메뉴 권한이 위, 액션 권한이 아래에 배치.</p>',
+    },
+    {
+      id: 'menu-perms',
+      title: '메뉴 권한 8개 — static block',
+      lines: [24, 33],
+      body: '<p>대시보드 · Compatibility · Performance · Slots · Remote · BinMapper · Storage · Agent 각 메뉴 노출 여부. <strong>Slots와 Performance 같은 주력 메뉴도 체크 대상</strong>. 조직 구분 없이 보이는 기능 단위로 분리.</p>',
+    },
+    {
+      id: 'action-perms',
+      title: '액션 권한 9개 — 세부 기능',
+      lines: [35, 45],
+      body: '<p>메뉴 노출 + 그 안의 민감 액션. <code>excel_export</code>(결과 유출)·<code>remote:connect</code>(장비 조작)·<code>slots:initslot</code>(슬롯 초기화) 등. <strong>"위험 또는 큰 영향을 주는 동작"만 별도 권한</strong>.</p>',
+    },
+    {
+      id: 'get-map',
+      title: 'getPermissionMap — 기본값 false 병합',
+      lines: [47, 55],
+      body: '<p>사용자의 <code>UserPermission</code> 행을 조회해 Map으로 만들되, <strong>정의된 전체 키에 기본값 false</strong>를 먼저 채움. DB에 없는 권한은 자동으로 "없음"이 됨 — <strong>새 권한 추가 시 기존 사용자는 자동 비허용</strong>.</p>',
+    },
+  ]}
+/>
+
+## 왜 상수로 정의하는가 — "권한 카탈로그"
+
+권한 키를 DB 테이블로 관리할 수도 있습니다:
+
+```sql
+-- 대안 A
+CREATE TABLE permission_definitions (
+  key VARCHAR PRIMARY KEY,
+  description VARCHAR
+);
+```
+
+MOVE는 이 대안 대신 **static 상수**를 택함:
+
+- **권한 추가에 배포 필요** — 의도적. 권한 정의는 코드 관심사이지 운영 관심사 아님
+- **IDE 자동 완성** — 컨트롤러에서 `"action:agent:benchmark"` 타이핑 시 검색 가능
+- **테이블 하나 줄임** — `user_permissions`만 있으면 됨
+- **오타 방지** — IDE가 상수 참조 검증
+
+**동적 권한 필요 없음**이 전제. 그룹/역할 기반(RBAC)이 아닌 **flat 17 권한 + 사용자별 on/off**라 단순.
+
+## 17 권한이 앞 10 L2에 어떻게 매핑되는가
+
+| L2 | 메뉴 권한 | 액션 권한 |
+|---|---|---|
+| 슬롯 | `menu:slots` | `action:slots:initslot`, `action:slots:pre_command` |
+| 벤치마크 (Agent) | `menu:agent` | `action:agent:benchmark`, `action:agent:scenario`, `action:agent:trace` |
+| 원격 | `menu:remote` | `action:remote:connect` |
+| Metadata | (Slots 내부) | — |
+| T32 Dump | (Debug, 별도 권한 없음) | — |
+| Pre-Command | (Slots 내부) | `action:slots:pre_command` |
+| Log Browser | (라우트 없음) | — |
+| Excel Export | `menu:performance` | `action:performance:excel_export` |
+| Bitbucket | (Admin 영역) | — |
+| MinIO | `menu:storage` | `action:storage:run` |
+
+**"각 L2의 관문 최소 1개"** 커버. 모든 동작이 권한으로 막혀 있지는 않음 — **무거운 영향만 권한**이라는 기준.
+
+## 권한 분리의 세 단계
+
+```
+1. 메뉴 권한이 없으면 사이드바에 메뉴 자체가 없음 (프론트 필터)
+   ↓
+2. URL로 직접 접근해도 백엔드 인터셉터가 403
+   ↓
+3. 페이지 안의 민감 버튼은 액션 권한으로 추가 차단
+```
+
+**프론트 필터 + 백엔드 인터셉터 + 액션 세분화**의 3단 방어. 프론트만 믿으면 URL 조작으로 뚫림, 백엔드만 믿으면 UI가 무질서 — 둘 다 필요.
+
+## 직접 해보기
+
+- [ ] `SELECT * FROM user_permissions WHERE user_id=?` → 한 사용자의 권한 맵 확인 (17개 row 또는 일부)
+- [ ] ALL_PERMISSIONS에 새 키 추가하고 재시작 → 기존 사용자에게 **자동으로 false** 부여되는지
+- [ ] Admin UI에서 권한 하나를 회수 → 해당 기능 접근 시 403 내려오는지
+
+다음: [4. URL 인터셉터 매칭](/learn/l2-auth/04-interceptor/) →

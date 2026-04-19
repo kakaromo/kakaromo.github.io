@@ -1,0 +1,156 @@
+---
+title: 1. ADFS Hybrid Flow 시작
+description: "/adfs/login → ADFS authorize URL로 redirect · nonce 세션 저장"
+sidebar:
+  order: 1
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import propsRaw from '../../../../snippets/AdfsProperties.java?raw';
+import loginRaw from '../../../../snippets/AuthController-adfs-login.java?raw';
+
+## 30초 요약
+
+사용자가 **로그인 버튼**을 누르면 Spring이 `GET /api/auth/adfs/login`으로 받아:
+
+1. `portal.adfs.enabled=false`면 에러 쿼리로 /에 되돌려보냄
+2. **UUID nonce 생성** → HttpSession에 저장 (CSRF 방어)
+3. `authorize_url + client_id + redirect_uri + nonce + scope` 조립
+4. `response_mode=form_post` + `response_type=code id_token` — Hybrid Flow 지정
+5. 302 redirect → ADFS 로그인 페이지
+
+Hybrid Flow가 핵심: **code와 id_token을 동시에 받음**. MOVE는 **id_token만 사용**하고 code는 무시(서명 검증 생략).
+
+## AdfsProperties — yaml 바인딩
+
+<CodeTour
+  client:visible
+  language="java"
+  source="AdfsProperties.java"
+  height={320}
+  code={propsRaw}
+  steps={[
+    {
+      id: 'class',
+      title: '@ConfigurationProperties portal.adfs',
+      lines: [6, 12],
+      body: '<p>Spring Boot의 <code>@ConfigurationProperties</code> + <code>@Component</code>로 Bean 등록. yaml의 <code>portal.adfs.*</code>가 필드로 바인딩.</p>',
+    },
+    {
+      id: 'fields',
+      title: '6 필드 — enabled 기본 false',
+      lines: [13, 18],
+      body: '<p><code>enabled</code> 기본값 false — <strong>local 개발에서 실수로 ADFS가 켜지지 않게</strong>. clientId/URL들은 환경별 yaml에서 주입. <code>scope</code> 기본 "openid profile".</p>',
+    },
+  ]}
+/>
+
+예시 yaml (dev):
+
+```yaml title="application-dev.yaml"
+portal:
+  adfs:
+    enabled: true
+    client-id: <ADFS app client id>
+    authorize-url: https://sts.samsungds.net/adfs/oauth2/authorize
+    redirect-url: https://memo-dev.samsungds.net/api/auth/adfs/callback
+    logout-url: https://sts.samsungds.net/adfs/oauth2/logout
+    scope: openid profile
+```
+
+**redirect-url이 HTTPS여야 함** — ADFS는 HTTP redirect 거부. 로컬 개발은 `portal.auth.disabled=true`로 우회.
+
+## /adfs/login — authorize URL 조립
+
+<CodeTour
+  client:visible
+  language="java"
+  source="AuthController.adfsLogin"
+  height={400}
+  code={loginRaw}
+  steps={[
+    {
+      id: 'mapping',
+      title: 'GET /api/auth/adfs/login',
+      lines: [6, 10],
+      body: '<p>세션·응답 객체 받음. void 반환 — redirect를 응답 객체로 직접. ADFS 꺼져 있으면 <code>?adfs_error=disabled</code>로 /에 되돌려보냄.</p>',
+    },
+    {
+      id: 'nonce',
+      title: 'UUID nonce + 세션 저장',
+      lines: [12, 13],
+      body: '<p><code>UUID.randomUUID().toString()</code>을 세션에 저장. <strong>replay attack 방어</strong>. 콜백에서 id_token의 nonce claim과 비교할 수 있도록 (현재 구현은 간단화되어 검증은 생략).</p>',
+    },
+    {
+      id: 'url-build',
+      title: 'authorize URL 조립 — 6 파라미터',
+      lines: [15, 21],
+      body: '<p><code>client_id</code> / <code>redirect_uri</code> / <code>response_mode=form_post</code> / <code>response_type=code id_token</code> / <code>scope</code> / <code>nonce</code>. URL 인코딩은 <code>URLEncoder</code>로 명시. <strong>Hybrid Flow</strong>의 특징은 <code>response_type</code>이 "code id_token"이라는 것.</p>',
+    },
+    {
+      id: 'redirect',
+      title: 'response.sendRedirect',
+      lines: [23, 23],
+      body: '<p>302 Found + Location 헤더. 브라우저가 ADFS 로그인 페이지로 이동. <strong>여기서 Spring은 빠짐</strong> — 다음 접점은 콜백 URL.</p>',
+    },
+  ]}
+/>
+
+## 왜 Hybrid Flow인가
+
+OAuth 2.0에는 여러 flow가 있습니다.
+
+| Flow | response_type | 특징 |
+|---|---|---|
+| Authorization Code | `code` | 2-step, 가장 안전 (기본) |
+| Implicit | `token` | 1-step, deprecated |
+| Hybrid | `code id_token` | **1-step에 id_token 동시 수령**, code는 나중에 |
+
+MOVE가 Hybrid를 고른 이유:
+
+- **id_token만으로 사용자 정보 확보** — code 교환 단계 생략
+- **form_post** 조합으로 id_token이 URL에 노출되지 않음 — POST body로 옴
+- **내부망 ADFS 신뢰** — 서명 검증 생략 가능 (엄격한 환경이면 JWKS로 검증 필요)
+
+**단순화된 Hybrid**: code는 받지만 쓰지 않고 id_token만 사용. 실운영에서 충분.
+
+## form_post의 역할
+
+`response_mode=form_post`를 빼면 ADFS는 redirect URL의 query string으로 id_token을 붙여 보냄:
+
+```
+https://memo-dev.samsungds.net/api/auth/adfs/callback?id_token=...&code=...
+```
+
+**URL에 민감한 토큰이 노출** — 브라우저 히스토리·프록시 로그·Referer 헤더에 남음.
+
+`form_post`를 쓰면 ADFS가 HTML form을 돌려주고 브라우저가 **POST body로 토큰을 전송**:
+
+```
+POST /api/auth/adfs/callback
+Content-Type: application/x-www-form-urlencoded
+
+id_token=...&code=...
+```
+
+**URL에 토큰 없음, body로만**. 이 한 옵션이 보안을 크게 높임.
+
+## nonce는 왜 필요한가
+
+**replay attack** 방어. 공격자가 가로챈 id_token을 다시 보내면:
+
+1. 공격자가 피해자의 id_token 획득 (예: 로그)
+2. 공격자가 직접 /callback에 POST
+3. 서버가 유효한 토큰으로 오인 → 세션 생성
+
+nonce는 **이 세션의 이번 인증**만을 위한 일회용 값. 콜백에서 id_token의 nonce claim과 세션의 nonce가 같은지 검증하면 재사용 불가.
+
+MOVE 현재 구현은 nonce를 세션에 저장하기만 하고 콜백에서 **검증하지는 않음** — 내부망 전제 단순화. 기술 부채.
+
+## 직접 해보기
+
+- [ ] `portal.adfs.enabled=true` + 잘못된 authorizeUrl → 브라우저가 ADFS 페이지 대신 에러 페이지로 갔는지 확인
+- [ ] 세션 쿠키가 떨어진 상태에서 /adfs/login → nonce가 새로 생성되는지
+- [ ] DevTools Network → /adfs/login 응답 302 확인, Location 헤더의 authorize URL 파라미터 검증
+
+다음: [2. 콜백 + 세션 생성](/learn/l2-auth/02-session/) →

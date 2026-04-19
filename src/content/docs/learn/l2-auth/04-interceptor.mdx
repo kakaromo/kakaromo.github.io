@@ -1,0 +1,222 @@
+---
+title: 4. URL 인터셉터 매칭
+description: ActionPermission DB 룰 + AntPathMatcher로 모든 /api 요청을 검사
+sidebar:
+  order: 4
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import DataFlowPath from '../../../../components/learn/DataFlowPath.svelte';
+import icpRaw from '../../../../snippets/ActionPermissionInterceptor.java?raw';
+
+## 30초 요약
+
+**`ActionPermissionInterceptor`가 모든 `/api/**` 요청을 전처리**합니다.
+
+1. `portal.auth.disabled=true` → **바로 통과** (로컬 개발)
+2. URL + HTTP 메서드를 DB의 `ActionPermission` 룰과 **AntPathMatcher**로 매칭
+3. 매칭 없으면 통과 (권한이 걸린 엔드포인트만 체크)
+4. 세션에서 PortalUser 꺼냄 — 없으면 **401 대신 403 "로그인 필요"**
+5. ADMIN이면 통과
+6. `UserPermissionService.hasPermission(userId, key)` 체크 → 실패 시 **403 JSON 응답**
+
+**컨트롤러 수정 없이** URL 단위로 권한을 걸 수 있음이 핵심. Admin UI에서 DB만 수정하면 즉시 반영.
+
+## 요청 처리 흐름
+
+<DataFlowPath
+  client:visible
+  caption="요청 하나가 인터셉터를 거치며 통과·403 판정"
+  altText="요청 URI와 HTTP method가 인터셉터 진입하면 authDisabled 체크로 조기 통과 또는 진행합니다. 다음으로 CopyOnWriteArrayList에 캐시된 ActionPermission 룰들과 AntPathMatcher로 매칭해 첫 match를 찾고, 없으면 통과, 있으면 HttpSession에서 PortalUser를 꺼내 ADMIN이면 통과, 일반 사용자면 UserPermissionService로 해당 키를 보유했는지 체크합니다. 실패하면 403 JSON 응답이 돌아가고 로그가 남습니다."
+  stages={[
+    {
+      id: 's1',
+      label: '요청 진입',
+      layer: 'fe',
+      language: 'text',
+      sample: 'GET /api/agent/benchmark/run\nserverId=42',
+      note: 'preHandle(request)',
+    },
+    {
+      id: 's2',
+      label: 'disabled 체크',
+      layer: 'be',
+      language: 'java',
+      sample: 'if (authDisabled) return true;',
+      note: '로컬 dev 우회',
+    },
+    {
+      id: 's3',
+      label: 'URL 매칭',
+      layer: 'be',
+      language: 'java',
+      sample: 'pathMatcher.match(\n  rule.urlPattern,\n  request.uri)\n && method.eq(rule.method)',
+      note: 'AntPathMatcher',
+    },
+    {
+      id: 's4',
+      label: '사용자 · role 체크',
+      layer: 'state',
+      language: 'java',
+      sample: 'session.getAttribute("portalUser")\n  .role == "ADMIN"  → 통과\n  permission.has(key) → 통과\n  else → 403',
+      note: '3 단계 게이트',
+    },
+    {
+      id: 's5',
+      label: '응답 or 통과',
+      layer: 'fe',
+      language: 'json',
+      sample: 'HTTP 403\n{"error": "권한이 없습니다"}',
+      note: 'return false면 컨트롤러 미도달',
+    },
+  ]}
+  transforms={[
+    { label: 'bypass' },
+    { label: 'match' },
+    { label: 'gate' },
+    { label: 'respond' },
+  ]}
+/>
+
+## 코드 투어
+
+<CodeTour
+  client:visible
+  language="java"
+  source="ActionPermissionInterceptor"
+  height={720}
+  code={icpRaw}
+  steps={[
+    {
+      id: 'component',
+      title: '@Component + HandlerInterceptor',
+      lines: [22, 30],
+      body: '<p>Spring MVC의 인터셉터. <code>CopyOnWriteArrayList</code>에 룰 캐시 — <strong>동시 reload 안전</strong>. <code>AntPathMatcher</code>는 단일 인스턴스 (thread-safe).</p>',
+    },
+    {
+      id: 'kill-switch',
+      title: 'portal.auth.disabled — 인터셉터 kill-switch',
+      lines: [31, 32],
+      body: '<p>@Value로 외부 주입. <strong>true면 preHandle이 곧바로 true</strong> — 모든 요청 통과. 로컬 개발·테스트에 필수.</p>',
+    },
+    {
+      id: 'load-rules',
+      title: '@PostConstruct loadRules — DB → 메모리 캐시',
+      lines: [34, 43],
+      body: '<p>부팅 시 DB에서 <code>enabled=true</code> 룰 전부 로드. <strong>요청마다 DB 조회 안 함</strong> — 룰이 자주 안 바뀌는 특성 활용. reload 실패해도 앱 기동은 계속.</p>',
+    },
+    {
+      id: 'reload',
+      title: 'reloadRules — Admin이 수정 시 호출',
+      lines: [45, 48],
+      body: '<p>Admin UI에서 URL 매핑 변경 후 이 메서드 호출로 캐시 새로고침. <strong>재기동 없이</strong> 반영.</p>',
+    },
+    {
+      id: 'pre-handle',
+      title: 'preHandle — 메인 진입점',
+      lines: [50, 52],
+      body: '<p>Spring MVC가 컨트롤러 직전에 호출. <code>true</code> 반환하면 진행, <code>false</code>면 여기서 응답 종료.</p>',
+    },
+    {
+      id: 'uri-method',
+      title: 'URI + method 추출',
+      lines: [54, 55],
+      body: '<p>요청의 두 핵심 식별자. 메서드는 대소문자 무시(ruleMatch에서 ignoreCase).</p>',
+    },
+    {
+      id: 'match-loop',
+      title: '룰 매칭 — 첫 match로 결정',
+      lines: [57, 66],
+      body: '<p><code>httpMethod="*"</code> 또는 정확 매칭. <code>pathMatcher.match(pattern, uri)</code>는 <strong>Ant 스타일</strong> (<code>/api/agent/**</code>, <code>/**/run</code>). 첫 match에서 break — 룰 우선순위는 DB 순서에 의존.</p>',
+    },
+    {
+      id: 'no-match',
+      title: '매칭 없으면 통과',
+      lines: [68, 68],
+      body: '<p><strong>모든 /api가 권한 필요하지는 않음</strong> — 룰에 없으면 기본 통과. 권한이 걸린 것만 DB에 등록.</p>',
+    },
+    {
+      id: 'session-check',
+      title: '세션 → PortalUser',
+      lines: [70, 79],
+      body: '<p><code>getSession(false)</code>로 <strong>세션 생성 없이</strong> 조회. user null이면 403 "로그인이 필요합니다" — <strong>401 대신 403</strong>은 단순화 (프론트가 두 코드를 분기하지 않게).</p>',
+    },
+    {
+      id: 'admin-bypass',
+      title: 'ADMIN 통과',
+      lines: [81, 82],
+      body: '<p>관리자는 모든 권한 통과. <strong>개별 권한 맵 불필요</strong>. 이 한 줄이 ADMIN의 의미.</p>',
+    },
+    {
+      id: 'permission-check',
+      title: 'hasPermission → 403 또는 통과',
+      lines: [84, 90],
+      body: '<p>마지막 관문. <code>matched.permissionKey</code>가 사용자 권한 맵에 true로 있어야. 실패 시 <strong>로그 + 403 JSON</strong>. 로그에 <code>uri</code>와 <code>permissionKey</code> 둘 다 남겨 추적성 확보.</p>',
+    },
+    {
+      id: 'send-forbidden',
+      title: 'sendForbidden 헬퍼',
+      lines: [95, 100],
+      body: '<p>403 + JSON 포맷 통일. 한국어 메시지로 프론트 UX. 프론트는 fetch에서 <code>res.status === 403</code>으로 일관 처리.</p>',
+    },
+  ]}
+/>
+
+## ActionPermission 엔티티 (간략)
+
+```java
+@Entity
+@Table(name = "portal_action_permissions")
+public class ActionPermission {
+    @Id Long id;
+    String urlPattern;       // "/api/agent/benchmark/**"
+    String httpMethod;       // "POST" or "*"
+    String permissionKey;    // "action:agent:benchmark"
+    boolean enabled;
+}
+```
+
+**3 속성**이 룰 한 개: URL 패턴 + HTTP method + 필요한 권한 키. Admin UI에서 추가·편집·활성화.
+
+예시 룰:
+
+| urlPattern | method | permissionKey |
+|---|---|---|
+| `/api/performance-results/*/excel` | GET | `action:performance:excel_export` |
+| `/api/agent/benchmark/run` | POST | `action:agent:benchmark` |
+| `/api/remote/session/**` | * | `action:remote:connect` |
+| `/api/minio/**` | * | `menu:storage` |
+
+이 테이블 한 줄 추가가 **그 엔드포인트에 권한 게이트 설치**와 같은 효과.
+
+## 왜 컨트롤러 수정이 필요 없는가
+
+이전에 흔한 패턴은 컨트롤러 메서드에 어노테이션:
+
+```java
+@PreAuthorize("hasPermission('action:agent:benchmark')")
+@PostMapping("/run")
+public ... { ... }
+```
+
+Spring Security + SpEL. 장점: 컴파일 시점 권한이 코드에 명시. 단점:
+
+- 권한 추가·제거에 배포 필요
+- 같은 권한을 여러 엔드포인트에 중복 어노테이션
+- Admin UI에서 동적 변경 불가
+
+MOVE는 **런타임 DB 매핑**을 택함:
+
+- Admin이 UI에서 즉시 권한 부착/해제
+- 컨트롤러는 권한을 전혀 모름 — 순수 기능만
+- 인터셉터 하나가 일관된 정책
+
+**trade-off**: 코드에 권한이 명시 안 되어 IDE에서 "이 엔드포인트 권한 뭐야?" 추적이 어려움. Admin UI에 집중된 문서화가 필요.
+
+## 직접 해보기
+
+- [ ] `GET /api/agent/benchmark/status?jobId=xxx`로 호출 → 룰 매칭 되는지 로그 (`Loaded N action permission rules`)
+- [ ] 일반 사용자로 민감 엔드포인트 호출 → 403 응답 + `{"error":"권한이 없습니다"}` 확인
+- [ ] Admin UI에서 룰 추가 → 재기동 없이 `reloadRules` 후 즉시 적용되는지 검증
+
+다음: [5. Head 접근 제한 + 권한 요청](/learn/l2-auth/05-head-access/) →
