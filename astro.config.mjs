@@ -73,7 +73,7 @@ export default defineConfig({
               label: 'L2 — 기능 모듈',
               collapsed: true,
               items: [
-                { label: '🔎 L2 8종 비교', slug: 'learn/l2-compare' },
+                { label: '🔎 L2 9종 비교', slug: 'learn/l2-compare' },
                 {
                   label: '슬롯 모니터링 (Head TCP + SSE)',
                   autogenerate: { directory: 'learn/l2-slots' },
@@ -105,6 +105,10 @@ export default defineConfig({
                 {
                   label: 'Excel Export (Go gRPC Unary)',
                   autogenerate: { directory: 'learn/l2-excel' },
+                },
+                {
+                  label: 'Bitbucket 브랜치 모니터 (REST 폴링)',
+                  autogenerate: { directory: 'learn/l2-bitbucket' },
                 },
               ],
             },
