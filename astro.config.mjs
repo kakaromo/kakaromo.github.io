@@ -73,7 +73,7 @@ export default defineConfig({
               label: 'L2 — 기능 모듈',
               collapsed: true,
               items: [
-                { label: '🔎 L2 14종 비교', slug: 'learn/l2-compare' },
+                { label: '🔎 L2 15종 비교', slug: 'learn/l2-compare' },
                 {
                   label: '슬롯 모니터링 (Head TCP + SSE)',
                   autogenerate: { directory: 'learn/l2-slots' },
@@ -129,6 +129,10 @@ export default defineConfig({
                 {
                   label: '⚙ Perf Generator (JSON → Svelte 코드 생성)',
                   autogenerate: { directory: 'learn/l2-perfgen' },
+                },
+                {
+                  label: '🔬 iotest (syscall DSL · Agent 실행 엔진)',
+                  autogenerate: { directory: 'learn/l2-iotest' },
                 },
               ],
             },
