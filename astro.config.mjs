@@ -73,7 +73,7 @@ export default defineConfig({
               label: 'L2 — 기능 모듈',
               collapsed: true,
               items: [
-                { label: '🔎 L2 12종 비교', slug: 'learn/l2-compare' },
+                { label: '🔎 L2 13종 비교', slug: 'learn/l2-compare' },
                 {
                   label: '슬롯 모니터링 (Head TCP + SSE)',
                   autogenerate: { directory: 'learn/l2-slots' },
@@ -121,6 +121,10 @@ export default defineConfig({
                 {
                   label: '📊 TestDB (성능·호환성 결과 모델)',
                   autogenerate: { directory: 'learn/l2-testdb' },
+                },
+                {
+                  label: '🧬 BinMapper (C struct → ByteBuffer 엔진)',
+                  autogenerate: { directory: 'learn/l2-binmapper' },
                 },
               ],
             },
