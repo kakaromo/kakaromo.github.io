@@ -1,0 +1,111 @@
+---
+title: 2. DB 한 행 (HeadConnection)
+description: portal_head_connections 테이블에 저장되는 Head 연결 정보와 타입
+sidebar:
+  order: 2
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import ConceptPopover from '../../../../components/learn/ConceptPopover.svelte';
+import snippetRaw from '../../../../snippets/HeadConnection-entity.java?raw';
+
+## 30초 요약
+
+`HeadConnection`은 **MOVE가 연결할 Head 서버 한 대**를 표현하는 JPA 엔티티입니다. 테이블 이름은 `portal_head_connections`. 관리자 화면에서 행을 추가하면 단계 3의 TCP 클라이언트가 그 행을 읽고 연결을 시작합니다.
+
+## 한 행의 구성
+
+| 컬럼 | 의미 |
+|---|---|
+| `id` | 자동 증가 PK |
+| `name` | 사람이 읽는 이름 (UK). SSE `source` 파라미터로도 쓰임 |
+| `head_type` | 0=호환성, 1=성능 |
+| `host` | Head 서버의 호스트/IP |
+| `port_suffix` | outbound 포트 2자리 (실제 포트 = 10000 + suffix) |
+| `listen_port_suffix` | inbound 포트 2자리 |
+| `enabled` | 활성 여부 (`false`면 기동 시 스킵) |
+| `test_mode` | 테스트 인스턴스 전용 여부 |
+| `created_at / updated_at` | `@PrePersist` / `@PreUpdate`로 자동 갱신 |
+
+`headType`은 0과 1 두 값이 현재 사용되며, 향후 확장(2, 3…)도 고려된 정수 필드입니다. 클래스 상수 `TYPE_COMPATIBILITY`, `TYPE_PERFORMANCE`로 참조하는 것이 약속입니다.
+
+## 코드 투어
+
+왼쪽 단계 제목을 클릭하거나 스크롤하면 오른쪽 코드가 움직입니다.
+
+<CodeTour
+  client:visible
+  language="java"
+  source="HeadConnection.java"
+  height={520}
+  code={snippetRaw}
+  steps={[
+    {
+      id: 'entity-annotations',
+      title: '@Entity + @Table — JPA 맵핑',
+      lines: [11, 17],
+      body: '<p><code>@Entity</code>와 <code>@Table(name = ...)</code>로 테이블 이름을 고정합니다. Lombok <code>@Data @Builder @NoArgsConstructor @AllArgsConstructor</code>로 게터/세터/빌더/생성자를 자동 생성 — 실제 코드가 선언 중심으로 깔끔해지는 패턴입니다.</p>',
+    },
+    {
+      id: 'head-type-constants',
+      title: '헤드 타입 상수',
+      lines: [19, 22],
+      body: '<p>0/1 같은 매직 넘버 대신 <code>TYPE_COMPATIBILITY</code>, <code>TYPE_PERFORMANCE</code> 상수로 참조합니다. 확장을 고려해 <code>enum</code> 대신 정수 필드로 두되, 의미는 상수로 제공하는 절충.</p>',
+    },
+    {
+      id: 'id-name',
+      title: 'PK + 유일한 이름',
+      lines: [26, 32],
+      body: '<p><code>id</code>는 IDENTITY 자동 증가. <code>name</code>은 UK(unique=true) — 단계 6의 SSE 엔드포인트가 <code>?source=name</code>으로 이 이름을 받습니다. 즉 사람이 정한 문자열이 라우팅 키가 됩니다.</p>',
+    },
+    {
+      id: 'port-columns',
+      title: '포트 suffix만 저장',
+      lines: [34, 46],
+      body: '<p><code>portSuffix</code>(outbound), <code>listenPortSuffix</code>(inbound) 두 컬럼. 실제 포트 번호가 아니라 <strong>2자리 문자열</strong>입니다. 저장 이유는 단계 1에서 본 &quot;10000+suffix&quot; 규칙을 엔티티가 숨기기 위함.</p>',
+    },
+    {
+      id: 'enabled-testmode',
+      title: 'enabled / testMode',
+      lines: [43, 54],
+      body: '<p><code>enabled=false</code>인 행은 단계 3의 ConnectionManager가 <strong>기동 시 스킵</strong>합니다. <code>testMode</code>는 동일 DB에 운영용과 테스트용 Head가 섞여 있을 때 구분해서 보여주기 위한 플래그입니다.</p>',
+    },
+    {
+      id: 'lifecycle-hooks',
+      title: '@PrePersist / @PreUpdate',
+      lines: [57, 66],
+      body: '<p>JPA 라이프사이클 훅. insert 직전/update 직전에 호출되어 <code>createdAt</code>, <code>updatedAt</code>을 자동 설정합니다. 애플리케이션 코드에서 시간을 넘기지 않아도 되는 장점.</p>',
+    },
+    {
+      id: 'port-getters',
+      title: '포트 계산 헬퍼',
+      lines: [68, 74],
+      body: '<p><code>getPort()</code>와 <code>getListenPort()</code>가 &quot;10000 + suffix&quot; 변환을 한 곳에서 담당. 모든 호출자가 이 헬퍼를 쓰므로, 포트 규칙이 바뀌어도 수정 지점은 여기 한 곳입니다.</p>',
+    },
+  ]}
+/>
+
+## <ConceptPopover client:visible term="@Entity" concept="spring/at-entity"><p>JPA 엔티티 선언 어노테이션. 클래스를 DB 테이블에 매핑된 엔티티로 등록합니다. 테이블 이름은 기본이 클래스명(snake_case)이며 <code>@Table(name=...)</code>로 재정의할 수 있습니다.</p></ConceptPopover> 와 함께 쓰는 Lombok
+
+`HeadConnection`은 Lombok의 `@Data @Builder @NoArgsConstructor @AllArgsConstructor` 4개를 함께 씁니다.
+
+- `@Data` — 게터/세터/equals/hashCode/toString 자동
+- `@Builder` — `HeadConnection.builder().name("foo")...build()` 패턴 활성화
+- `@NoArgsConstructor` — JPA 요구사항(기본 생성자 필요)
+- `@AllArgsConstructor` — `@Builder`가 내부적으로 사용
+
+이 네 개 조합은 MOVE 엔티티 전반의 표준입니다. 다른 엔티티를 읽을 때도 같은 패턴이 보일 것입니다.
+
+## 왜 연결 상태·에러는 이 엔티티에 없는가
+
+`HeadConnection`은 **정적 설정**만 담습니다. 현재 연결되어 있는지(`connected`), 마지막 에러(`error`)는 런타임 상태라 **단계 5의 `HeadSlotStateStore`** 가 메모리로 관리합니다. 재시작하면 런타임 상태는 사라지지만 설정은 DB에 남습니다.
+
+이 분리 덕분에 DB 쓰기 빈도가 낮게 유지됩니다. 단계 6의 SSE 페이로드에서 연결 상태가 함께 내려가는 이유도 여기 있습니다 — 설정과 런타임 상태를 한 화면에서 합쳐 보여주기 위함입니다.
+
+## 직접 해보기
+
+- [ ] MySQL에서 `SELECT * FROM portal_head_connections;`로 현재 행 확인
+- [ ] 한 행을 `enabled = false`로 바꿔 저장 후 MOVE 재시작. 해당 Head에는 연결 시도가 없어야 합니다.
+- [ ] 관리자 화면에서 새 Head 행을 추가할 때 `portSuffix`/`listenPortSuffix`에 2자리 문자열("01", "30" 등)을 넣어 보세요.
+
+다음: [3. HeadTcpClient — 듀얼 소켓](/learn/l2-slots/03-tcp-client/) →

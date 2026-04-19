@@ -1,0 +1,53 @@
+---
+title: "@RequiredArgsConstructor"
+description: Lombok — final 필드를 받는 생성자 자동 생성 (생성자 주입)
+sidebar:
+  order: 4
+---
+
+## 이 프로젝트에서의 용례
+
+MOVE의 **모든 `@Component`/`@Service`/`@RestController`** 가 이 패턴을 씁니다. `final` 필드 선언만 해두면 Lombok이 생성자를 만들고, Spring이 그 생성자로 빈을 주입합니다.
+
+## 최소 예시
+
+```java
+@RestController
+@RequiredArgsConstructor
+@RequestMapping("/api/head")
+public class HeadSseController {
+    private final HeadSlotStateStore stateStore;
+    private final HeadConnectionManager connectionManager;
+    private final ObjectMapper objectMapper;
+    // Lombok이 아래 생성자를 자동 생성:
+    // public HeadSseController(HeadSlotStateStore s, HeadConnectionManager c, ObjectMapper o) { ... }
+}
+```
+
+Spring 4.3+부터 **생성자가 하나뿐이면 `@Autowired` 생략 가능**합니다. Lombok 생성자 하나 + 생성자 주입 조합이 현대 Spring의 기본.
+
+## 왜 생성자 주입인가 (필드 주입 대신)
+
+- **불변성** — `final` 필드는 생성 후 바꿀 수 없어 thread-safe
+- **테스트 용이성** — 생성자로 mock 주입이 명시적
+- **순환 의존 탐지** — 필드 주입은 런타임까지 숨지만 생성자 주입은 기동 시 즉시 실패
+- **Null-safety** — 생성자 실행 후에는 반드시 값이 있음
+
+MOVE는 레거시 코드에도 필드 주입(`@Autowired private Foo foo`)이 거의 없습니다. 신규 코드는 항상 생성자 주입으로.
+
+## 함께 쓰는 Lombok
+
+- `@AllArgsConstructor` — 모든 필드 (final 아니어도)
+- `@NoArgsConstructor` — 인자 없는 생성자
+- `@RequiredArgsConstructor` — **final** 또는 `@NonNull` 필드만
+
+엔티티는 `@NoArgsConstructor + @AllArgsConstructor + @Builder`, 빈은 `@RequiredArgsConstructor`가 MOVE 표준.
+
+## 주의할 점
+
+- **Lombok 어노테이션 순서**는 기능에 영향 없지만, 클래스 레벨 어노테이션과 함께 쓸 때 읽기 쉬운 순서를 유지 (`@Component @RequiredArgsConstructor @Slf4j`).
+- `@Lazy` 주입이 필요하면 필드에 `@Lazy`를 붙이거나 생성자 파라미터에 직접.
+
+## 공식 문서
+
+- [Project Lombok — @RequiredArgsConstructor](https://projectlombok.org/features/constructor)

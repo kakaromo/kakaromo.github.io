@@ -1,0 +1,73 @@
+---
+title: "$props"
+description: Svelte 5의 컴포넌트 props rune — 타입 안전한 선언
+sidebar:
+  order: 4
+---
+
+## 이 프로젝트에서의 용례
+
+MOVE의 모든 컴포넌트가 `$props()`로 시작합니다. `ArchitectureDiagram`, `SlotCard`, `DataTable` 등에서 타입 있는 props 선언 패턴.
+
+## 최소 예시
+
+```svelte
+<script lang="ts">
+  interface Props {
+    title: string;
+    count?: number;              // optional
+    onselect?: (id: string) => void;
+  }
+
+  let { title, count = 0, onselect }: Props = $props();
+</script>
+
+<button onclick={() => onselect?.(title)}>{title} ({count})</button>
+```
+
+## children — slot의 현대식 대체
+
+Svelte 5에서는 `<slot />` 대신 `children`을 props로 받습니다.
+
+```svelte
+<script lang="ts">
+  import type { Snippet } from 'svelte';
+  interface Props {
+    children?: Snippet;
+  }
+  let { children }: Props = $props();
+</script>
+
+<div class="box">
+  {@render children?.()}
+</div>
+```
+
+## $bindable — 양방향 바인딩
+
+부모가 `bind:value`로 묶을 수 있는 prop은 `$bindable()`로 선언.
+
+```svelte
+<script lang="ts">
+  let { value = $bindable('') }: { value?: string } = $props();
+</script>
+
+<input bind:value />
+```
+
+부모:
+
+```svelte
+<MyInput bind:value={name} />
+```
+
+## 주의할 점
+
+- **`$props()` 호출은 컴포넌트마다 한 번**. 조건부로 호출할 수 없습니다.
+- **기본값은 destructuring에서**. `let { x = 10 } = $props()` 패턴.
+- **readonly**: props는 기본 읽기 전용. 변경하려면 `$bindable()` 또는 콜백.
+- 타입은 `interface` 분리가 가독성에 좋음. 인라인 타입도 가능하지만 길어집니다.
+
+## 공식 문서
+
+- [Svelte 5 — $props](https://svelte.dev/docs/svelte/$props)

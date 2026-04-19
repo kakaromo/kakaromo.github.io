@@ -1,0 +1,50 @@
+---
+title: "@Component"
+description: Spring 빈 등록의 기본 어노테이션 — 단일 인스턴스 공유의 출발점
+sidebar:
+  order: 1
+---
+
+## 이 프로젝트에서의 용례
+
+`HeadSlotStateStore`, `HeadTcpClient`, `HeadConnectionManager` 등 **프로세스 전체에서 하나만 있어야 하는** 클래스들이 `@Component`로 등록됩니다. Spring이 이 인스턴스를 만들고, 필요로 하는 다른 빈들에게 주입합니다.
+
+MOVE 패키지에서 `@Component` 외에도 목적별로 파생 어노테이션을 씁니다.
+
+- `@Service` — 도메인 서비스 레이어 (예: `HeadConnectionService`)
+- `@RestController` — REST 엔드포인트 (예: `HeadSseController`)
+- `@Repository` — JPA 리포지토리 (예: `HeadConnectionRepository`)
+- `@Configuration` — 빈 정의 클래스
+
+네 가지 모두 **내부적으로 `@Component`** 입니다. 쓰는 곳의 의도를 드러내는 별칭일 뿐 기능적으로는 동일합니다.
+
+## 최소 예시
+
+```java
+@Component
+public class HeadSlotStateStore {
+    private final ConcurrentHashMap<String, HeadSlotData> slots = new ConcurrentHashMap<>();
+
+    public void updateSlots(String source, List<HeadSlotData> dataList) { /* ... */ }
+}
+```
+
+다른 빈에서 주입받을 때:
+
+```java
+@RequiredArgsConstructor
+@RestController
+public class HeadSseController {
+    private final HeadSlotStateStore stateStore; // ← 자동 주입
+}
+```
+
+## 주의할 점
+
+- **기본 스코프는 싱글톤**. 프로토타입(호출마다 새 인스턴스)이 필요하면 `@Scope("prototype")`.
+- **컴포넌트 스캔 범위**: `PortalApplication`의 `@SpringBootApplication`이 같은 패키지(com.samsung.move) 하위를 스캔합니다. 외부 jar의 클래스는 `@ComponentScan`으로 명시적으로 포함해야 합니다.
+- **순환 의존성** 발생 시 `@Lazy`로 한쪽을 지연 초기화하면 풀리는 경우가 있습니다 (`HeadSlotStateStore`가 `PreCommandAutoExecutor`를 `@Lazy`로 받는 이유).
+
+## 공식 문서
+
+- [Spring Framework — Annotation-based Container Configuration](https://docs.spring.io/spring-framework/reference/core/beans/annotation-config.html)

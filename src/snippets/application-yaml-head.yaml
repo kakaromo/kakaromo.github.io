@@ -1,0 +1,26 @@
+# @source src/main/resources/application.yaml
+# @lines 10-30
+# @note head.* + tentacle.* 설정
+# @synced 2026-04-19T04:30:19.794Z
+
+head:
+  reconnect-delay-ms: 5000
+  sse:
+    push-interval-ms: 1000
+    timeout-ms: 300000
+
+tentacle:
+  access-mode: ssh
+  log-prefix: /home/octo/tentacle
+  ssh:
+    username: samsung
+    password: tentacle
+    port: 22
+  mount-path: /mnt
+  head:
+    host: ""
+    home-path: /home/octo
+    log-path: ${tentacle.head.home-path}/nas
+    local-home-path: /mnt/head
+    mount-path: ${tentacle.head.local-home-path}/nas
+

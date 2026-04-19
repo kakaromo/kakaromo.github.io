@@ -1,0 +1,79 @@
+---
+title: "$state"
+description: Svelte 5의 반응형 상태 rune
+sidebar:
+  order: 1
+---
+
+## 이 프로젝트에서의 용례
+
+`headSlotStore.svelte.ts`, `/testdb/slots/+page.svelte` 등 프론트 거의 모든 곳에서 핵심. 클래스 필드·로컬 변수·함수 내 변수 어디에서든 선언 가능하며 **할당만 하면 반응성**이 자동으로 동작합니다.
+
+## 최소 예시
+
+```svelte
+<script lang="ts">
+  let count = $state(0);
+  let items = $state<string[]>([]);
+
+  function increment() {
+    count++;          // 할당·연산 모두 추적
+    items.push('x');  // 배열 변이도 추적 (deep proxy)
+  }
+</script>
+
+<button onclick={increment}>{count}</button>
+<ul>{#each items as item}<li>{item}</li>{/each}</ul>
+```
+
+## `.svelte.ts` 확장자
+
+일반 `.ts` 파일에서는 rune을 쓸 수 없습니다. `.svelte.ts`로 저장하면 Svelte 컴파일러가 이 파일을 rune 파일로 인식합니다.
+
+```ts
+// headSlotStore.svelte.ts
+export function createHeadSlotStore(source?: string) {
+  let slots = $state<HeadSlotData[]>([]);
+  let connected = $state(false);
+
+  function connect() { /* EventSource */ }
+
+  return {
+    get slots() { return slots; },
+    get connected() { return connected; },
+    connect,
+  };
+}
+```
+
+## deep proxy — 객체·배열도 추적
+
+`$state`에 할당된 객체·배열은 **deep proxy**로 감싸져서 중첩된 필드 변이까지 추적됩니다.
+
+```ts
+let user = $state({ name: 'Alice', tags: [] as string[] });
+user.name = 'Bob';       // 추적됨
+user.tags.push('admin'); // 추적됨
+```
+
+## `$state.raw` — proxy 없이 저장
+
+참조만 보관하고 deep tracking을 원하지 않을 때:
+
+```ts
+let bigMap = $state.raw<Map<string, Blob>>(new Map());
+// bigMap.set(...)는 추적 안 됨. 반응성을 트리거하려면 재할당:
+bigMap = new Map(bigMap); // proxy가 아니므로 이 재할당만 반응.
+```
+
+큰 자료구조(수만 항목의 Map, Blob 등)에 유용합니다.
+
+## 주의할 점
+
+- **proxy 비용**: 매우 큰 객체를 `$state`에 넣으면 get/set이 매번 proxy 훅을 통과합니다. 성능 민감한 경우 `$state.raw` 고려.
+- **외부로 proxy를 유출하면** 외부 코드가 변이 시에도 반응성이 동작합니다 — 의도한 동작인지 확인. MOVE는 factory 팩토리가 **getter로 반환**해서 외부 수정을 차단합니다.
+- **class fields**: 클래스의 `#field = $state(...)` 패턴도 가능하지만 MOVE는 함수 클로저 스타일을 선호.
+
+## 공식 문서
+
+- [Svelte 5 — $state](https://svelte.dev/docs/svelte/$state)

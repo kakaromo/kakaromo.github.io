@@ -1,0 +1,88 @@
+---
+title: 1. 하드웨어 & yaml 설정
+description: Head 하드웨어의 포트 규칙과 application.yaml의 역할
+sidebar:
+  order: 1
+---
+
+## 30초 요약
+
+Head 서버는 UFS 슬롯을 제어하는 **C 기반 외부 서버**입니다. MOVE는 두 개의 TCP 포트로 Head에 붙습니다. 포트는 **"suffix + 10000"** 규칙을 따릅니다.
+
+`application.yaml`은 Head와 관계된 **전역 타이밍 파라미터**(재연결 지연, SSE 주기 등)만 관리합니다. **연결 정보(호스트, 포트)는 DB**에 둡니다.
+
+## Head 하드웨어란
+
+Head는 하드웨어 보드와 맞물려 동작하는 데몬입니다. MOVE 입장에서는 "TCP로 명령을 보내고 슬롯 상태를 받아오는 블랙박스"입니다. Head 내부에는 슬롯 번호로 식별되는 **UFS 디바이스 여러 개**가 꽂혀 있고, Head가 각 슬롯의 상태(전류, 용량, 테스트 단계 등 32개 필드)를 주기적으로 MOVE로 밀어줍니다.
+
+한 MOVE 인스턴스는 여러 Head에 동시에 붙을 수 있으며, Head마다 **compatibility** 또는 **performance** 타입을 갖습니다. 이 타입은 단계 2에서 다룹니다.
+
+## 포트 규칙 — "suffix + 10000"
+
+MOVE는 각 Head와 **두 개의 포트**로 통신합니다.
+
+- **headPort (outbound)** — MOVE → Head 방향. 연결 명령과 제어 명령(settr, makeset 등)을 보냅니다. 세션 유지용으로 한 번 열고 계속 유지.
+- **listenPort (inbound)** — Head → MOVE 방향. Head가 슬롯 데이터를 보낼 때마다 이 포트로 **새 TCP 연결을 맺고 데이터만 보내고 닫습니다**.
+
+두 포트 번호는 Head 관리자가 정한 2자리 suffix에 10000을 더해서 결정됩니다.
+
+<div class="learn-callout">
+
+예) suffix가 **01**이면 포트는 **10001**, suffix **30**이면 **10030**.
+
+MOVE DB에는 `portSuffix`와 `listenPortSuffix`만 저장하고, 실제 포트 번호는 엔티티 메서드(`getPort()`, `getListenPort()`)가 `10000 + suffix`로 계산합니다.
+
+</div>
+
+왜 10000을 붙이는지에 대한 근거는 Head 측 운영 관행 — 관리자가 2자리 번호만 외우면 되도록 하려는 것입니다. MOVE 코드 입장에서는 **"이 계산을 엔티티가 숨긴다"** 는 것만 이해하면 충분합니다.
+
+## application.yaml의 역할
+
+`application.yaml`은 Head 연결 하나하나의 정보가 아니라 **모든 Head에 공통으로 적용되는 타이밍 값**을 관리합니다.
+
+```yaml title="src/main/resources/application.yaml"
+head:
+  reconnect-delay-ms: 5000
+  sse:
+    push-interval-ms: 1000
+    timeout-ms: 300000
+
+tentacle:
+  access-mode: ssh
+  log-prefix: /home/octo/tentacle
+  ssh:
+    username: samsung
+    password: tentacle
+    port: 22
+  mount-path: /mnt
+  head:
+    host: ""
+    home-path: /home/octo
+    log-path: ${tentacle.head.home-path}/nas
+    local-home-path: /mnt/head
+    mount-path: ${tentacle.head.local-home-path}/nas
+```
+
+핵심은 아래 3개입니다.
+
+- `head.reconnect-delay-ms` — TCP 연결이 끊어졌을 때 **재시도까지 대기 시간** (5초). 단계 3에서 재연결 로직을 볼 때 다시 만납니다.
+- `head.sse.push-interval-ms` — 단계 6의 **@Scheduled 주기**. 1초 간격으로 변경된 슬롯만 브라우저로 보냅니다. 값을 바꾸면 `@Scheduled(fixedDelayString = "...")`가 자동으로 따라갑니다.
+- `head.sse.timeout-ms` — 한 SSE 연결의 **최대 유지 시간** (5분). 실제 코드에서는 `new SseEmitter(0L)`로 무제한을 쓰므로 현재는 사용되지 않지만, 유한 timeout이 필요할 때를 위한 값입니다.
+
+`tentacle.*`는 슬롯에서 나온 **로그 파일을 SSH로 가져올 때** 필요한 설정입니다. 단계 5 이후 SlotInfoMerger가 이 경로를 씁니다. 슬롯 모니터링 자체의 SSE 흐름과는 별개입니다.
+
+## 왜 연결 정보는 DB에, 타이밍은 yaml에
+
+이 분리는 **"얼마나 자주 바뀌는가"** 로 결정했습니다.
+
+- yaml → 빌드/배포 단위로만 바뀝니다. 바꾸면 재시작이 필요합니다.
+- DB → 운영 중 관리자 화면에서 Head를 추가/제거하거나 테스트 모드로 전환할 때마다 바뀝니다.
+
+"어떤 Head에 붙을지"는 운영 이벤트이므로 DB, "얼마나 자주 SSE를 보낼지"는 설계 결정이므로 yaml. 이 기준은 MOVE 전체에서 일관됩니다.
+
+## 직접 해보기
+
+- [ ] `application.yaml`을 열어 `head.sse.push-interval-ms`를 3000으로 바꿔 보세요. 재시작 후 슬롯 페이지에서 변경 반영 지연이 **약 3초 간격**으로 보이면 성공입니다.
+- [ ] 다시 1000으로 복원하세요 (운영 중 기본값).
+
+다음: [2. DB 한 행 (HeadConnection)](/learn/l2-slots/02-db-row/) →

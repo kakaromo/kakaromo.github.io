@@ -1,0 +1,53 @@
+---
+title: "@Scheduled"
+description: 주기 실행 어노테이션 — fixedRate / fixedDelay / cron
+sidebar:
+  order: 2
+---
+
+## 이 프로젝트에서의 용례
+
+- **슬롯 SSE 푸시** — `HeadSseController.pushUpdates()`에 `@Scheduled(fixedDelayString = "${head.sse.push-interval-ms:1000}")`. 1초마다 버전 변화를 확인해 `update` 이벤트 전송.
+- **메타데이터 수집** — `metadata.monitor.poll-interval-ms` 주기로 UFS 메타데이터 수집.
+- **Bitbucket 브랜치 감지** — 주기적으로 Bitbucket API를 폴링.
+
+`@EnableScheduling`이 애플리케이션 어딘가에 선언되어야 동작합니다. MOVE에서는 `PortalApplication`에 이미 있습니다.
+
+## 최소 예시
+
+```java
+@Component
+public class MyPusher {
+
+    @Scheduled(fixedDelay = 1000)
+    public void runEverySecond() { /* ... */ }
+
+    @Scheduled(fixedRate = 5000)
+    public void everyFiveSeconds() { /* ... */ }
+
+    @Scheduled(cron = "0 0 * * * *") // 정각마다
+    public void hourly() { /* ... */ }
+
+    @Scheduled(fixedDelayString = "${my.interval-ms:1000}")
+    public void configurable() { /* ... */ }
+}
+```
+
+## fixedRate vs fixedDelay — 중요한 차이
+
+| 속성 | 다음 실행 기준 | 이전 실행이 길어지면 |
+|---|---|---|
+| `fixedRate` | **시작 시각** + 주기 | 겹쳐 실행될 수 있음 |
+| `fixedDelay` | **종료 시각** + 주기 | 자연스럽게 뒤로 밀림 |
+
+MOVE의 SSE push는 **`fixedDelay`** 를 씁니다. 100개 emitter에 JSON 직렬화가 쌓이면 실행 시간이 길어질 수 있어 겹침을 피하기 위함.
+
+## 주의할 점
+
+- **기본 스레드 풀은 1개**. 여러 `@Scheduled`가 동시 실행되려면 `TaskScheduler` 빈을 별도 설정해야 합니다.
+- 예외를 던지면 **로그만 남고 다음 주기는 정상 실행**됩니다. 조용히 실패할 수 있으니 중요한 작업은 내부에서 명시적으로 로깅.
+- `fixedRateString`/`fixedDelayString`은 **yaml 값을 직접 참조**할 수 있어 배포마다 주기를 바꾸기 쉽습니다.
+
+## 공식 문서
+
+- [Spring Framework — Task Execution and Scheduling](https://docs.spring.io/spring-framework/reference/integration/scheduling.html)

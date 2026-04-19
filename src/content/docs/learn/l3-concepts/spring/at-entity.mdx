@@ -1,0 +1,69 @@
+---
+title: "@Entity"
+description: JPA 엔티티 선언 — 테이블의 한 행을 자바 객체로 매핑
+sidebar:
+  order: 3
+---
+
+## 이 프로젝트에서의 용례
+
+`HeadConnection`, `HeadSlotData`, `PortalUser` 등 DB 테이블에 대응되는 모든 클래스가 `@Entity`로 선언됩니다. MOVE는 3개 데이터소스(testdb / ufsinfo / binmapper)를 쓰므로 엔티티가 어느 EntityManager를 쓸지는 **패키지별 JPA 설정**으로 분리됩니다.
+
+## 최소 예시
+
+```java
+@Entity
+@Table(name = "portal_head_connections")
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class HeadConnection {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @Column(nullable = false, unique = true, length = 100)
+    private String name;
+
+    @PrePersist
+    protected void onCreate() { /* created_at 자동 설정 */ }
+}
+```
+
+필요한 요소:
+
+- `@Id` — 주키 필드
+- `@GeneratedValue` — 자동 증가 전략 (IDENTITY / SEQUENCE / TABLE / AUTO)
+- `@Column` — 컬럼 옵션 (nullable, unique, length, name)
+- `@Table(name = ...)` — 테이블 이름 명시 (기본값은 클래스명 snake_case)
+
+## Lombok과의 조합 (MOVE 표준)
+
+모든 엔티티가 **`@Data @NoArgsConstructor @AllArgsConstructor @Builder`** 네 개를 함께 씁니다.
+
+- `@NoArgsConstructor` → JPA가 기본 생성자를 요구
+- `@AllArgsConstructor` → `@Builder`가 내부적으로 사용
+- `@Data` → getter/setter/equals/hashCode/toString 자동
+- `@Builder` → 체이닝 생성 패턴
+
+## 라이프사이클 훅
+
+- `@PrePersist` — insert 직전
+- `@PreUpdate` — update 직전
+- `@PostLoad` — 조회 직후
+- `@PreRemove` / `@PostRemove` — 삭제 전후
+
+MOVE는 `createdAt`/`updatedAt` 자동 갱신에 주로 `@PrePersist`/`@PreUpdate`를 씁니다.
+
+## 주의할 점
+
+- **equals/hashCode**에서 `id`만 쓰지 마세요 — 아직 insert 전인 엔티티는 id가 null이라 set에 넣으면 충돌합니다. Lombok `@Data`는 모든 필드를 쓰므로 주의 깊게 설계.
+- **Lazy fetch**는 세션이 닫히면 `LazyInitializationException`. JSON 직렬화 전 fetch되어야 합니다.
+- **`serialVersionUID`** — Redis 캐시에 `JdkSerializationRedisSerializer`를 쓰는 MOVE에서는 엔티티가 `Serializable`이어야 합니다.
+
+## 공식 문서
+
+- [Jakarta Persistence API](https://jakarta.ee/specifications/persistence/)
+- [Spring Data JPA Reference](https://docs.spring.io/spring-data/jpa/reference/)

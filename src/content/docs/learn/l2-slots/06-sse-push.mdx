@@ -1,0 +1,97 @@
+---
+title: "6. HeadSseController — 1초 diff push"
+description: "EmitterWrapper와 @Scheduled로 변경분만 브라우저에 푸시"
+sidebar:
+  order: 6
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import ConceptPopover from '../../../../components/learn/ConceptPopover.svelte';
+import sseRaw from '../../../../snippets/HeadSseController.java?raw';
+
+## 30초 요약
+
+`HeadSseController`는 브라우저의 **EventSource가 붙는 엔드포인트** 입니다. 붙으면 현재 스냅샷을 `init` 이벤트로 즉시 보내고, 이후 **1초마다 version 변화를 확인**해서 바뀐 경우에만 `update` 이벤트를 보냅니다.
+
+각 연결은 `EmitterWrapper`로 감싸져서 **`lastVersion`을 개별 보유**합니다. 덕분에 여러 클라이언트가 각자 다른 시점에 붙어도 누락이 없습니다.
+
+## 흐름 요약
+
+1. **GET /api/head/slots/stream** → `SseEmitter` 생성, emitters 리스트에 wrapper 추가, `init` 이벤트 전송
+2. `@Scheduled(fixedDelay = head.sse.push-interval-ms)` 주기마다:
+   - `stateStore.getVersion()` 조회
+   - 각 wrapper의 `lastVersion`보다 크면 `update` 이벤트 전송 + `lastVersion` 갱신
+3. 에러가 나면 해당 wrapper만 제거 (다른 클라이언트는 영향 없음)
+
+## 코드 투어
+
+<CodeTour
+  client:visible
+  language="java"
+  source="HeadSseController.java"
+  height={620}
+  code={sseRaw}
+  steps={[
+    {
+      id: 'wrapper-class',
+      title: 'EmitterWrapper — 연결당 상태',
+      lines: [26, 35],
+      body: '<p><code>emitter</code> + <code>source</code>(필터) + <code>lastVersion</code>. 전역 <code>CopyOnWriteArrayList</code>에 모은다. CopyOnWrite를 쓰는 이유는 <strong>iteration 중 remove가 안전</strong>하기 때문 — 푸시 실패 wrapper를 즉시 지워도 루프가 깨지지 않는다.</p>',
+    },
+    {
+      id: 'stream-endpoint',
+      title: '@GetMapping /slots/stream',
+      lines: [37, 45],
+      body: '<p><code>produces = TEXT_EVENT_STREAM_VALUE</code>로 SSE MIME을 명시. <code>SseEmitter(0L)</code>의 0은 <strong>무제한 timeout</strong>. 유한 timeout을 쓰면 주기마다 WARN 로그가 쌓이므로 Spring Boot 4에서는 0L이 권장.</p>',
+    },
+    {
+      id: 'cleanup',
+      title: 'onCompletion / onTimeout / onError',
+      lines: [46, 51],
+      body: '<p>세 가지 종료 경로 모두에서 <code>emitters.remove(wrapper)</code>로 자원 해제. 한 가지라도 빼먹으면 메모리 누수가 발생합니다. <strong>onComplete 안에서도 emitter.complete()를 호출</strong>해서 컨테이너 쪽 async context를 확실히 닫습니다.</p>',
+    },
+    {
+      id: 'init-event',
+      title: 'init 이벤트 즉시 전송',
+      lines: [53, 64],
+      body: '<p>연결 직후 현재 스냅샷을 보냅니다. <strong>wrapper.lastVersion = stateStore.getVersion()</strong>로 기록해서 이후 푸시 루프가 "이미 여기까지 받았다"고 판단.</p>',
+    },
+    {
+      id: 'scheduled-push',
+      title: '@Scheduled pushUpdates',
+      lines: [108, 128],
+      body: '<p><code>fixedDelayString = "${head.sse.push-interval-ms:1000}"</code>로 yaml 값을 직접 참조. <strong>lastVersion &gt;= currentVersion이면 건너뛰기</strong> — 바뀐 게 없으면 전송 안 함. 에러 시 해당 wrapper만 제거.</p>',
+    },
+    {
+      id: 'payload',
+      title: 'buildPayload — slots + version + connections',
+      lines: [130, 143],
+      body: '<p>한 이벤트에 <strong>슬롯 + 버전 + 연결 상태</strong>를 함께 담아 내려가 프론트가 단일 핸들러로 UI를 갱신할 수 있도록 합니다. <code>slotInfoMerger.merge</code>로 DB SlotInfomation도 매번 합쳐 <code>testCaseIds</code>/<code>testTrId</code> 등을 함께 전송.</p>',
+    },
+  ]}
+/>
+
+## <ConceptPopover client:visible term="@Scheduled" concept="spring/at-scheduled"><p>주기 실행 어노테이션. <code>fixedRate</code>는 시작 시각 기준, <code>fixedDelay</code>는 종료 시각 기준, <code>cron</code>은 cron 표현식. <code>@EnableScheduling</code>이 필요하며 MOVE에서는 <code>PortalApplication</code>에 이미 설정되어 있습니다.</p></ConceptPopover> 와 <ConceptPopover client:visible term="SseEmitter" concept="spring/sse-emitter"><p>Spring MVC의 서버 전송 이벤트 추상체. <code>send()</code>로 이벤트를 비동기 전송하고, <code>onCompletion/onTimeout/onError</code>로 종료 경로를 등록합니다. 컨트롤러가 반환하는 순간 요청 스레드는 풀려나고, emitter는 비동기 context에서 살아남습니다.</p></ConceptPopover> 조합
+
+SSE가 Spring에서 자연스럽게 동작하는 이유는 이 두 요소 덕분입니다. `@Scheduled`로 push 주기를 선언적으로 두고, `SseEmitter`는 비동기 응답을 **컨트롤러 메서드가 반환한 뒤에도** 계속 유지합니다.
+
+## 왜 fixedRate가 아니라 fixedDelay인가
+
+`fixedRate`는 **시작 시각 기준**이라 이전 실행이 1초를 넘기면 다음 실행이 바로 겹쳐 실행될 수 있습니다. `fixedDelay`는 **종료 시각 기준**이므로 항상 "직전 완료 + 1초" — 느려진 경우 자연스럽게 뒤로 밀립니다. 100개 emitter에 JSON 직렬화가 쌓이는 상황에서 겹침을 원하지 않아 `fixedDelay`로 선택.
+
+## EmitterWrapper를 없애고 전역 lastVersion 하나만 쓰면 안 되나
+
+안 됩니다. 이유:
+
+- 클라이언트가 **서로 다른 시각에** 붙습니다. A는 10초 전에 붙었고 version 50까지 받았다면, 지금 들어오는 B는 version 55 스냅샷을 받아야 하지만 A는 51~55만 추가로 받으면 됩니다.
+- `source` 필터가 다를 수 있습니다. A는 `?source=foo`, B는 `?source=bar`면 페이로드 내용도 서로 다릅니다.
+
+연결당 상태를 분리해야 이런 차이가 자연스럽게 처리됩니다.
+
+## 직접 해보기
+
+- [ ] `curl -N http://localhost:8080/api/head/slots/stream` 로 SSE 연결. 첫 줄에 `event: init` + JSON 페이로드가 보여야 합니다.
+- [ ] `?source=foo`를 붙여 필터가 적용되는지 확인.
+- [ ] DevTools Network → EventStream 탭에서 1초 주기의 `update` 이벤트 확인. Head에서 데이터가 오지 않을 때는 `update` 이벤트가 오지 **않아야** 합니다(version 무변화).
+
+다음: [7. headSlotStore — 브라우저 구독](/learn/l2-slots/07-frontend-store/) →

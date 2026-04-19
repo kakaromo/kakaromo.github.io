@@ -1,0 +1,67 @@
+---
+title: "$effect"
+description: Svelte 5의 부작용 rune — 의존성 변화에 반응해 외부 세계와 대화
+sidebar:
+  order: 3
+---
+
+## 이 프로젝트에서의 용례
+
+- **SSE 연결 라이프사이클**: 페이지 진입 시 `store.connect()`, 이탈 시 `store.disconnect()`.
+- **DOM 수동 조작**: ECharts 인스턴스 초기화·dispose, 스크롤 위치 저장.
+- **외부 이벤트 리스너**: `window.addEventListener` 등록 + cleanup.
+
+## 최소 예시 — SSE 연결/해제
+
+```svelte
+<script lang="ts">
+  import { createHeadSlotStore } from '$lib/api/headSlotStore.svelte';
+  const store = createHeadSlotStore('foo');
+
+  $effect(() => {
+    store.connect();
+    return () => store.disconnect(); // ← cleanup
+  });
+</script>
+```
+
+컴포넌트가 마운트될 때 connect, 언마운트될 때 disconnect. 의존성이 바뀔 때도 이전 cleanup이 먼저 실행됩니다.
+
+## 의존성 자동 추적 + 재실행
+
+`$effect`도 `$derived`와 동일한 규칙으로 의존성을 자동 추적합니다.
+
+```ts
+let userId = $state(1);
+
+$effect(() => {
+  const controller = new AbortController();
+  fetch(`/api/user/${userId}`, { signal: controller.signal });
+  return () => controller.abort();
+});
+// userId 변경 시:
+// 1. 이전 effect의 cleanup (controller.abort) 실행
+// 2. 새 effect 실행 (새 fetch)
+```
+
+## `$effect.pre` — DOM 업데이트 전에
+
+기본 `$effect`는 DOM 반영 후 실행됩니다. DOM 업데이트 **전에** 뭔가 읽어야 한다면 `$effect.pre`.
+
+```ts
+$effect.pre(() => {
+  // 이 시점의 scrollTop을 읽어서 저장
+  saved = container.scrollTop;
+});
+```
+
+## 주의할 점
+
+- **부작용만**. 반환값을 계산해서 쓰고 싶으면 `$derived`. `$effect`는 return이 cleanup 함수 또는 void.
+- **무한 루프 주의**: effect 안에서 자신의 의존성을 변이하면 다시 실행. 방지하려면 `untrack(() => ...)`.
+- **cleanup을 꼭 반환하세요**. EventSource, AbortController, `setInterval`, DOM 리스너 등은 cleanup이 빠지면 누수.
+- 테스트가 까다로울 수 있음. 가능한 한 **순수한 로직은 $derived**, **외부 세계는 $effect** 로 엄격히 나누는 것이 읽기 편합니다.
+
+## 공식 문서
+
+- [Svelte 5 — $effect](https://svelte.dev/docs/svelte/$effect)

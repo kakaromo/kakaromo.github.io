@@ -1,0 +1,125 @@
+---
+title: 7. headSlotStore — 브라우저 구독
+description: EventSource + Svelte 5 runes로 SSE 페이로드를 페이지 상태로 변환
+sidebar:
+  order: 7
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import ConceptPopover from '../../../../components/learn/ConceptPopover.svelte';
+import feRaw from '../../../../snippets/headSlotStore-svelte.ts?raw';
+
+## 30초 요약
+
+`headSlotStore.svelte.ts`는 **SSE를 구독하고 결과를 Svelte 5 runes로 노출하는 팩토리 함수**입니다. 페이지에서 `createHeadSlotStore("foo")`를 부르면 자체 상태를 가진 store 객체가 만들어지고, 페이지의 반응성 시스템이 이 store를 그대로 구독합니다.
+
+Head가 여러 개면 **각 Head마다 별도 store**가 만들어집니다. 서로 다른 EventSource 연결, 서로 다른 $state.
+
+## 왜 `.svelte.ts` 확장자인가
+
+일반 `.ts` 파일에서는 rune(`$state`, `$derived`, `$effect`)을 쓸 수 없습니다. **`.svelte.ts` 확장자**로 저장해야 Svelte 컴파일러가 이 파일을 runes 파일로 인식해 변환합니다. 이 규약 덕분에 "어떤 파일에 runes가 있는지"가 파일 이름만으로 드러납니다.
+
+## 코드 투어
+
+<CodeTour
+  client:visible
+  language="ts"
+  source="headSlotStore.svelte.ts"
+  height={620}
+  code={feRaw}
+  steps={[
+    {
+      id: 'factory',
+      title: '팩토리 함수 + $state 선언',
+      lines: [12, 20],
+      body: '<p>클래스가 아닌 <strong>함수 + 클로저</strong> 패턴. 호출할 때마다 독립된 $state들이 만들어집니다. Svelte 5에서는 클래스 필드도 rune이 될 수 있지만 함수 클로저가 더 읽기 쉽다는 판단.</p>',
+    },
+    {
+      id: 'dedup',
+      title: 'dedup — slotIndex 기준 last-wins',
+      lines: [22, 27],
+      body: '<p>같은 slotIndex가 한 페이로드에 여러 번 올 수 있습니다(edge case). Map으로 덮어쓰면서 자연스럽게 중복 제거. <strong>입력이 깨끗하다고 가정하지 않는 것</strong>이 프론트의 방어 원칙.</p>',
+    },
+    {
+      id: 'connect',
+      title: 'connect — EventSource 생성',
+      lines: [29, 38],
+      body: '<p>이미 <code>eventSource</code>가 있으면 먼저 <code>close()</code>. 같은 store가 여러 번 connect 되어도 중복 연결이 안 생깁니다. <code>source</code>가 지정되면 쿼리 파라미터로 붙여 서버 필터링.</p>',
+    },
+    {
+      id: 'init-listener',
+      title: "'init' 이벤트 — 초기 상태",
+      lines: [40, 49],
+      body: '<p>단계 6의 즉시 전송 페이로드를 받아서 전체 상태를 세팅. <code>retryCount = 0</code>, <code>lastError = null</code>로 <strong>연결이 성공적으로 되살아났음</strong>을 기록합니다.</p>',
+    },
+    {
+      id: 'update-listener',
+      title: "'update' 이벤트 — 전체 덮어쓰기",
+      lines: [51, 56],
+      body: '<p>init과 update가 <strong>같은 페이로드 포맷</strong>이라 핸들러가 거의 같습니다. 현재는 diff가 아니라 <strong>전체 교체</strong>. 슬롯 수가 수백 규모라 이 방식이 단순하고 충분히 빠릅니다.</p>',
+    },
+    {
+      id: 'error-handler',
+      title: 'onerror — EventSource 자동 재연결',
+      lines: [65, 71],
+      body: '<p><strong>EventSource는 onerror 발생 후 기본적으로 알아서 재연결</strong>합니다. MOVE는 UI에 "Connection failed"만 표시하고 수동 재시도 버튼을 노출 — 백엔드 재연결까지 필요할 때 쓰는 <code>retry()</code>가 별도로 있습니다.</p>',
+    },
+    {
+      id: 'retry',
+      title: 'retry — 백엔드도 함께 재연결',
+      lines: [82, 99],
+      body: '<p><code>reconnectHead(source)</code> API를 백엔드에 먼저 요청하고, 그 뒤 SSE를 재연결. Head 서버가 죽어서 백엔드 TCP도 끊어진 경우에만 필요한 무거운 재시도 경로입니다.</p>',
+    },
+    {
+      id: 'return-api',
+      title: 'getter로 반환 — 캡슐화',
+      lines: [101, 128],
+      body: '<p>함수 바깥에서는 <code>store.slots = []</code>처럼 직접 수정할 수 없게 <strong>getter</strong>로만 노출. connect/disconnect/retry 같은 변형 연산은 명시적 함수로만 제공. <strong>외부에서 store를 망가뜨리지 못하게 하는 최소한의 장벽</strong>입니다.</p>',
+    },
+  ]}
+/>
+
+## <ConceptPopover client:visible term="$state" concept="svelte/state"><p>Svelte 5의 반응형 상태 rune. 변수에 할당된 객체·배열을 deep proxy로 감싸 반응성을 자동 추적합니다. 단순 참조 보관이 필요하면 <code>$state.raw</code>를 쓰세요.</p></ConceptPopover>, <ConceptPopover client:visible term="$derived" concept="svelte/derived"><p>다른 $state에서 파생된 읽기 전용 값. 의존성을 자동 추적해 필요할 때만 재계산됩니다. <code>$derived.by(() =&gt; ...)</code> 형태로 복잡한 식도 가능.</p></ConceptPopover>, <ConceptPopover client:visible term="$effect" concept="svelte/effect"><p>반응형 의존성이 바뀔 때 실행되는 부작용 훅. cleanup 함수를 return해 이전 실행을 정리할 수 있습니다. DOM 수동 조작이나 이벤트 리스너 등록에 사용.</p></ConceptPopover>
+
+`headSlotStore`는 `$state`만 사용합니다 — 단순한 값 보관이 전부이기 때문. 페이지(`+page.svelte`) 쪽에서 슬롯 필터링·정렬·요약 통계를 만들 때는 `$derived`를 사용하고, SSE 연결 라이프사이클은 `$effect`에서 다룹니다.
+
+## 페이지에서 어떻게 쓰는가 (요약)
+
+```svelte
+<script lang="ts">
+  import { createHeadSlotStore } from '$lib/api/headSlotStore.svelte';
+
+  const store = createHeadSlotStore('foo');
+
+  $effect(() => {
+    store.connect();
+    return () => store.disconnect();
+  });
+
+  const connectedSlots = $derived(
+    store.slots.filter((s) => s.connection >= 1)
+  );
+</script>
+
+{#each store.slots as slot (slot.slotIndex)}
+  <SlotCard {slot} />
+{/each}
+```
+
+`$effect` 안에서 `connect()`를 부르고 return cleanup으로 `disconnect()`. 페이지 이탈 시 EventSource가 확실히 닫힙니다. 이 패턴이 `routes/testdb/slots/+page.svelte`에서 반복됩니다.
+
+## 왜 별도 팩토리 함수인가
+
+Svelte store 패턴(writable/readable) 대신 **팩토리 + runes**를 고른 이유:
+
+- Svelte 5에서 runes가 공식 길이라 store 래퍼는 점점 줄이는 추세
+- Head가 여러 개일 때 **store가 여러 인스턴스 필요** — 글로벌 싱글톤이 아니라 페이지별 생성
+- 순수 함수처럼 read-only 반환 API를 만들 수 있음 (위 getter 패턴)
+
+## 직접 해보기
+
+- [ ] 슬롯 페이지(`/testdb/slots`)에서 DevTools → Network → EventStream을 열어 `init` + `update` 이벤트 흐름 확인
+- [ ] 네트워크를 offline으로 토글해서 `onerror`가 발생하고, 다시 online 복원 시 EventSource가 알아서 재연결하는지 관찰
+- [ ] Head 재연결이 필요한 상황에 화면의 `retry()` 버튼(구현되어 있다면)을 눌러 `reconnectHead` API → SSE 재연결 순서를 로그에서 확인
+
+다음: [99. 리팩토링 여정](/learn/l2-slots/99-refactor-journey/) →

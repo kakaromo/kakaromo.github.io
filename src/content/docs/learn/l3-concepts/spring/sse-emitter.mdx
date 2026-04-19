@@ -1,0 +1,67 @@
+---
+title: "SseEmitter"
+description: Spring MVC의 서버 전송 이벤트(SSE) 추상체
+sidebar:
+  order: 5
+---
+
+## 이 프로젝트에서의 용례
+
+- **슬롯 모니터링** — `HeadSseController.stream()`이 `SseEmitter`를 반환, 1초마다 `update` 이벤트 전송.
+- **Agent 모니터링/Job 진행률** — 긴 벤치마크의 진행률을 `SseEmitter` 스트림으로 중계.
+- **Guacamole 터널** — WebSocket이 주이고 일부 시그널링에만 SSE 사용.
+
+## 최소 예시
+
+```java
+@GetMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+public SseEmitter stream() {
+    SseEmitter emitter = new SseEmitter(0L); // 0 = 무제한 timeout
+
+    emitter.onCompletion(() -> { /* 정상 종료 */ });
+    emitter.onTimeout(() -> emitter.complete());
+    emitter.onError(e -> { /* 에러 */ });
+
+    // 비동기로 이벤트 전송 — 다른 스레드/스케줄러에서 불러도 OK
+    try {
+        emitter.send(SseEmitter.event()
+            .name("update")
+            .data(payload, MediaType.APPLICATION_JSON));
+    } catch (IOException e) {
+        emitter.completeWithError(e);
+    }
+
+    return emitter; // 즉시 반환, 요청 스레드는 풀려남
+}
+```
+
+## 라이프사이클
+
+1. `new SseEmitter(timeout)` — 생성. 컨트롤러가 반환
+2. 요청 스레드는 **즉시 반환** — async context로 넘어감
+3. 다른 스레드에서 `emitter.send(...)` 반복
+4. 종료는 세 가지 경로:
+   - `emitter.complete()` — 정상 종료 → `onCompletion` 콜백
+   - `timeout` 초과 → `onTimeout` 콜백
+   - 에러 → `emitter.completeWithError(e)` → `onError` 콜백
+
+각 경로에서 리소스 정리(리스트에서 제거 등)를 반드시 해야 메모리 누수가 없습니다.
+
+## 주의할 점
+
+- **timeout 0L = 무제한**. 유한 timeout을 쓰면 만료 시 `AsyncRequestTimeoutException` WARN 로그가 쌓입니다. MOVE는 0L을 씁니다.
+- **`produces` MIME 타입**은 `text/event-stream` (`MediaType.TEXT_EVENT_STREAM_VALUE`)이어야 브라우저가 EventSource로 소비합니다.
+- **`CopyOnWriteArrayList`로 emitter 보관** — iteration 중 remove가 안전해야 하기 때문.
+- **send 예외 처리 필수**. 네트워크가 끊기면 `IOException`이 나고 이때 해당 emitter를 리스트에서 빼야 합니다.
+- **브라우저 EventSource는 기본 재연결** — 서버가 명시적으로 `retry:` 라인을 보내면 재연결 지연을 바꿀 수 있습니다.
+
+## 대안과 비교
+
+- **WebSocket** — 양방향이 필요할 때. SSE는 서버→클라이언트 단방향.
+- **Polling** — 복잡도는 낮지만 지연·부하가 크다.
+- **WebFlux `Flux<T>`** — Reactive 스택 쓰면 SseEmitter 없이도 SSE 가능. MOVE는 MVC 스택이라 SseEmitter.
+
+## 공식 문서
+
+- [Spring MVC — Async Requests / SseEmitter](https://docs.spring.io/spring-framework/reference/web/webmvc/mvc-ann-async.html)
+- [MDN — Using server-sent events](https://developer.mozilla.org/docs/Web/API/Server-sent_events/Using_server-sent_events)

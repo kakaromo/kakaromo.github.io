@@ -1,0 +1,65 @@
+---
+title: 슬롯 모니터링 — 7단계 여정
+description: Head 하드웨어 메시지 한 건이 브라우저까지 도달하는 과정을 끝까지 따라갑니다.
+sidebar:
+  order: 0
+---
+
+import ArchitectureDiagram from '../../../../components/learn/ArchitectureDiagram.svelte';
+
+## 이 모듈에서 배울 것
+
+"Head 하드웨어에 꽂힌 UFS 슬롯의 상태 한 건이 브라우저 테이블의 한 행이 되기까지, 어떤 계층을 거치는가?" — 이 질문을 **7단계**로 나눠 따라갑니다.
+
+아래 다이어그램에서 노드를 클릭하면 해당 단계로 이동합니다.
+
+<ArchitectureDiagram
+  client:visible
+  height={320}
+  caption="왼쪽에서 오른쪽으로 읽으세요. 색은 계층(hw/be/state/tx/fe)을 뜻합니다."
+  altText="Head 하드웨어(1)가 TCP로 HeadTcpClient(2·3)에 붙고, HeadMessageParser(4)가 메시지를 DTO로 바꿉니다. HeadSlotStateStore(5)에 저장되면 HeadSseController(6)가 1초 주기로 변경을 SSE로 보내고, 브라우저의 headSlotStore(7)가 이를 받아 $state로 페이지에 반영합니다."
+  nodes={[
+    { id: 's1', label: '1. 하드웨어 · yaml',    sublabel: '포트 / 설정',            layer: 'hw',    x: 0,    y: 70,  href: '/learn/l2-slots/01-hardware-yaml/' },
+    { id: 's2', label: '2. DB 한 행',           sublabel: 'HeadConnection',         layer: 'state', x: 170,  y: 70,  href: '/learn/l2-slots/02-db-row/' },
+    { id: 's3', label: '3. HeadTcpClient',      sublabel: '듀얼 소켓',               layer: 'be',    x: 340,  y: 0,   href: '/learn/l2-slots/03-tcp-client/' },
+    { id: 's4', label: '4. MessageParser',      sublabel: '정규식 · 32필드',         layer: 'be',    x: 340,  y: 150, href: '/learn/l2-slots/04-parser/' },
+    { id: 's5', label: '5. SlotStateStore',     sublabel: 'ConcurrentHashMap',      layer: 'state', x: 510,  y: 70,  href: '/learn/l2-slots/05-state-store/' },
+    { id: 's6', label: '6. SseController',      sublabel: '@Scheduled 1s',          layer: 'tx',    x: 680,  y: 70,  href: '/learn/l2-slots/06-sse-push/' },
+    { id: 's7', label: '7. headSlotStore',      sublabel: 'EventSource + runes',    layer: 'fe',    x: 850,  y: 70,  href: '/learn/l2-slots/07-frontend-store/' },
+  ]}
+  edges={[
+    { from: 's1', to: 's2', label: 'read',  kind: 'sync' },
+    { from: 's2', to: 's3', label: 'start', kind: 'sync' },
+    { from: 's3', to: 's4', label: 'chunk', kind: 'sync' },
+    { from: 's4', to: 's5', label: 'put',   kind: 'sync' },
+    { from: 's5', to: 's6', label: 'diff',  kind: 'async' },
+    { from: 's6', to: 's7', label: 'SSE',   kind: 'async' },
+  ]}
+/>
+
+## 왜 7단계인가
+
+MOVE는 슬롯 모니터링을 **계층 분리**로 설계했습니다. 단계가 짧아지거나 합쳐지면 다음 문제가 생깁니다.
+
+- **파싱 로직과 전송 로직을 섞으면** — 프로토콜이 바뀔 때마다 컨트롤러를 고쳐야 합니다.
+- **저장 없이 바로 푸시하면** — 재연결한 클라이언트가 "처음부터 다시" 받을 수 없습니다.
+- **DB 조회를 SSE 주기마다 하면** — 1초×슬롯수×클라이언트수의 부하가 DB에 갑니다.
+
+각 단계는 "무엇이 바뀌면 어디가 흔들리는지"가 명확하도록 분리되어 있습니다. 본문을 읽으면서 **"이 책임을 다른 단계로 옮기면 무엇이 불편해질까?"** 를 스스로 물어보면 설계 감을 잡는 데 도움이 됩니다.
+
+## 학습 순서와 예상 소요 시간
+
+| 단계 | 제목 | 성격 | 시간 |
+|---|---|---|---|
+| 1 | 하드웨어 · yaml 설정 | 읽기 | 5분 |
+| 2 | DB 한 행 (HeadConnection) | 읽기 | 5분 |
+| 3 | HeadTcpClient — 듀얼 소켓 | 코드 투어 | 15분 |
+| 4 | HeadMessageParser | 코드 투어 | 10분 |
+| 5 | HeadSlotStateStore | 코드 투어 | 10분 |
+| 6 | HeadSseController | 코드 투어 | 15분 |
+| 7 | headSlotStore (프론트) | 코드 투어 | 10분 |
+| 99 | 리팩토링 여정 | 심화 | 옵션 |
+
+총 약 **1시간 10분** + "직접 해보기"로 실제 연결까지 해보면 2시간 내. 본문만 훑을 거면 각 페이지 상단 요약과 다이어그램만 봐도 40분이면 끝납니다.
+
+다음: [1. 하드웨어 & yaml 설정](/learn/l2-slots/01-hardware-yaml/) →

@@ -1,0 +1,117 @@
+---
+title: 5. HeadSlotStateStore — 상태 저장소
+description: ConcurrentHashMap과 AtomicLong으로 관리되는 인메모리 슬롯 상태
+sidebar:
+  order: 5
+---
+
+import ArchitectureDiagram from '../../../../components/learn/ArchitectureDiagram.svelte';
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import ConceptPopover from '../../../../components/learn/ConceptPopover.svelte';
+import storeRaw from '../../../../snippets/HeadSlotStateStore.java?raw';
+
+## 30초 요약
+
+`HeadSlotStateStore`는 **모든 Head에서 온 슬롯 데이터를 한 곳에 모으는 인메모리 저장소**입니다. 키는 `"source:slotIndex"`(예: `"compatibility:0"`). DB가 아니라 **재시작하면 사라지는** 휘발성 상태이고, 이 단순함이 성능 핵심입니다.
+
+변경이 있을 때마다 `AtomicLong version`을 증가시켜, 단계 6의 SSE가 **"무엇이 바뀌었나"** 를 버전 비교로 판단할 수 있게 합니다.
+
+## 저장소의 모양
+
+<ArchitectureDiagram
+  client:visible
+  height={300}
+  caption="쓰는 쪽은 여러 TcpClient, 읽는 쪽은 SSE 컨트롤러. 공유는 오직 해시맵 + 버전 카운터."
+  altText="여러 HeadTcpClient가 각자의 source 이름으로 updateSlots를 호출해 ConcurrentHashMap에 쓰고, AtomicLong version이 매번 증가합니다. HeadSseController는 이 저장소에서 get + version으로 읽기만 합니다."
+  nodes={[
+    { id: 't1',   label: 'TcpClient A', sublabel: 'source=foo',      layer: 'be',    x: 0,   y: 0 },
+    { id: 't2',   label: 'TcpClient B', sublabel: 'source=bar',      layer: 'be',    x: 0,   y: 130 },
+    { id: 'map',  label: 'slots',       sublabel: 'ConcurrentHashMap', layer: 'state', x: 260, y: 30 },
+    { id: 'ver',  label: 'version',     sublabel: 'AtomicLong',       layer: 'state', x: 260, y: 150 },
+    { id: 'sse',  label: 'SseController', sublabel: '리더',            layer: 'tx',    x: 520, y: 70 },
+  ]}
+  edges={[
+    { from: 't1', to: 'map', label: 'put', kind: 'sync' },
+    { from: 't2', to: 'map', label: 'put', kind: 'sync' },
+    { from: 't1', to: 'ver', label: '+1',  kind: 'sync' },
+    { from: 't2', to: 'ver', label: '+1',  kind: 'sync' },
+    { from: 'map', to: 'sse', label: 'read', kind: 'sync' },
+    { from: 'ver', to: 'sse', label: 'read', kind: 'sync' },
+  ]}
+/>
+
+## 코드 투어
+
+<CodeTour
+  client:visible
+  language="java"
+  source="HeadSlotStateStore.java"
+  height={600}
+  code={storeRaw}
+  steps={[
+    {
+      id: 'fields',
+      title: '핵심 3개 필드',
+      lines: [22, 26],
+      body: '<p><code>slots</code>(슬롯 데이터) + <code>connectionStatuses</code>(연결됨/아님) + <code>connectionErrors</code>(마지막 에러 메시지) + <code>version</code>. 모두 스레드 안전 자료구조라 <strong>synchronized 블록이 필요 없습니다</strong>.</p>',
+    },
+    {
+      id: 'constructor',
+      title: 'Lazy 주입으로 순환 의존 피하기',
+      lines: [28, 35],
+      body: '<p><code>PreCommandAutoExecutor</code>는 StateStore를 읽고, StateStore는 변경 시 PreCommandAutoExecutor를 부릅니다. <code>@Lazy</code>로 지연 초기화해서 Spring이 순환 의존을 해소합니다.</p>',
+    },
+    {
+      id: 'update-slots',
+      title: 'updateSlots — 병합 + put + 훅',
+      lines: [37, 52],
+      body: '<p>순서가 중요합니다. (1) <code>slotInfoMerger.merge</code>로 DB 정보(testTrId 등) 주입 → (2) 각 슬롯 <code>put</code> → (3) 사전 명령어 자동 실행 훅 → (4) <code>version.incrementAndGet()</code>. 버전 증가가 <strong>가장 마지막</strong>이어야 SSE가 "변경 완료된 상태"를 본다.</p>',
+    },
+    {
+      id: 'read-by-source',
+      title: 'source 프리픽스 스캔',
+      lines: [55, 64],
+      body: '<p>키가 <code>"source:slotIndex"</code>이므로 <code>startsWith(source + &quot;:&quot;)</code>로 필터. O(n)이지만 n이 수백 슬롯 규모라 문제 없음. <code>Collections.unmodifiableList</code>로 반환해 consumer가 실수로 수정하지 못하게 합니다.</p>',
+    },
+    {
+      id: 'version-api',
+      title: 'getVersion — SSE가 diff 판단에 사용',
+      lines: [75, 82],
+      body: '<p>단계 6의 <code>EmitterWrapper</code>가 <code>lastVersion</code>을 기억하고, 푸시 주기마다 <code>stateStore.getVersion()</code>과 비교해서 <strong>증가했을 때만</strong> 새 페이로드를 보냅니다. <code>clearBySource</code>도 버전을 증가시켜 "Head가 끊겨 슬롯이 싹 지워졌다"는 사건도 감지 가능.</p>',
+    },
+    {
+      id: 'connection-status',
+      title: '연결 상태 · 에러 메시지',
+      lines: [84, 114],
+      body: '<p>오버로드 2종. 에러 메시지가 있으면 같이 저장, 성공하면 <code>connectionErrors.remove</code>로 지웁니다. 단계 6의 SSE 페이로드에서 <code>connections</code> 배열에 함께 실려 내려갑니다.</p>',
+    },
+  ]}
+/>
+
+## 왜 DB가 아니라 인메모리인가
+
+슬롯 상태는 **1초에 한 번 쏟아지는 쓰기**입니다. DB에 쓰면:
+
+- IO 비용과 WAL 압박 — 한두 개 Head면 몰라도 수십 개가 되면 부담
+- 재시작 시 잠깐 있던 "지금 이 순간의 상태"는 어차피 오래된 정보 — 저장 가치 낮음
+- SSE 푸시는 최신 상태만 필요하므로 과거 이력이 필요 없음
+
+반면, **설정(HeadConnection)은 DB**, **이력(테스트 결과)은 DB + MinIO**처럼 보존 요구가 있는 것은 영속화합니다. "얼마나 오래 살아야 하는가"로 저장소를 가르는 것이 MOVE의 일관된 기준입니다.
+
+## 스레드 안전은 공짜가 아님
+
+`ConcurrentHashMap.put`은 개별 연산이 원자적이지만, "여러 key를 원자적으로 한 번에" 업데이트하지는 않습니다. 단계 6의 SSE가 **put 중간에** 끼어들면 일부만 반영된 상태를 볼 수 있습니다.
+
+MOVE는 이를 받아들입니다. 1초 뒤 다음 SSE 주기에서 일관된 상태가 내려가므로 **eventually consistent**. 강한 일관성이 필요한 순간이 없다는 판단입니다. 필요하다면 `ReadWriteLock`으로 변경 가능하지만 현재는 과잉.
+
+## <ConceptPopover client:visible term="@Component" concept="spring/at-component"><p>Spring 빈 등록의 기본 어노테이션. 이 클래스의 단일 인스턴스가 생성되어 다른 빈들이 주입받아 사용합니다. <code>@Service</code>·<code>@Repository</code>·<code>@Controller</code>도 내부적으로 <code>@Component</code>입니다.</p></ConceptPopover> 로 단일 인스턴스
+
+StateStore가 **프로세스 전체의 공유 상태**이므로 반드시 싱글톤이어야 합니다. Spring의 `@Component`는 기본이 싱글톤 스코프라, 별도 설정 없이 "모든 TcpClient와 SSE 컨트롤러가 같은 인스턴스를 참조"가 보장됩니다.
+
+## 직접 해보기
+
+- [ ] 디버거로 `slots.size()`를 관찰해 보세요. 여러 Head가 붙어 있으면 `"foo:0"`, `"foo:1"`, `"bar:0"` 같은 키가 섞여 있을 것입니다.
+- [ ] `getVersion()`이 SSE push 주기와 무관하게, TcpClient가 데이터를 받을 때만 증가하는지 확인
+- [ ] `clearBySource("foo")` 호출 후 다음 SSE 푸시에서 해당 source의 슬롯이 사라지는지 확인
+
+다음: [6. HeadSseController — 1초 diff push](/learn/l2-slots/06-sse-push/) →

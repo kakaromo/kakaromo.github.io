@@ -1,0 +1,164 @@
+---
+title: 3. HeadTcpClient — 듀얼 소켓
+description: outbound 세션과 inbound 다중 연결이 공존하는 Head TCP 프로토콜
+sidebar:
+  order: 3
+---
+
+import ArchitectureDiagram from '../../../../components/learn/ArchitectureDiagram.svelte';
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import ConceptPopover from '../../../../components/learn/ConceptPopover.svelte';
+import connectRaw from '../../../../snippets/HeadTcpClient-connect.java?raw';
+import acceptReadRaw from '../../../../snippets/HeadTcpClient-accept-read.java?raw';
+
+## 30초 요약
+
+Head와의 TCP는 일반적인 클라이언트-서버가 아닙니다. **두 개의 소켓이 반대 방향으로** 열립니다.
+
+- **outSocket (MOVE → Head)**: 세션 유지용. 한 번 열고 계속 유지. 제어 명령을 보낼 때도 사용.
+- **serverSocket → inSocket (Head → MOVE)**: MOVE가 `listenPort`로 **bind+listen**, Head는 데이터를 보낼 때마다 여기에 **새 TCP 연결을 맺고** 데이터만 보내고 닫음.
+
+이 설계는 MOVE가 정한 것이 아니라 Head 서버의 프로토콜입니다. MOVE는 그 규약에 맞춰 `ServerSocket.accept()` 루프를 돈다.
+
+## 듀얼 소켓 전체 그림
+
+<ArchitectureDiagram
+  client:visible
+  height={320}
+  caption="outSocket은 한 번 열고 쭉 유지, inSocket은 데이터 올 때마다 새로 맺고 닫힘"
+  altText="MOVE의 HeadTcpClient는 Head 서버에 outSocket을 열어 세션을 유지하고, MOVE 측에서 serverSocket을 bind/listen해 Head로부터의 새 inbound 연결을 반복 accept합니다. 각 inbound 연결은 데이터 전송 후 바로 닫힙니다."
+  nodes={[
+    { id: 'head',       label: 'Head',           sublabel: 'C 데몬',             layer: 'hw', x: 0,   y: 80 },
+    { id: 'out',        label: 'outSocket',      sublabel: '세션 유지 (MOVE→Head)', layer: 'be', x: 260, y: 0 },
+    { id: 'listen',     label: 'serverSocket',   sublabel: 'bind listenPort',    layer: 'be', x: 260, y: 100 },
+    { id: 'in',         label: 'inSocket',       sublabel: '매 데이터마다 재생성', layer: 'be', x: 260, y: 200 },
+    { id: 'chunk',      label: 'processChunk',   sublabel: '^end^ 구분',          layer: 'be', x: 500, y: 100 },
+  ]}
+  edges={[
+    { from: 'out',    to: 'head',   label: 'connect!!',  kind: 'sync' },
+    { from: 'head',   to: 'listen', label: 'connect',    kind: 'async' },
+    { from: 'listen', to: 'in',     label: 'accept',     kind: 'sync' },
+    { from: 'head',   to: 'in',     label: 'data',       kind: 'async' },
+    { from: 'in',     to: 'chunk',  label: 'read',       kind: 'sync' },
+  ]}
+/>
+
+## 단계 1: 연결 수립 (connect)
+
+첫 연결에서 MOVE는 **3단계**를 합니다.
+
+1. MOVE 측 `serverSocket`을 `listenPort`에 bind (앞으로 Head가 이 포트로 올 것)
+2. Head 측 `headPort`로 `outSocket` 연결 (세션 유지)
+3. 약속된 **"connect!!" 명령** 을 outSocket으로 전송 — "나는 이 IP:listenPort로 받을 준비가 되었다"고 알리는 핸드셰이크
+
+<CodeTour
+  client:visible
+  language="java"
+  source="HeadTcpClient.java (연결 부분)"
+  height={520}
+  code={connectRaw}
+  steps={[
+    {
+      id: 'bind',
+      title: 'serverSocket bind + listen',
+      lines: [11, 16],
+      body: '<p><code>setReuseAddress(true)</code>로 포트 재사용을 허용, <code>setSoTimeout(30000)</code>으로 accept 블록을 주기적으로 깨웁니다. timeout이 있어야 재연결·종료 체크가 가능해집니다.</p>',
+    },
+    {
+      id: 'outbound',
+      title: 'outSocket 연결 (세션 유지)',
+      lines: [18, 22],
+      body: '<p>Head 측 <code>headPort</code>에 TCP 연결. <code>setKeepAlive(true)</code>로 OS 레벨 keep-alive를 켭니다. 이 소켓을 닫는 순간 Head 쪽 세션도 죽으니 주의.</p>',
+    },
+    {
+      id: 'connect-cmd',
+      title: '"connection!!" 명령 전송',
+      lines: [24, 29],
+      body: '<p>포맷은 <code>"IP:listenSuffix:headHost[headSuffix] connection!!"</code>. Head가 이 줄을 파싱해 "이제부터 이 IP로 데이터를 보내면 되는구나"를 기억합니다.</p>',
+    },
+    {
+      id: 'mark-connected',
+      title: '연결 성공 마킹',
+      lines: [31, 34],
+      body: '<p>단계 5의 <code>HeadSlotStateStore.updateConnectionStatus</code>를 호출해 "name=foo는 이제 연결됨"을 기록. 단계 6의 SSE 페이로드에서 이 상태가 내려갑니다.</p>',
+    },
+    {
+      id: 'into-accept',
+      title: 'acceptLoop 진입',
+      lines: [36, 37],
+      body: '<p>여기서부터 데이터 수신이 시작됩니다. 아래 단계 2에서 상세히.</p>',
+    },
+  ]}
+/>
+
+## 단계 2: 데이터 수신 (acceptLoop + readFromSocket)
+
+Head는 **슬롯 데이터를 보낼 때마다 새 TCP 연결**을 엽니다. MOVE는 `accept()`로 이를 받고, 한 연결 안에서 여러 청크를 읽은 뒤 Head가 close하면 닫고 다음 connection을 기다립니다.
+
+하나의 connection은 긴 스트림일 수 있고, 그 안에 **`^end^`** 구분자로 여러 청크가 포함됩니다.
+
+<CodeTour
+  client:visible
+  language="java"
+  source="HeadTcpClient.java (수신 루프)"
+  height={600}
+  code={acceptReadRaw}
+  steps={[
+    {
+      id: 'accept-loop',
+      title: 'accept() 루프',
+      lines: [6, 21],
+      body: '<p><code>running.get()</code>인 동안 무한히 <code>accept()</code>. 각 client 소켓은 <code>inSocket</code>에 기억되고, <code>readFromSocket</code>이 끝나면 닫고 다음 connection을 기다립니다.</p>',
+    },
+    {
+      id: 'idle-reconnect',
+      title: 'accept timeout → 유휴 감지',
+      lines: [22, 36],
+      body: '<p>30초마다 깨어나서 <code>outSocket</code> 상태를 확인하고, <strong>3시간</strong> 이상 데이터가 없으면 exit을 보내고 재연결. Head가 조용히 죽었을 때도 감지 가능한 장치입니다.</p>',
+    },
+    {
+      id: 'reader-setup',
+      title: 'BufferedReader 준비',
+      lines: [40, 47],
+      body: '<p>UTF-8 <code>InputStreamReader</code>를 <code>BufferedReader</code>로 감쌉니다. 8KB 버퍼로 한 번에 읽어 문자열 버퍼에 쌓습니다.</p>',
+    },
+    {
+      id: 'chunk-split',
+      title: '^end^ 구분자로 청크 분리',
+      lines: [49, 63],
+      body: '<p>버퍼에서 <code>^end^</code>를 찾을 때마다 그 앞을 한 청크로 떼어내 <code>processChunk</code>에 넘깁니다. 꼬리(미완성) 부분은 다시 버퍼에 남겨 다음 read와 합쳐 파싱.</p>',
+    },
+    {
+      id: 'process-chunk',
+      title: 'processChunk → parser + store',
+      lines: [68, 73],
+      body: '<p>파싱 결과가 비어있지 않으면 단계 5의 <code>stateStore.updateSlots</code>를 호출해 인메모리 상태에 반영. 이 한 줄이 단계 4→5를 잇는 접점입니다.</p>',
+    },
+  ]}
+/>
+
+## 왜 듀얼 소켓인가
+
+Head가 한 커넥션 안에서 양방향으로 주고받는 설계를 쓸 수도 있었을 텐데, 실제로는 **방향별 소켓 분리**로 갑니다. 이 선택의 장점:
+
+- **방향이 명확해서 디버깅이 쉽다** — 명령은 outSocket, 데이터는 inSocket. tcpdump 시 필터가 깔끔합니다.
+- **많은 데이터가 오는 쪽만 짧은 연결로** — Head가 한 번 보내고 끊어도 outSocket은 영향 없음. 역방향 제어 명령은 언제든 가능.
+- **MOVE는 accept만 하면 되니 간단** — 복잡한 데이터 프레임 복원 없이 "^end^까지 읽기"만 처리.
+
+단점은 포트가 두 개 필요하다는 것. 그래서 단계 1의 suffix 규칙으로 포트 관리를 단순화합니다.
+
+## 명령 송신 (옵션) — 왜 매번 새 Socket인가
+
+앞서 말한 outSocket이 "제어 명령도 보낸다"고 했지만, 실제로는 `settr`, `settc`, `makeset` 같은 **제어 명령은 매번 새 Socket을 열어 보냅니다**. 이유는 Head가 제어 명령 응답을 보낸 뒤 연결을 close하기 때문입니다. 세션 유지용 outSocket을 그대로 쓰면 세션이 끊어지는 것. 이 부분은 이 문서 범위를 벗어나지만, `sendCommand(new Socket(...), cmd)` 패턴이 반복되면 이 이유 때문입니다.
+
+## <ConceptPopover client:visible term="@RequiredArgsConstructor" concept="spring/at-required-args-constructor"><p>Lombok이 final 필드를 인자로 받는 생성자를 자동 생성합니다. Spring 생성자 주입과 조합해 보일러플레이트를 없애는 MOVE의 표준 패턴.</p></ConceptPopover> 와 생성자 주입
+
+`HeadTcpClient`는 `final HeadSlotStateStore stateStore` 필드를 받아 데이터를 어디에 저장할지 모릅니다. Spring은 `@RequiredArgsConstructor`가 만든 생성자로 자동 주입합니다. 이 패턴 덕에 테스트 시 목을 주입하기도 쉽습니다.
+
+## 직접 해보기
+
+- [ ] 기동 로그에서 `[name] Listening on ...`, `[name] Connected to HEAD at ...`, `[name] Sent connect command: ...` 세 줄이 순서대로 나오는지 확인
+- [ ] `netstat -an | grep 100` 로 듀얼 포트가 모두 ESTABLISHED 또는 LISTEN 상태인지 확인
+- [ ] Head를 잠시 죽였다 살렸을 때 `[name] Reconnecting in 5000ms` 같은 메시지와 함께 자동 재연결되는지 확인
+
+다음: [4. HeadMessageParser — 정규식과 32필드](/learn/l2-slots/04-parser/) →
