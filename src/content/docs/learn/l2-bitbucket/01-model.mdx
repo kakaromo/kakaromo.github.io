@@ -1,0 +1,178 @@
+---
+title: 1. 설정·엔티티 — Repo + Branch
+description: 두 테이블로 저장소 설정과 브랜치 이력을 분리, 상태는 Branch의 status 컬럼으로
+sidebar:
+  order: 1
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import propsRaw from '../../../../snippets/BitbucketMonitorProperties.java?raw';
+import repoRaw from '../../../../snippets/BitbucketRepo-entity.java?raw';
+import branchRaw from '../../../../snippets/BitbucketBranch-entity.java?raw';
+
+## 30초 요약
+
+- **`BitbucketMonitorProperties`** — yaml `bitbucket.monitor.*` 바인딩 (enabled + defaultTargetPath)
+- **`BitbucketRepo`** — 감시할 저장소 한 개 (serverUrl, projectKey, repoSlug, **PAT**, autoDownload, controller, targetPath)
+- **`BitbucketBranch`** — 감지·다운로드된 브랜치 한 개 (status: `DETECTED`/`DOWNLOADING`/`DOWNLOADED`/`FAILED`)
+
+**상태 전이**는 Branch의 `status` 컬럼이 담고, Repo는 "무엇을 어떻게 볼 것인가"라는 설정만.
+
+## 전역 설정 — Properties
+
+<CodeTour
+  client:visible
+  language="java"
+  source="BitbucketMonitorProperties.java"
+  height={240}
+  code={propsRaw}
+  steps={[
+    {
+      id: 'props',
+      title: '@ConfigurationProperties bitbucket.monitor',
+      lines: [6, 13],
+      body: '<p><code>enabled</code> 전역 killswitch + <code>defaultTargetPath</code> 기본 저장 경로. Repo마다 <code>targetPath</code>를 오버라이드할 수 있지만 기본값 제공은 이곳.</p>',
+    },
+  ]}
+/>
+
+예시 yaml:
+
+```yaml title="application.yaml"
+bitbucket:
+  monitor:
+    enabled: true
+    default-target-path: /appdata/samsung/OCTO_HEAD/FW_Code
+```
+
+## BitbucketRepo — 저장소 설정
+
+<CodeTour
+  client:visible
+  language="java"
+  source="BitbucketRepo.java"
+  height={560}
+  code={repoRaw}
+  steps={[
+    {
+      id: 'entity',
+      title: '@Entity portal_bitbucket_repos',
+      lines: [16, 22],
+      body: '<p>MOVE 표준 Lombok. 한 행 = 감시할 Bitbucket 저장소 하나. 저장소 여러 개를 등록해 각기 다른 FW 계열을 추적 가능.</p>',
+    },
+    {
+      id: 'server-loc',
+      title: 'serverUrl · projectKey · repoSlug',
+      lines: [26, 38],
+      body: '<p>Bitbucket Server REST API 경로 구성 3요소. 실제 URL은 <code>{serverUrl}/rest/api/latest/projects/{projectKey}/repos/{repoSlug}/branches</code> 식으로 조립. <strong>외부 의존의 모든 위치 정보가 한 엔티티에</strong>.</p>',
+    },
+    {
+      id: 'pat',
+      title: 'pat — Bearer 토큰 평문 저장',
+      lines: [40, 41],
+      body: '<p><code>varchar(500)</code>에 <strong>평문 저장</strong>. 내부망 전제이지만 <strong>JPA @Convert + AES</strong>로 암호화하는 것이 이상적. 현재는 기술 부채로 인지.</p>',
+    },
+    {
+      id: 'controller',
+      title: 'controller — 자동 감지 fallback',
+      lines: [43, 44],
+      body: '<p>수동 설정하면 그 값이 우선. 비우면 단계 4에서 <code>detectControllerFromBranch</code>가 브랜치명을 토큰 분리해 DB controller 테이블과 매칭. <strong>수동 > 자동</strong> 우선순위는 MOVE 전반의 패턴(T32Config·Pre-Command 등과 같음).</p>',
+    },
+    {
+      id: 'targetpath',
+      title: 'targetPath — Repo별 override',
+      lines: [46, 48],
+      body: '<p>Properties의 default가 기본값으로 세팅. Repo마다 "이 계열은 별도 폴더에"가 가능. 최종 저장 경로는 <code>{targetPath}/{controller}/{branch_name}</code>.</p>',
+    },
+    {
+      id: 'flags',
+      title: 'autoDownload · enabled',
+      lines: [50, 56],
+      body: '<p><code>autoDownload=true</code>(기본): 신규 감지 즉시 ZIP 다운로드. <code>false</code>: DETECTED만 기록하고 사용자 수동 트리거 대기 — <strong>용량 관리</strong>가 필요한 대형 저장소용.<br /><code>enabled=false</code>: 폴링에서 아예 스킵.</p>',
+    },
+    {
+      id: 'timestamps',
+      title: 'timestamps + lastPolledAt',
+      lines: [58, 66],
+      body: '<p>표준 createdAt/updatedAt + <code>lastPolledAt</code>. 마지막 폴링 시각 추적 — Admin UI가 "최근 확인: N분 전" 표시로 활용.</p>',
+    },
+  ]}
+/>
+
+## BitbucketBranch — 브랜치 이력과 상태
+
+<CodeTour
+  client:visible
+  language="java"
+  source="BitbucketBranch.java"
+  height={420}
+  code={branchRaw}
+  steps={[
+    {
+      id: 'entity',
+      title: '@Entity portal_bitbucket_branches',
+      lines: [16, 22],
+      body: '<p>한 행 = 한 브랜치의 최신 상태 스냅샷. 같은 브랜치가 업데이트될 때 <strong>새 행이 생기지 않고 기존 행이 갱신</strong>되는 경우도 있음(삭제 후 재다운로드 API).</p>',
+    },
+    {
+      id: 'repo-link',
+      title: 'repoId + branchName',
+      lines: [23, 27],
+      body: '<p>repoId는 BitbucketRepo 외래키. branchName은 최대 500자 — 긴 feature 브랜치도 수용. <strong>(repoId, branchName)이 사실상 조합 키</strong>이지만 UK를 명시적으로 걸지 않음 — 재다운로드 이력이 필요할 때 복수 행이 허용되도록.</p>',
+    },
+    {
+      id: 'commit-id',
+      title: 'latestCommitId',
+      lines: [29, 31],
+      body: '<p>해당 브랜치의 최신 커밋 해시. 같은 브랜치의 <strong>새 커밋 감지 여부</strong> 판정에 쓸 수 있지만, 현재 구현은 단순히 "이미 DB에 있으면 스킵" 전략이라 직접 쓰이진 않음.</p>',
+    },
+    {
+      id: 'status',
+      title: 'status — 4 상태 머신',
+      lines: [32, 35],
+      body: '<p><strong>DETECTED</strong>(autoDownload=false로 감지만), <strong>DOWNLOADING</strong>(진행 중, 기본값), <strong>DOWNLOADED</strong>(완료), <strong>FAILED</strong>(실패, errorMessage에 사유). 짧고 명확한 상태 머신.</p>',
+    },
+    {
+      id: 'filepath',
+      title: 'filePath + fileSizeBytes',
+      lines: [37, 41],
+      body: '<p>ZIP 경로로 시작 → 해제 완료 시 <strong>압축 해제된 폴더 경로</strong>로 덮어쓰기. 프론트가 이 경로로 T32 dump 시 branchPath 전달.</p>',
+    },
+    {
+      id: 'timestamps',
+      title: 'commitDate + downloadedAt',
+      lines: [43, 48],
+      body: '<p>commitDate는 Bitbucket API에서 받은 authorTimestamp. downloadedAt은 MOVE 기준. <strong>두 시각을 분리</strong>해 "최근 커밋 브랜치" 정렬과 "최근 다운로드" 정렬이 모두 가능.</p>',
+    },
+  ]}
+/>
+
+## 왜 `status` 기본값이 `DOWNLOADING`인가
+
+`@Builder.Default`가 `"DOWNLOADING"`으로 설정되어 있습니다. **이상적으로는 `DETECTED`가 더 적절**:
+
+- `autoDownload=true` 흐름에서도 save 직후 실제 다운로드 시작 전까지 잠깐 잘못된 상태를 띔
+- `autoDownload=false` 흐름에서는 `.status("DETECTED")`로 명시적으로 오버라이드하지만 실수 가능성
+
+현재 작동하는 데는 문제 없으나 **기본값 리팩토링 후보**로 표시.
+
+## 세 엔티티의 책임 분리
+
+```
+Properties (yaml)            BitbucketRepo (DB)            BitbucketBranch (DB)
+───────────────────          ────────────────              ────────────────────
+- 전역 enabled                - 이 Repo 감시할지           - 이 브랜치의 상태
+- 기본 경로                   - 어디에 저장할지            - 어디에 저장됐는지
+                              - autoDownload 여부          - 언제 받았는지
+                              - PAT / Controller
+```
+
+"**어떻게 볼 것인가**"(Properties + Repo) vs "**무엇이 보였는가**"(Branch)로 **시간 축에서 분리**. 설정은 거의 안 바뀌고, 브랜치 상태는 매 폴링마다 늘어남.
+
+## 직접 해보기
+
+- [ ] `SELECT * FROM portal_bitbucket_repos` → 현재 감시 중 저장소 확인
+- [ ] `SELECT status, COUNT(*) FROM portal_bitbucket_branches GROUP BY status` → 상태 분포
+- [ ] Repo에 `autoDownload=false`로 새 저장소 등록 → 이후 DETECTED 상태만 생기는지 로그 관찰
+
+다음: [2. 폴링 스케줄](/learn/l2-bitbucket/02-schedule/) →

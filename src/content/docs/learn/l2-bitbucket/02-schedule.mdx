@@ -1,0 +1,145 @@
+---
+title: 2. 폴링 스케줄 + autoDownload 분기
+description: "@Scheduled 5분 주기 · 신규 브랜치 감지 · 자동/수동 다운로드 분기"
+sidebar:
+  order: 2
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import SequenceTimeline from '../../../../components/learn/SequenceTimeline.svelte';
+import pollRaw from '../../../../snippets/BitbucketMonitorService-poll.java?raw';
+
+## 30초 요약
+
+`BitbucketMonitorService`가 5분마다 `pollAllRepos`를 호출하고, 각 활성 Repo에 대해 `pollRepo`가 돕니다.
+
+1. Bitbucket API로 브랜치 목록 조회
+2. DB에 없는 새 브랜치 발견
+3. `autoDownload=true` → 즉시 `downloadBranch` (단계 4)
+4. `autoDownload=false` → DETECTED만 저장 (사용자 수동 트리거 대기)
+5. `repo.lastPolledAt` 업데이트
+
+## 폴링 시퀀스
+
+<SequenceTimeline
+  client:visible
+  height={340}
+  autoplay={true}
+  caption="autoDownload 두 경로를 같은 폴링 루프 안에서"
+  altText="매 5분마다 @Scheduled가 활성 Repo 목록을 조회하고, 각 Repo에 대해 BitbucketApiClient로 브랜치 목록을 가져옵니다. DB에 없는 새 브랜치면 autoDownload가 true인 경우 즉시 downloadBranch를 호출해 ZIP을 받아 해제하고 DOWNLOADED로 저장합니다. false인 경우에는 commitDate만 보충해 DETECTED 상태로 저장하고 사용자 수동 트리거를 기다립니다."
+  lanes={[
+    { id: 'sch',    label: '@Scheduled',       layer: 'be',    sublabel: '5분 fixedDelay' },
+    { id: 'repo',   label: 'RepoRepository',   layer: 'state', sublabel: 'findByEnabledTrue' },
+    { id: 'api',    label: 'BitbucketApi',     layer: 'tx',    sublabel: 'REST PAT' },
+    { id: 'branch', label: 'BranchRepository', layer: 'state', sublabel: 'save / exists' },
+  ]}
+  messages={[
+    { from: 'sch',  to: 'repo',   label: 'findByEnabled',   t: 0,   kind: 'sync' },
+    { from: 'sch',  to: 'api',    label: 'listBranches',    t: 10,  kind: 'sync' },
+    { from: 'api',  to: 'sch',    label: 'BranchInfo[]',    t: 30,  kind: 'sync' },
+    { from: 'sch',  to: 'branch', label: 'existsByRepoName', t: 40, kind: 'sync' },
+    { from: 'sch',  to: 'api',    label: 'downloadArchive', t: 50,  kind: 'async', note: 'autoDownload=true' },
+    { from: 'sch',  to: 'branch', label: 'save DETECTED',   t: 55,  kind: 'sync', note: 'autoDownload=false' },
+    { from: 'sch',  to: 'repo',   label: 'setLastPolledAt', t: 80,  kind: 'sync' },
+  ]}
+/>
+
+## 코드 투어
+
+<CodeTour
+  client:visible
+  language="java"
+  source="BitbucketMonitorService (폴링)"
+  height={680}
+  code={pollRaw}
+  steps={[
+    {
+      id: 'scheduled',
+      title: '@Scheduled fixedDelay 5분',
+      lines: [6, 10],
+      body: '<p><code>fixedDelay = 300_000</code> (5분) + <code>initialDelay = 30_000</code> (30초). 초기 지연은 <strong>Spring 초기화 완료 후 시작</strong>을 보장. Metadata의 5초 폴링과 달리 <strong>외부 API 호출이라 주기가 훨씬 길음</strong>.</p>',
+    },
+    {
+      id: 'killswitch',
+      title: 'enabled 체크 + 저장소 목록',
+      lines: [11, 13],
+      body: '<p>전역 killswitch 우선. 저장소별 <code>enabled=true</code>인 것만 조회. <strong>두 단계 on/off</strong>로 전체 중단 vs 일부만 빼기를 구분.</p>',
+    },
+    {
+      id: 'loop-try',
+      title: 'per-repo 에러 격리',
+      lines: [14, 21],
+      body: '<p>저장소 하나의 실패가 다른 저장소를 막지 않도록 <code>try/catch</code>로 감쌈. Bitbucket 서버가 일시 장애여도 다른 서버 저장소는 계속 폴링.</p>',
+    },
+    {
+      id: 'pollrepo-api',
+      title: 'pollRepo — listBranches 호출',
+      lines: [29, 34],
+      body: '<p>단계 3의 <code>apiClient.listBranches</code>가 HTTP Bearer + 페이지네이션 처리. 반환은 <strong>BranchInfo record 배열</strong>.</p>',
+    },
+    {
+      id: 'exists-check',
+      title: 'existsByRepoIdAndBranchName',
+      lines: [36, 39],
+      body: '<p>DB에 이미 있는 브랜치면 스킵. <strong>"latestCommitId가 바뀌었나"까지 확인하지 않음</strong> — 단순 존재 여부만. 같은 브랜치의 새 커밋은 현재 감지 안 함(기술 부채).</p>',
+    },
+    {
+      id: 'auto-download',
+      title: 'autoDownload=true → 즉시 다운로드',
+      lines: [40, 42],
+      body: '<p><code>downloadBranch</code>가 동기 호출. <strong>이 폴링 주기 안에서 다운로드가 완료</strong>되어야 다음 브랜치로 넘어감. 한 폴링이 길어질 수 있지만 <code>fixedDelay</code>라 겹침 없음.</p>',
+    },
+    {
+      id: 'detected-only',
+      title: 'autoDownload=false → DETECTED만',
+      lines: [43, 49],
+      body: '<p>branch.authorTimestamp가 있으면 그 값으로 commitDate. metadata.branch-utils 플러그인이 있는 Bitbucket Server만 제공 — 없으면 다음 step에서 fallback.</p>',
+    },
+    {
+      id: 'commit-fallback',
+      title: 'authorTimestamp fallback — /commits API',
+      lines: [50, 59],
+      body: '<p>branch metadata에 없으면 <strong>별도 /commits?until&limit=1 호출</strong>로 authorTimestamp 조회. 추가 API 호출이라 비용은 있지만 DETECTED 브랜치 수가 작아 문제 없음.</p>',
+    },
+    {
+      id: 'save-detected',
+      title: 'DB save — DETECTED 명시',
+      lines: [60, 67],
+      body: '<p><code>.status("DETECTED")</code>로 기본값(DOWNLOADING) 오버라이드. 이 행은 <strong>사용자가 Admin UI에서 Download 버튼</strong>을 누를 때까지 대기.</p>',
+    },
+    {
+      id: 'last-polled',
+      title: 'lastPolledAt 업데이트',
+      lines: [72, 75],
+      body: '<p>폴링 완료 시각 기록. <strong>Repo 엔티티에 쓰기 전에 브랜치 처리가 먼저 끝나야 함</strong> — 폴링 중 실패해도 성공한 부분은 이미 저장됨.</p>',
+    },
+  ]}
+/>
+
+## 왜 fixedDelay 5분으로 고정인가
+
+- **Bitbucket API는 rate limit이 있음** — 너무 자주 호출하면 throttle
+- **브랜치 생성은 빈도가 낮음** — FW 개발 타임라인 기준 수 시간~수 일 간격이 현실
+- **지연 허용** — T32 dump 실행 시 브랜치 드롭다운 당장 최신이 아니어도 무방
+
+yaml로 주기를 외부화하지 않은 이유: **변경이 거의 없다**. 필요해지면 `fixedDelayString = "${bitbucket.monitor.poll-interval-ms:300000}"`로 간단히 바꾸면 됨.
+
+## 같은 브랜치의 새 커밋은 왜 감지 못 하는가
+
+현재 판정은 `existsByRepoIdAndBranchName` — **branchName만 확인**. `latestCommitId` 변화는 감지 안 함.
+
+이유:
+
+- **브랜치 단위가 dump의 단위** — 커밋 단위가 아님
+- FW가 같은 브랜치에서 여러 번 업데이트되는 경우가 드물고, 있어도 수동 "Redownload" 버튼으로 해결
+- **latestCommitId 비교를 추가하면** 매 폴링마다 모든 브랜치 update 체크 필요 → API 비용 증가
+
+현재 설계는 **트래픽과 단순성 trade-off**에서 단순성 선택. 운영 중 요구가 커지면 개선.
+
+## 직접 해보기
+
+- [ ] Bitbucket에 새 브랜치를 push한 뒤 최대 5분 이내에 DB에 행이 생기는지 확인
+- [ ] `autoDownload=false`인 Repo에서 DETECTED 상태만 생기는지 Admin UI에서 관찰
+- [ ] `bitbucket.monitor.enabled=false`로 재시작 → 폴링 로그가 완전히 멈추는지 검증
+
+다음: [3. REST API 호출](/learn/l2-bitbucket/03-api/) →

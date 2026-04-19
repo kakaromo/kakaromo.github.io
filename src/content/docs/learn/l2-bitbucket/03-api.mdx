@@ -1,0 +1,163 @@
+---
+title: 3. REST API — PAT · 페이지네이션 · SSL 무시
+description: Bitbucket Server REST를 HttpClient로 호출, 자체 서명 인증서 대응
+sidebar:
+  order: 3
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import sslListRaw from '../../../../snippets/BitbucketApiClient-ssl-list.java?raw';
+import archiveRaw from '../../../../snippets/BitbucketApiClient-archive.java?raw';
+
+## 30초 요약
+
+`BitbucketApiClient`는 세 가지 API를 호출합니다.
+
+- `listBranches` — `/rest/api/latest/projects/{p}/repos/{r}/branches?start=N&limit=100` (페이지네이션)
+- `downloadArchive` — `/archive?format=zip&at={encodedRef}` (InputStream 반환)
+- `getCommitTimestamp` — `/commits?until={branchId}&limit=1` (DETECTED fallback)
+
+모두 **Bearer PAT** 인증. Java 표준 `HttpClient` 사용, 자체 서명 인증서를 위해 **SSL 검증 비활성** TrustManager.
+
+## 생성자 + listBranches
+
+<CodeTour
+  client:visible
+  language="java"
+  source="BitbucketApiClient (ctor + listBranches)"
+  height={620}
+  code={sslListRaw}
+  steps={[
+    {
+      id: 'fields',
+      title: 'HttpClient + ObjectMapper',
+      lines: [7, 9],
+      body: '<p>Java 11+ 표준 <code>HttpClient</code>. 외부 lib(Apache HttpClient, OkHttp) 없이 JDK 내장. <code>ObjectMapper</code>는 JSON 응답 파싱.</p>',
+    },
+    {
+      id: 'ctor-ssl',
+      title: 'SSLContext TrustManager — all-trust',
+      lines: [10, 27],
+      body: '<p>Bitbucket Server가 <strong>자체 서명 인증서</strong>를 쓰는 경우 기본 SSL 검증 실패. all-trust TrustManager로 검증 우회. <strong>내부망 전제</strong>에서만 안전한 선택 — 외부 호출에는 절대 쓰지 말 것.</p>',
+    },
+    {
+      id: 'follow-redirect',
+      title: 'follow redirects + connectTimeout 30s',
+      lines: [9, 12],
+      body: '<p><code>ALWAYS</code>로 리다이렉트 자동 추적. Bitbucket Server가 HTTP → HTTPS 리다이렉트 해도 투명. 연결 타임아웃 30초로 네트워크 지연 허용.</p>',
+    },
+    {
+      id: 'branchinfo',
+      title: 'BranchInfo record',
+      lines: [31, 32],
+      body: '<p>4 필드: <strong>name</strong>(displayId, 사용자 표기) / <strong>id</strong>(full ref <code>refs/heads/...</code>, API 요청에 사용) / <strong>latestCommitId</strong> / <strong>authorTimestamp</strong>(nullable).</p>',
+    },
+    {
+      id: 'list-loop',
+      title: '페이지네이션 루프 — start += 100',
+      lines: [40, 47],
+      body: '<p>Bitbucket API는 한 번에 최대 100개. <code>while (true)</code> + <code>isLastPage</code> 체크로 <strong>모든 브랜치 순회</strong>. 1000개 브랜치는 10 요청.</p>',
+    },
+    {
+      id: 'request',
+      title: 'HttpRequest — Bearer PAT + Accept json',
+      lines: [48, 54],
+      body: '<p><code>Authorization: Bearer {pat}</code> + <code>Accept: application/json</code>. 타임아웃 30초. GET 요청만 필요해 body 없음.</p>',
+    },
+    {
+      id: 'response-parse',
+      title: 'JSON 파싱 — values 배열 순회',
+      lines: [64, 85],
+      body: '<p>Bitbucket 응답 스키마: <code>{ values: [ { id, displayId, latestCommit, metadata: {...} } ] }</code>. metadata에 <strong>branch-utils 플러그인</strong>이 설치된 경우 authorTimestamp가 있음. 없으면 null로 두고 단계 2의 fallback 사용.</p>',
+    },
+    {
+      id: 'metadata-scan',
+      title: 'metadata 필드 스캔',
+      lines: [73, 84],
+      body: '<p>metadata 하위 키가 <strong>플러그인마다 다름</strong>. 모든 키를 순회하며 <code>authorTimestamp</code> 포함 여부 확인 — 첫 번째 것을 채택. 유연한 파싱 전략.</p>',
+    },
+  ]}
+/>
+
+## downloadArchive + getCommitTimestamp
+
+<CodeTour
+  client:visible
+  language="java"
+  source="BitbucketApiClient (archive + commits)"
+  height={620}
+  code={archiveRaw}
+  steps={[
+    {
+      id: 'archive-sig',
+      title: 'downloadArchive — InputStream 반환',
+      lines: [10, 12],
+      body: '<p>ZIP을 메모리에 올리지 않고 <strong>스트리밍</strong>으로 넘김. 호출자(단계 4)가 8KB 버퍼로 파일에 저장. 큰 저장소(수백 MB)에도 메모리 부담 없음.</p>',
+    },
+    {
+      id: 'url-encode',
+      title: 'branchId → %2f 인코딩',
+      lines: [14, 18],
+      body: '<p>branchId는 <code>refs/heads/feature/foo</code>처럼 슬래시 포함. URL path에 직접 넣을 수 없어 <strong>/ → %2f</strong> 치환. <code>URI.create()</code>가 재인코딩하지 않도록 미리 문자열로 조립.</p>',
+    },
+    {
+      id: 'request-long-timeout',
+      title: 'HttpRequest — timeout 10분',
+      lines: [22, 28],
+      body: '<p>listBranches의 30초와 달리 <strong>ZIP 다운로드는 10분</strong>. 큰 저장소 + 느린 네트워크에도 견딤.</p>',
+    },
+    {
+      id: 'stream-body',
+      title: 'BodyHandlers.ofInputStream',
+      lines: [31, 32],
+      body: '<p><strong>스트리밍 body 핸들러</strong> — 응답 전체가 메모리에 올라오기 전에 InputStream 반환. 호출자가 <code>try-with-resources</code>로 소비하면 자동 close.</p>',
+    },
+    {
+      id: 'archive-error',
+      title: '에러는 InputStream을 소비해 메시지화',
+      lines: [34, 41],
+      body: '<p>200이 아니면 body를 <strong>모두 읽어 에러 메시지로</strong> 포장. InputStream이 닫히므로 누수 없음. 200이면 body 반환.</p>',
+    },
+    {
+      id: 'commit-ts',
+      title: 'getCommitTimestamp — fallback 전용',
+      lines: [50, 80],
+      body: '<p>metadata에 authorTimestamp가 없을 때만 호출. <code>/commits?until={branchId}&limit=1</code>로 최신 커밋 1건만. 실패해도 null 반환 — <strong>조회 실패가 downloadBranch를 막지 않음</strong>.</p>',
+    },
+  ]}
+/>
+
+## PAT 관리 — 평문 저장의 trade-off
+
+현재 PAT는 DB에 **평문**으로 저장됩니다:
+
+- **장점**: 설정 UI · API 모두 단순. Admin이 PAT 변경 시 바로 반영.
+- **단점**: DB 덤프가 유출되면 Bitbucket 접근 토큰도 함께 유출.
+
+개선안:
+
+```java
+@Column(nullable = false, length = 500)
+@Convert(converter = EncryptedStringConverter.class)
+private String pat;
+```
+
+JPA `@Convert`로 AES 암호화 Converter를 붙여 투명 암복호화. **기술 부채**로 기록.
+
+## 왜 HttpClient로 충분한가
+
+Spring에는 `RestTemplate`·`WebClient` 같은 상위 추상화가 있지만 이 모듈은 Java 내장 `HttpClient`를 씁니다.
+
+- **호출 수가 적음** — 5분에 수 회
+- **bean 주입 없이 단순** — 설정·SSL 커스터마이징을 한 곳에서 제어
+- **의존성 감소** — RestTemplate은 곧 deprecated, WebClient는 Reactor 전체
+
+**가장 가벼운 도구로 충분**한 사례. 호출 수가 폭증하면 커넥션 풀링 / 재시도 같은 기능이 필요하고 그때 상위 API로 이행.
+
+## 직접 해보기
+
+- [ ] PAT가 만료되었을 때 401 응답이 어떻게 `IOException`으로 전파되는지 로그 확인
+- [ ] 1000개 브랜치가 있는 저장소에서 listBranches의 페이지네이션 요청 횟수 관찰
+- [ ] 브랜치명에 특수문자(`#`, `%`)가 있을 때 archive 다운로드가 성공하는지 테스트
+
+다음: [4. 다운로드 + 압축 해제](/learn/l2-bitbucket/04-download/) →

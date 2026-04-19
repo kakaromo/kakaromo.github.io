@@ -1,0 +1,195 @@
+---
+title: 4. 다운로드 + 압축 해제
+description: 6 step ZIP 스트리밍 · 1MB 진행 중계 · Zip Slip 방어 · DB 상태 전이
+sidebar:
+  order: 4
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import DataFlowPath from '../../../../components/learn/DataFlowPath.svelte';
+import dlRaw from '../../../../snippets/BitbucketMonitorService-download.java?raw';
+
+## 30초 요약
+
+`downloadBranch`가 **6 단계**로 진행됩니다.
+
+1. controller 결정 + 경로 조립
+2. Branch record 생성 (status=DOWNLOADING)
+3. 디렉토리 생성 + ZIP 파일 경로 확정
+4. Bitbucket API → ZIP 스트리밍 (1MB마다 SSE)
+5. **extractZip** — Zip Slip 방어 + 압축 해제
+6. ZIP 삭제 + DB status=DOWNLOADED
+
+에러 시 status=FAILED + errorMessage. 모두 try 안에서 처리되어 **폴링 루프는 안 죽음**.
+
+## 데이터 흐름
+
+<DataFlowPath
+  client:visible
+  caption="BranchInfo → FS 폴더 + DB 상태"
+  altText="Bitbucket BranchInfo 1건에서 시작해 controller 자동 감지로 저장 경로를 조립합니다. DB에 DOWNLOADING 상태로 row 생성 후 apiClient.downloadArchive의 InputStream을 8KB 버퍼로 OutputStream에 흘리며 1MB마다 SSE 진행 이벤트를 보냅니다. 저장된 ZIP을 Zip Slip 방어 로직으로 풀어낸 뒤 ZIP 파일을 삭제하고 DB row를 DOWNLOADED로 갱신합니다."
+  stages={[
+    {
+      id: 's1',
+      label: 'BranchInfo',
+      layer: 'state',
+      language: 'text',
+      sample: 'name = "feature/fw-v1.2"\nid = "refs/heads/feature/fw-v1.2"\nlatestCommit = "abc123"',
+      note: '단계 2에서 전달',
+    },
+    {
+      id: 's2',
+      label: '경로 조립',
+      layer: 'be',
+      language: 'text',
+      sample: 'safeName = "feature_fw-v1.2"\ncontroller = "TrBazel7"  (자동 감지)\ntargetDir = /appdata/.../TrBazel7/\nzipPath = targetDir/safeName.zip',
+      note: '/→_ 치환 + controller 삽입',
+    },
+    {
+      id: 's3',
+      label: 'DB DOWNLOADING',
+      layer: 'state',
+      language: 'java',
+      sample: 'BitbucketBranch.builder()\n  .status("DOWNLOADING")\n  .filePath(zipPath)\n  ...save()',
+      note: '진행 중 이력 기록',
+    },
+    {
+      id: 's4',
+      label: 'ZIP 스트리밍',
+      layer: 'tx',
+      language: 'java',
+      sample: 'try (InputStream is = ...;\n     OutputStream out = Files.newOutputStream(zipFile)) {\n  while (len = is.read(buf)) {\n    out.write(buf, 0, len);\n    if (+1MB) sendSse("download-progress");\n  }\n}',
+      note: '8KB 버퍼 + SSE 진행',
+    },
+    {
+      id: 's5',
+      label: '압축 해제 + 정리',
+      layer: 'be',
+      language: 'java',
+      sample: 'extractZip(zipFile, extractDir)\n  → Zip Slip 검증\nFiles.deleteIfExists(zipFile)\nrecord.setStatus("DOWNLOADED")\nrecord.setFilePath(extractDir)',
+      note: '폴더 경로로 filePath 교체',
+    },
+  ]}
+  transforms={[
+    { label: 'resolve' },
+    { label: 'claim' },
+    { label: 'stream' },
+    { label: 'unpack' },
+  ]}
+/>
+
+## 코드 투어
+
+<CodeTour
+  client:visible
+  language="java"
+  source="BitbucketMonitorService.downloadBranch"
+  height={700}
+  code={dlRaw}
+  steps={[
+    {
+      id: 'signature',
+      title: 'downloadBranch — emitter는 nullable',
+      lines: [6, 8],
+      body: '<p>자동 폴링 경로는 emitter가 null. 수동 SSE 다운로드 경로(단계 5)는 emitter 전달. <strong>같은 함수로 두 경로를 모두 서비스</strong> — 분기 비용이 거의 없음.</p>',
+    },
+    {
+      id: 'controller-detect',
+      title: 'controller 자동 감지',
+      lines: [10, 18],
+      body: '<p>Repo에 controller 명시되어 있으면 사용, 없으면 <code>detectControllerFromBranch</code>로 <strong>브랜치명 토큰</strong> 분리해 DB controller와 매칭. 브랜치 이름이 <code>feature/TrBazel7/fix-*</code>면 <code>TrBazel7</code>이 감지됨.</p>',
+    },
+    {
+      id: 'paths',
+      title: 'targetDir + zipPath 조립',
+      lines: [20, 23],
+      body: '<p><code>{targetPath}/{controller}/{safeName}.zip</code>. safeName은 <code>/</code>를 <code>_</code>로 치환 (파일 시스템 안전). 같은 브랜치가 다시 다운로드되면 <strong>덮어쓰기</strong>.</p>',
+    },
+    {
+      id: 'commit-date',
+      title: 'commitDate — pre-save',
+      lines: [25, 34],
+      body: '<p>DB row 생성 <strong>이전에</strong> commitDate 조회. API 실패해도 null로 저장 가능 — 이력은 남김. 이 시점에 authorTimestamp를 확실히 확보.</p>',
+    },
+    {
+      id: 'save-downloading',
+      title: 'save — status=DOWNLOADING',
+      lines: [35, 43],
+      body: '<p>다운로드 시작 전 이력 row 생성. <strong>프론트가 실시간으로 "진행 중" 표시</strong>할 수 있도록. 실패해도 row는 남아 어떤 브랜치에서 실패했는지 추적 가능.</p>',
+    },
+    {
+      id: 'mkdirs',
+      title: 'Step 1 — 디렉토리 생성',
+      lines: [46, 49],
+      body: '<p><code>Files.createDirectories</code>는 이미 존재해도 OK. 여러 브랜치가 동시 실행 시 race 없음.</p>',
+    },
+    {
+      id: 'stream-zip',
+      title: 'Step 2 — ZIP 스트리밍 + SSE',
+      lines: [51, 76],
+      body: '<p>8KB 버퍼로 read/write 루프. <strong>누적 1MB마다</strong> <code>sendSseEvent("download-progress")</code>로 프론트에 MB 단위 진행. <code>try-with-resources</code>로 양쪽 스트림 자동 close.</p>',
+    },
+    {
+      id: 'extract-sse',
+      title: 'Step 3-5 — 압축 해제 + extract-start/done',
+      lines: [83, 94],
+      body: '<p>ZIP 저장 완료 후 <code>extract-start</code> SSE → <code>extractZip</code> 호출 → <code>extract-done</code>. 프론트가 "ZIP 다 받음, 이제 푸는 중" 구분 표시.</p>',
+    },
+    {
+      id: 'cleanup-zip',
+      title: 'Step 6 — ZIP 삭제',
+      lines: [96, 98],
+      body: '<p>해제된 폴더가 최종 산출물. ZIP 자체는 디스크 절약을 위해 삭제. <code>deleteIfExists</code>로 누수 케이스 방어.</p>',
+    },
+    {
+      id: 'success',
+      title: '성공 — status=DOWNLOADED + filePath 교체',
+      lines: [100, 105],
+      body: '<p><strong>filePath를 ZIP 경로에서 해제 폴더 경로로 교체</strong>. 프론트는 이 경로를 branchPath로 T32 dump에 전달. fileSizeBytes·downloadedAt도 기록.</p>',
+    },
+    {
+      id: 'failure',
+      title: '실패 — status=FAILED + errorMessage',
+      lines: [106, 112],
+      body: '<p>예외 메시지를 그대로 errorMessage에 저장. <strong>디버깅 시 DB만 봐도 실패 사유 확인</strong>. 폴링 루프는 이 함수가 반환하면 다음 브랜치로 계속.</p>',
+    },
+  ]}
+/>
+
+## Zip Slip 방어
+
+`extractZip`은 다음을 강제합니다.
+
+```java
+Path entryPath = targetDir.resolve(entry.getName()).normalize();
+if (!entryPath.startsWith(targetDir)) {
+    throw new SecurityException("Zip Slip attempt: " + entry.getName());
+}
+```
+
+**악의적 ZIP이 `../../etc/passwd` 같은 엔트리를 포함하면** 해제 시 타겟 밖으로 탈출 가능. `normalize() + startsWith` 두 단계로 방어.
+
+- `normalize()` — `../` 경로를 실제로 축소
+- `startsWith(targetDir)` — 축소 후 여전히 타겟 아래인지 확인
+
+Log Browser L2의 Local 구현 `resolveLocalPath`와 **같은 방어 패턴**. 외부 데이터를 파일 시스템에 반영할 때는 필수.
+
+## 자동/수동 경로의 공통 함수
+
+```java
+// 자동 폴링 경로
+downloadBranch(repo, branchName, branchId, commitId);   // emitter=null
+
+// 수동 사용자 경로 (단계 5 Controller)
+downloadBranch(repo, branchName, branchId, commitId, emitter);  // SSE
+```
+
+**같은 함수**에서 `emitter != null` 체크로 분기. 두 경로의 로직 일관성 보장, 수정 시 한 곳만.
+
+## 직접 해보기
+
+- [ ] 큰 저장소(수백 MB)를 다운로드하며 `download-progress` SSE가 MB 단위로 오는지 Admin UI에서 확인
+- [ ] 잘못된 PAT로 실패 → DB row의 status=FAILED, errorMessage에 401 내용 확인
+- [ ] 악의적 ZIP 엔트리(`../`) 포함된 파일을 수동으로 배치해 extractZip이 `SecurityException` 던지는지
+
+다음: [5. T32 L2 소비 + 프론트 드롭다운](/learn/l2-bitbucket/05-consume/) →
