@@ -1,0 +1,129 @@
+---
+title: iotest — syscall DSL I/O 엔진
+description: 15번째 L2 · 엔진 축 세 번째 · 실제 디바이스에 syscall 실행하는 side-effect 엔진
+sidebar:
+  order: 0
+---
+
+import ArchitectureDiagram from '../../../../components/learn/ArchitectureDiagram.svelte';
+
+## 30초 요약
+
+iotest는 **Android 디바이스에서 실제 파일 I/O syscall 시퀀스를 실행**하는 사내 테스트 엔진. fio/iozone이 "준비된 벤치"라면 iotest는 **"임의 시나리오를 DSL로 조립"**:
+
+1. 사용자가 **IOTestEditor**에서 thread + commands 트리 구성 (open/write/read/fsync/loop/if …)
+2. 포털이 `IOTestPreset` 엔티티에 **configJson(MEDIUMTEXT)** 한 컬럼으로 저장
+3. 실행 버튼 → **generic `RunBenchmark` gRPC RPC**에 `tool=IOTEST` + `params["config"]=JSON`으로 Go Agent에 전달
+4. Go Agent가 thread마다 goroutine 생성, **실제 syscall 실행**
+5. `SubscribeJobProgress` 스트림으로 **per-thread per-op progress** 이벤트 되돌아옴
+6. 프론트 `IOTestProgressView`가 SSE로 받아 thread별 진행 바 표시
+
+**엔진 축 세 번째** — BinMapper(백엔드 순수 계산) · Perf Generator(프론트 순수 계산)에 이어 **"side-effect 있는 엔진"** 을 담당.
+
+## 엔진 축 3중주 — 순수 vs 부작용
+
+이전 두 엔진과 함께 보면 "엔진" 이라는 축이 포괄하는 범위가 드러남:
+
+| 특징 | 🧬 BinMapper | ⚙ Perf Generator | 🔬 iotest |
+|---|---|---|---|
+| 파이프라인 | Lex→Parse→IR→Read | analyze→generate | **DSL → gRPC → syscall → progress** |
+| Side effect | 없음 (읽기만) | 없음 (생성만) | **있음 — 디바이스 파일 쓰기/삭제** |
+| 실행 환경 | JVM | 브라우저 | **JVM → Go Agent → Android kernel** |
+| 결과 시점 | 동기 반환 | 즉시 화면 | **비동기 스트림 (수 초~수 분)** |
+| 재실행 | 같은 입력 = 같은 출력 | 동일 | **같은 입력 = 다른 결과** (디바이스 상태 변화) |
+| 상태 | stateless | stateless | **side effect가 디바이스 파일시스템에 누적** |
+
+**"pure function 엔진 2 + effectful 엔진 1"** 이라는 구성. 엔진 축 안에서도 **순수성** 이 주요 서브축.
+
+## 왜 "DSL"이고 왜 "엔진"인가
+
+- **DSL (Domain Specific Language)**: `op` + 인수 조합이 언어 — `open`, `write`, `loop{…}`, `if{…}` 등 도메인 용어. 범용 프로그래밍 언어가 아님
+- **엔진**: 이 DSL을 해석·실행·진행률 보고까지 **독립 모듈로 완결**. 다른 L2가 소비하지 않고 Agent 단독 서비스
+
+BinMapper도 "C struct DSL"을 갖지만 **실행이 없음** — 해석만. iotest는 **실행이 핵심**. 같은 "DSL 엔진" 우산 아래 서로 다른 소비 패턴.
+
+## 7단계 파이프라인
+
+<ArchitectureDiagram
+  client:visible
+  height={330}
+  caption="Editor → configJson → RunBenchmark → Go Agent → syscall → JobProgress → UI"
+  altText="프론트엔드 IOTestEditor에서 사용자가 thread와 commands 트리를 조립하면 IOTestConfig JSON이 만들어집니다. IOTestPreset 엔티티로 저장하거나 바로 실행할 수 있습니다. 포털 AgentController가 RunBenchmark gRPC RPC를 호출할 때 tool을 IOTEST로 설정하고 params map의 config 키에 JSON 문자열을 담아 Go Agent에 전달합니다. Go Agent는 thread마다 goroutine을 스폰해 실제 open/write/read/fsync/unlink 같은 syscall을 Android 디바이스 경로에 실행하고, 진행 상황을 SubscribeJobProgress 스트림으로 per-thread per-op 이벤트로 되돌려줍니다. 포털이 SSE로 프론트에 중계하고 IOTestProgressView가 thread별 진행 바를 렌더합니다."
+  nodes={[
+    { id: 'editor', label: 'IOTestEditor', sublabel: 'thread + commands 트리',    layer: 'fe',    x: 0,   y: 80, href: '/learn/l2-iotest/01-editor/' },
+    { id: 'preset', label: 'IOTestPreset', sublabel: 'configJson (MEDIUMTEXT)',   layer: 'state', x: 180, y: 200, href: '/learn/l2-iotest/02-dsl/' },
+    { id: 'ctrl',   label: 'AgentController', sublabel: '/agent/benchmark/run',   layer: 'be',    x: 200, y: 80, href: '/learn/l2-iotest/04-execute/' },
+    { id: 'grpc',   label: 'RunBenchmark', sublabel: 'tool=IOTEST + params map', layer: 'tx',    x: 400, y: 80, href: '/learn/l2-iotest/04-execute/' },
+    { id: 'agent',  label: 'Go Agent',     sublabel: 'goroutine × thread',        layer: 'be',    x: 580, y: 80, href: '/learn/l2-iotest/04-execute/' },
+    { id: 'device', label: 'Android FS',    sublabel: 'open/write/read/fsync',    layer: 'hw',    x: 580, y: 200, href: '/learn/l2-iotest/03-ops/' },
+    { id: 'progress', label: 'JobProgress stream', sublabel: 'per-thread SSE',    layer: 'tx',    x: 400, y: 260, href: '/learn/l2-iotest/05-progress/' },
+    { id: 'view',   label: 'IOTestProgressView', sublabel: 'thread별 진행 바',    layer: 'fe',    x: 0,   y: 260, href: '/learn/l2-iotest/05-progress/' },
+  ]}
+  edges={[
+    { from: 'editor', to: 'preset',   label: 'save',          kind: 'sync' },
+    { from: 'editor', to: 'ctrl',     label: 'run',           kind: 'sync' },
+    { from: 'preset', to: 'ctrl',     label: 'load',          kind: 'sync' },
+    { from: 'ctrl',   to: 'grpc',     label: 'invoke',        kind: 'sync' },
+    { from: 'grpc',   to: 'agent',    label: 'params.config', kind: 'sync' },
+    { from: 'agent',  to: 'device',   label: 'syscall',       kind: 'async' },
+    { from: 'agent',  to: 'progress', label: 'stream',        kind: 'async' },
+    { from: 'progress', to: 'view',   label: 'SSE',           kind: 'async' },
+  ]}
+/>
+
+## Preset vs 직접 편집 두 경로
+
+사용자가 iotest를 실행하는 **두 시작점**:
+
+1. **Preset 로드** — 18개 내장 프리셋 또는 DB 저장 프리셋에서 가져오기
+2. **직접 편집** — Editor에서 0부터 조립
+
+둘 다 같은 IOTestConfig 구조로 수렴 → 같은 gRPC 호출로 실행.
+
+**내장 18 프리셋**은 "자주 쓰는 시나리오 카탈로그":
+
+- Basic I/O: Offset Write/RW, Misaligned RW, Conditional RW
+- File Management: Create+Delete Odd/Even, Fragmentation Test, Rename Stress
+- Data Integrity: Multi-File R/W, Random BS + Verify
+- Concurrent: Mixed RWD, Concurrent Same File
+- Random/Stress: Cache Miss, Duration Stress (60s)
+- Device Control: Voltage Swing + I/O (sysfs 조작)
+
+**"자주 쓰는 시나리오를 언어로 정의해 카탈로그화"** — 프리셋이 곧 팀의 I/O 지식 저장소.
+
+## generic RunBenchmark의 재사용
+
+iotest가 **전용 gRPC RPC를 안 만들고** `RunBenchmark`를 기생한 것:
+
+```protobuf
+enum BenchmarkTool {
+  BENCHMARK_TOOL_FIO = 1;
+  BENCHMARK_TOOL_IOZONE = 2;
+  BENCHMARK_TOOL_TIOTEST = 3;
+  BENCHMARK_TOOL_IOTEST = 4;  // ← iotest도 여기
+}
+```
+
+- fio/iozone/tiotest와 **모든 인프라 공유** — job 관리, 진행 스트림, 재시도 정책, busy policy
+- Go Agent 쪽도 executor switch에 한 case 추가로 완결
+- **"새 I/O 도구 추가 = 새 enum 값 + executor 구현"** 패턴이 성립
+
+단점: iotest만의 구조적 인수(thread·commands 트리)가 **params["config"] 단일 JSON 문자열**로 납작해짐. 타입 안전성이 JSON 안에서 손실 — 그래서 프론트 `types.ts`와 Go Agent 쪽이 shape 동기화 필요.
+
+## 학습 순서
+
+| 순서 | 페이지 | 관찰 포인트 |
+|---|---|---|
+| 1 | [IOTestEditor + Preset 저장](/learn/l2-iotest/01-editor/) | 계층 구조 편집 · 프리셋 CRUD · 엔티티 단일 컬럼 |
+| 2 | [DSL 타입과 재귀 구조](/learn/l2-iotest/02-dsl/) | IOTestConfig/Thread/Command · loop/if 중첩 · 템플릿 |
+| 3 | [20+ operation primitives](/learn/l2-iotest/03-ops/) | I/O·File·Device·Control·Flow 5 카테고리 · offset/bs 표현식 |
+| 4 | [실행 경로 — generic RunBenchmark](/learn/l2-iotest/04-execute/) | Controller → gRPC → Agent → syscall · 재시도·busy 정책 |
+| 5 | [진행률 스트림 + 엔진 3중주](/learn/l2-iotest/05-progress/) | JobProgress · per-thread SSE · BinMapper/PerfGen/iotest 축 정리 |
+
+## 직접 해보기
+
+- [ ] Agent 페이지 → iotest 탭 → "Offset Write" 프리셋 로드 → device 선택 → 실행 → thread 진행 바 관찰
+- [ ] 새 preset을 DB에 저장 후 reload → "My Presets" 섹션에 표시되는지
+- [ ] `{{i*4096}}` 템플릿이 loop iteration에 따라 실제 offset으로 확장되는지 진행 이벤트에서 확인
+
+다음: [1. IOTestEditor + Preset 저장](/learn/l2-iotest/01-editor/) →

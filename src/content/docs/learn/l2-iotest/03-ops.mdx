@@ -1,0 +1,180 @@
+---
+title: 3. 20+ operation primitives
+description: I/O · File · Device · Control · Flow 5 카테고리 · fd 다중 파일 · syscall 매핑
+sidebar:
+  order: 3
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import opsRaw from '../../../../snippets/iotest-opdefs-head.ts?raw';
+
+## 30초 요약
+
+**5 카테고리 × 20+ op**:
+
+| 카테고리 | op | 매핑 |
+|---|---|---|
+| I/O | open · close · read · write · verify · fsync · fdatasync | `open(2)`, `pread/pwrite`, `fsync` |
+| File | stat · truncate · unlink · rename · fallocate · mkdir · create_files · delete_pattern | 파일시스템 조작 |
+| Device | sysfs_write · sysfs_read | `/sys/…`에 쓰기/읽기 (전압·주파수 제어) |
+| Control | shell · sleep | 타 명령 + 대기 |
+| Flow | loop · if | **실행 흐름** (재귀 commands 포함) |
+
+각 op가 **고정 필드 스펙**을 가짐 → 프론트가 dropdown/input 구성 자동, 서버가 파싱 알려진 키만 읽음.
+
+## 카테고리별 주요 op
+
+### I/O 카테고리 — syscall 얇은 wrap
+
+- **open**: `open(path, flags, …)` — flags는 `"O_RDWR|O_CREATE"` 같은 string (서버가 `|` split → flag int)
+- **close**: `close(fd)` — fd 이름으로 특정 파일 지정
+- **read**: `pread(fd, buf, bs, offset)` — offset 지정 읽기, count회 반복
+- **write**: `pwrite(fd, buf, bs, offset)` + pattern(zero/random/byte:0xXX)
+- **verify**: write → read → **byte-for-byte 비교**, mismatch 보고
+- **fsync/fdatasync**: `fsync(2)` / `fdatasync(2)` — 캐시 flush 유도
+
+### File 카테고리 — 파일시스템 구조 조작
+
+- **stat**: size·mode·mtime 조회 (결과는 progress 이벤트 metrics로)
+- **truncate**: `truncate(path, size)` — 크기 확장/축소
+- **unlink**: `unlink(path)` — 삭제
+- **rename**: `rename(old, new)` — 이름 변경 (같은 FS 내)
+- **fallocate**: 공간 예약 (preallocate)
+- **mkdir**: 디렉토리 생성
+- **create_files**: `{dir, prefix, count, bs, blocks}` — 대량 파일 생성 (fragmentation 준비용 헬퍼)
+- **delete_pattern**: `{dir, prefix, rule: 'odd'|'even'|'all', count}` — 패턴 삭제 (fragmentation 유발)
+
+### Device 카테고리 — sysfs 조작
+
+- **sysfs_write**: `/sys/class/...` 파일에 값 쓰기 (예: CPU 거버너, 주파수)
+- **sysfs_read**: 같은 경로에서 읽어 progress 이벤트 value에 담음
+
+"**voltage swing + concurrent I/O**" 프리셋이 대표 — UFS 전압을 바꿔가며 I/O 부하를 걸어 전압 변동 내성 확인.
+
+### Control 카테고리
+
+- **shell**: Android 셸 명령 실행 — `{cmd: "adb root"}` 같은 사전 세팅
+- **sleep**: `{ms: 1000}` — 1초 대기
+
+### Flow 카테고리 — 제어 흐름
+
+- **loop**: `{loop_count: N, commands: [...]}` 또는 `{loop_duration: N, commands: [...]}`
+- **if**: `{condition: "{{i%2==0}}", then: [...], else: [...]}`
+
+이 두 op만이 **`commands`/`then`/`else` 재귀 자식**을 가짐 → 구조의 재귀성이 여기서 발생.
+
+## OpDef 스키마 — 프론트 폼 자동 생성
+
+<CodeTour
+  client:visible
+  language="ts"
+  source="opDefs.ts — 인터페이스 + 4 op"
+  height={660}
+  code={opsRaw}
+  steps={[
+    {
+      id: 'opfield',
+      title: 'OpFieldDef — 필드 하나의 스펙',
+      lines: [8, 16],
+      body: '<p>key(IOTestCommand 필드명) · label(UI 라벨) · type(input/select/textarea) · defaultValue · choices(select일 때) · help/placeholder. <strong>프론트 폼 렌더러가 이 구조를 보고 자동으로 필드 UI 생성</strong>.</p>',
+    },
+    {
+      id: 'opdef',
+      title: 'OpDef — op 하나의 완전 정의',
+      lines: [18, 24],
+      body: '<p>label(드롭다운 표시) · category(5종) · color(tailwind bg, UI 구분) · fields 배열 · help 도움말. <strong>"op 추가 = 이 레코드 하나 추가"</strong>의 단순성.</p>',
+    },
+    {
+      id: 'op-defs-map',
+      title: 'OP_DEFS: Record<string, OpDef>',
+      lines: [26, 26],
+      body: '<p>Key가 op 이름(IOTestCommand.op 값과 일치). <strong>런타임에도 op 이름으로 lookup</strong>해 필드 검증/UI 구성 가능.</p>',
+    },
+    {
+      id: 'open-op',
+      title: 'open — I/O 카테고리 시작',
+      lines: [27, 46],
+      body: '<p>fields: path + fd(optional) + flags(select, 11 choices). <strong>flags가 select인 이유</strong> — 조합이 많지만 실사용은 10여 종. 자유 입력보다 dropdown이 오타 방지.</p>',
+    },
+    {
+      id: 'close-op',
+      title: 'close — 최소 필드',
+      lines: [47, 55],
+      body: '<p>fd 하나만. <strong>빈 문자열이면 "마지막 열린 파일"</strong> — 단일 파일 워크플로에서 fd 명명 부담 제거. help에 명시.</p>',
+    },
+    {
+      id: 'read-op',
+      title: 'read — offset 템플릿 도움말',
+      lines: [56, 66],
+      body: '<p>offset help에 <code>4k/1m, {{i*4096}}, random:0-1m, seq:0,4k,8k</code> 4 형태 나열. <strong>help가 사실상 mini-DSL 문서</strong> — 사용자가 UI에서 바로 볼 수 있음.</p>',
+    },
+    {
+      id: 'write-op',
+      title: 'write — pattern select',
+      lines: [68, 80],
+      body: '<p>pattern choices: <code>zero, random, byte:0xFF, byte:0x55, byte:0xAA</code>. <strong>5 선택지로 대부분 커버</strong>. custom 필요 시 입력 type로 바꾸는 확장 여지.</p>',
+    },
+  ]}
+/>
+
+## "OpDef 하나로 UI/검증/문서 모두"
+
+OP_DEFS 한 레코드가 **세 가지를 동시에 달성**:
+
+1. **UI 생성** — `{type: 'select', choices: [...]}` 만 있어도 `<select>` 렌더 가능
+2. **문서** — `help` 문구가 사용자용 설명 (별도 wiki 없이도 self-explanatory)
+3. **검증 (부분)** — choices가 있으면 프론트에서 "목록 밖 값" 차단 가능
+
+이 패턴이 **코드 = 사양**이 되는 희귀 사례. 변경 시 세 곳(UI + 문서 + 검증)을 동시 업데이트하지 않아도 됨.
+
+**같은 패턴의 다른 L2**:
+- **Agent Benchmark (fio/iozone)** — `benchmarkOptions.ts`가 OpDef와 유사
+- **Perf Generator** — FieldRole이 UI 렌더 방식을 결정
+- **iotest** — OP_DEFS
+
+공통 원칙: **"UI를 설명하는 데이터가 소스 of truth"**.
+
+## fd 다중 파일 — 이름 기반 핸들 관리
+
+단일 파일 워크플로는 fd 생략 가능. 다중 파일은 **fd 이름 부여**:
+
+```json
+{"op": "open", "fd": "A", "path": "/data/.../file1", "flags": "O_RDWR|O_CREATE"},
+{"op": "open", "fd": "B", "path": "/data/.../file2", "flags": "O_RDWR|O_CREATE"},
+{"op": "write", "fd": "A", "offset": "0", "bs": "4k", "pattern": "byte:0xAA"},
+{"op": "write", "fd": "B", "offset": "0", "bs": "4k", "pattern": "byte:0x55"},
+{"op": "verify", "fd": "A", "offset": "0", "bs": "4k", "pattern": "byte:0xAA"},
+{"op": "verify", "fd": "B", "offset": "0", "bs": "4k", "pattern": "byte:0x55"}
+```
+
+**"Multi-File R/W" 프리셋**이 이 패턴. 핸들 이름 하나로 파일 identity를 유지.
+
+## syscall 수준이 아닌 op 선택
+
+왜 `read/write` 가 `pread/pwrite` 에 해당:
+- **iteration 간 상태 없음** — offset이 명시적이라 마지막 seek 위치 고려 안 해도 됨
+- **thread 간 영향 없음** — file position이 thread local이 아님
+- **재현성** — 같은 op가 같은 결과 (side effect 제외)
+
+`read/write`를 쓰면 seek/position 관리 필요 → 버그 소스. **"간단함을 위해 pread/pwrite 선택"**.
+
+## "fake op" 후보 — 미구현 의도
+
+있을 법하지만 의도적 미구현:
+
+| op | 미구현 이유 |
+|---|---|
+| parallel | thread가 이미 병렬, 중복 |
+| assert | verify가 동일 목적 |
+| log | progress 이벤트가 이미 로그 |
+| benchmark | fio/iozone이 별도 tool 로 존재 |
+
+**"추가 기능의 유혹"** 대신 기존 primitive 조합으로 해결 가능한지 먼저 확인. iotest가 "범용 I/O 언어"가 아닌 "**I/O 시나리오 DSL**"로 좁게 정의됨.
+
+## 직접 해보기
+
+- [ ] `opDefs.ts`에 새 op 추가 (예: `madvise`) → UI 드롭다운에 즉시 표시되는지
+- [ ] flags select choices에 없는 값(`O_CLOEXEC`)을 URL로 강제 주입 → 서버가 파싱 실패하는지
+- [ ] fd="" (빈 문자열) 이 **"마지막 열린 파일"**을 가리키는 규칙이 close 시에도 작동하는지 확인
+
+다음: [4. 실행 경로 — generic RunBenchmark](/learn/l2-iotest/04-execute/) →

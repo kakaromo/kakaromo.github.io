@@ -1,0 +1,188 @@
+---
+title: 4. 실행 경로 — generic RunBenchmark
+description: /agent/benchmark/run · tool=IOTEST · params.config · Go Agent goroutine · busy_policy/retry
+sidebar:
+  order: 4
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import DataFlowPath from '../../../../components/learn/DataFlowPath.svelte';
+import protoRaw from '../../../../snippets/RunBenchmark-proto.text?raw';
+
+## 30초 요약
+
+iotest는 **전용 gRPC RPC를 만들지 않고** fio/iozone/tiotest가 쓰는 `RunBenchmark` unary RPC를 기생:
+
+1. 프론트 → `POST /agent/benchmark/run?serverId=N` (tool=IOTEST + config JSON)
+2. 포털 `AgentController` → `AgentGrpcClient.runBenchmark(request)`
+3. Go Agent가 RunBenchmarkRequest 수신 → **executor switch**에서 IOTEST case 선택
+4. iotest executor가 configJson 파싱 → thread마다 **goroutine spawn** → 순차 syscall
+5. 중간 상태/진행률은 **`SubscribeJobProgress` server-stream**으로 역류 (다음 페이지)
+
+전용 RPC 대신 generic 재사용한 이유와 **비용**을 함께 짚음.
+
+## 5 단계 변환
+
+<DataFlowPath
+  client:visible
+  caption="IOTestConfig → Svelte fetch → REST → gRPC Unary → Go Agent"
+  altText="프론트엔드 IOTestEditor가 IOTestConfig 객체를 가지고 fetch를 호출할 때 JSON.stringify로 문자열화합니다. Portal AgentController가 REST로 받아 tool을 IOTEST로 세팅하고 params map의 config 키에 그 JSON 문자열을 담습니다. gRPC client가 RunBenchmarkRequest 메시지로 래핑해 Go Agent에 unary call을 보냅니다. Go Agent의 executor switch가 tool 값을 보고 iotest 전용 executor로 분기, JSON을 parse해 thread 구조를 복원하고 thread마다 goroutine을 띄웁니다."
+  stages={[
+    {
+      id: 'fe',
+      label: 'Svelte fetch',
+      layer: 'fe',
+      language: 'text',
+      sample: 'POST /agent/benchmark/run?serverId=7\nbody: { tool: "IOTEST",\n        params: { config: JSON.stringify(config) },\n        device_ids: [...] }',
+      note: '프론트에서 stringify',
+    },
+    {
+      id: 'ctrl',
+      label: 'AgentController',
+      layer: 'be',
+      language: 'text',
+      sample: 'runBenchmark(req)\n  grpcStub.runBenchmark(\n    RunBenchmarkRequest.newBuilder()\n      .setTool(BENCHMARK_TOOL_IOTEST)\n      .putParams("config", json)\n      .build())',
+      note: 'proto 메시지 빌더',
+    },
+    {
+      id: 'grpc',
+      label: 'gRPC Unary',
+      layer: 'tx',
+      language: 'text',
+      sample: 'RunBenchmarkRequest →→→→→\n                       Go Agent\n←←←←← RunBenchmarkResponse\n      { job_id: "..." }',
+      note: '짧은 ack만 반환',
+    },
+    {
+      id: 'agent',
+      label: 'Go Agent executor',
+      layer: 'be',
+      language: 'text',
+      sample: 'switch req.Tool {\n  case FIO:    runFio(...)\n  case IOTEST: runIOTest(\n    json.Unmarshal(params["config"]),\n    progressChan)\n}',
+      note: '엔진 선택',
+    },
+    {
+      id: 'exec',
+      label: 'goroutine × thread',
+      layer: 'hw',
+      language: 'text',
+      sample: 'for _, t := range cfg.Threads {\n  go func(t Thread) {\n    for _, cmd := range t.Commands {\n      executeCmd(cmd, fdMap, device)\n    }\n  }(t)\n}',
+      note: '실제 syscall',
+    },
+  ]}
+  transforms={[
+    { label: 'stringify' },
+    { label: 'proto' },
+    { label: 'switch' },
+    { label: 'spawn' },
+  ]}
+/>
+
+## proto 메시지 — RunBenchmark & JobProgress
+
+<CodeTour
+  client:visible
+  language="text"
+  source="device_agent.proto — 발췌"
+  height={640}
+  code={protoRaw}
+  steps={[
+    {
+      id: 'tool-enum',
+      title: 'BenchmarkTool enum — IOTEST=4',
+      lines: [6, 6],
+      body: '<p>fio/iozone/tiotest에 이어 <strong>4번 자리에 IOTEST</strong>. 새 I/O 도구가 생기면 5번으로. <strong>enum으로 카탈로그화</strong>하는 재사용 메커니즘.</p>',
+    },
+    {
+      id: 'job-state',
+      title: 'JobState — 9 상태',
+      lines: [9, 20],
+      body: '<p>QUEUED → PUSHING_TOOLS → RUNNING → (COLLECTING → COMPLETED | FAILED | PARTIALLY_FAILED | CANCELLED). <strong>PUSHING_TOOLS</strong>는 Go Agent가 iotest 바이너리를 device에 push 하는 단계.</p>',
+    },
+    {
+      id: 'req-shape',
+      title: 'RunBenchmarkRequest — 7 필드',
+      lines: [22, 30],
+      body: '<p>device_ids(여러 디바이스 배치 실행) · tool(iotest 선택) · <strong>params map</strong>(config JSON 담김) · job_name(조회용) · busy_policy · retry_count · retry_delay_seconds.</p>',
+    },
+    {
+      id: 'busy-policy',
+      title: 'busy_policy — reject/wait/force',
+      lines: [27, 27],
+      body: '<p>device가 다른 job 중이면: <strong>reject</strong>=거부(기본), <strong>wait</strong>=끝날 때까지 대기, <strong>force</strong>=기존 job 중단 후 실행. iotest가 destructive한 경우 reject 기본이 안전.</p>',
+    },
+    {
+      id: 'retry',
+      title: 'retry_count + retry_delay',
+      lines: [28, 29],
+      body: '<p>디바이스 인터미턴트 실패(USB reconnect 등) 대비. <strong>iotest는 side effect가 있어 retry가 미묘</strong> — 이전 실행에서 파일이 남아있을 수 있음. 프리셋이 cleanup 포함하는 이유.</p>',
+    },
+    {
+      id: 'resp',
+      title: 'RunBenchmarkResponse — job_id만',
+      lines: [32, 34],
+      body: '<p><strong>unary 응답은 짧게</strong> — 실제 진행률/결과는 별도 SubscribeJobProgress 스트림. 두 RPC 분리로 "시작 확인"과 "진행 관찰"이 독립.</p>',
+    },
+    {
+      id: 'job-progress',
+      title: 'JobProgress 메시지 — 스트림 단위',
+      lines: [60, 71],
+      body: '<p>device_id / state / message / progress_percent / error / <strong>metrics map</strong>(숫자) / <strong>raw_output</strong>(문자열). iotest는 <strong>message에 JSON 이벤트</strong>를 담아 보냄 — ThreadProgress 집계에 사용.</p>',
+    },
+  ]}
+/>
+
+## "generic RunBenchmark 기생"의 득실
+
+### 이득
+
+| 축 | 설명 |
+|---|---|
+| job 관리 재사용 | jobs Map · history · cancel 등 기존 인프라 그대로 |
+| UI 컴포넌트 공유 | Agent Job Card가 iotest에도 동작 |
+| 재시도 정책 재사용 | retry_count/delay 같은 필드가 enum 바꿔도 동일 |
+| 새 도구 추가 용이 | enum 값 + executor case만 |
+
+### 비용
+
+| 축 | 설명 |
+|---|---|
+| 타입 안전성 손실 | `params: map<string,string>` 안에 구조체 인코딩 — proto가 검증 못 함 |
+| 디버깅 어려움 | iotest 에러가 "RunBenchmark 실패"로만 표시 → 원인이 params.config 안의 어디인지 추적 필요 |
+| 필드 충돌 | fio의 params 키와 iotest의 params 키가 우연히 겹치면 혼란 |
+| 확장 한계 | iotest만의 특수 옵션(예: thread priority)을 params에 섞기 애매 |
+
+현재는 **이득이 비용보다 큼** — iotest 전용 필드가 config 안에 모이니 params 키는 `"config"` 하나만 사용. 미래에 iotest 고유 기능이 더 생기면 전용 RPC 분리 검토.
+
+## 포털과 Go Agent의 계약 — JSON shape 동기화
+
+가장 취약한 지점: **프론트 types.ts + Go Agent parser가 IOTestConfig shape을 공유**. 계약이 깨지면:
+
+- **프론트 신규 필드** → Go Agent가 unknown 필드 무시 (보통 안전)
+- **프론트 필드 제거** → Go Agent가 기대하던 필드가 없어 nil deref
+- **Go Agent 신규 필드 요구** → 프론트가 안 보냄 → 실행 실패
+
+**방어**:
+
+1. Go Agent 쪽도 모든 필드 optional (default zero 처리)
+2. proto 파일 대신 **types.ts를 사실상 계약 문서**로 취급
+3. 프리셋 18개가 "테스트 슈트" 역할 — 이 중 하나라도 실패하면 계약 깨짐 감지
+
+**미비 지점**: 현재 자동 호환성 테스트 없음. 계약 변경 시 수동 QA에 의존 — 향후 개선 후보.
+
+## busy_policy의 운영적 의미
+
+iotest는 "시간 걸리는 destructive 작업":
+
+- **reject** (기본): 다른 iotest 실행 중이면 거절 → **실수 방지** 우선
+- **wait**: 큐에 대기 → **배치 실행** 시 유용 (밤새 여러 시나리오 순차)
+- **force**: 기존 중단 후 실행 → **디버깅** 시 빠른 재시도
+
+프론트 기본은 reject — "잘못 눌러도 기존 실험 안 망친다". 전문가용 옵션으로 force 노출.
+
+## 직접 해보기
+
+- [ ] 현재 Agent Job Card에서 iotest job과 fio job이 **같은 UI**로 표시되는지 — generic 재사용 확인
+- [ ] busy_policy를 `force`로 보내 기존 iotest job을 중간에 끊어보고 device 파일 상태 관찰 (unlink 없이 남은 파일 확인)
+- [ ] params map에 의도적으로 잘못된 JSON(잘린 문자열) 넣어 Agent 실패 응답 확인 — 어느 레벨에서 잡히는지
+
+다음: [5. 진행률 스트림 + 엔진 3중주](/learn/l2-iotest/05-progress/) →

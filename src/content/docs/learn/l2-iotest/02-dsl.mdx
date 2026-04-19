@@ -1,0 +1,195 @@
+---
+title: 2. DSL 타입과 재귀 구조
+description: IOTestConfig/Thread/Command · loop·if 중첩 재귀 · `{{i}}` 템플릿 · offset/bs 표현식
+sidebar:
+  order: 2
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import typesRaw from '../../../../snippets/iotest-types.ts?raw';
+import presetsRaw from '../../../../snippets/iotest-presets-sample.ts?raw';
+
+## 30초 요약
+
+DSL은 **3 레벨 계층**:
+
+```
+IOTestConfig
+├── threads[]           ← 병렬 실행 단위
+│   └── commands[]      ← 순차 실행
+│       ├── {op:"write", offset:"{{i*4096}}", bs:"4k", …}
+│       └── {op:"loop", loop_count:256, commands:[ … ]}  ← 재귀
+├── duration_seconds    ← 전역 타임아웃
+└── sync_start          ← 모든 thread가 barrier로 동시 시작?
+```
+
+- **재귀**: loop/if가 `commands` / `then` / `else` 자식을 가짐 → 트리 깊이 제한 없음
+- **템플릿**: offset/bs 값이 `"4k"`, `"{{i*4096}}"`, `"random:0-1m"`, `"seq:0,4k,8k"` 같은 **미니 표현식**
+
+## 타입 정의 — 계층이 코드로
+
+<CodeTour
+  client:visible
+  language="ts"
+  source="iotest/types.ts"
+  height={640}
+  code={typesRaw}
+  steps={[
+    {
+      id: 'config',
+      title: 'IOTestConfig — 최상위 3 필드',
+      lines: [8, 13],
+      body: '<p>threads 배열이 주력. duration_seconds는 <strong>전역 킬 스위치</strong> — 개별 loop에 무한 조건이 있어도 이 시간 지나면 종료. sync_start는 race 유발 실험에 유용.</p>',
+    },
+    {
+      id: 'thread',
+      title: 'IOTestThread — name + commands',
+      lines: [14, 17],
+      body: '<p>name은 progress 이벤트에서 식별자로. commands는 <strong>이 thread가 순차 실행</strong>할 op 리스트.</p>',
+    },
+    {
+      id: 'command-base',
+      title: 'IOTestCommand — op 필드 하나만 필수',
+      lines: [19, 22],
+      body: '<p>나머지는 모두 선택. <strong>op 값에 따라 어떤 필드가 의미 있는지 달라짐</strong> — TypeScript discriminated union 대신 optional union으로 단순화. 런타임이 op별로 알아서 읽음.</p>',
+    },
+    {
+      id: 'io-fields',
+      title: 'open/read/write 공통 필드',
+      lines: [23, 32],
+      body: '<p>fd(파일 핸들 이름), path, offset, bs, count, pattern. <strong>offset/bs는 <code>string | number</code></strong> — 리터럴 숫자 또는 템플릿 문자열.</p>',
+    },
+    {
+      id: 'file-ops',
+      title: 'truncate/create/delete/rename 필드',
+      lines: [33, 40],
+      body: '<p>size(truncate), dir+prefix+rule+blocks(create_files, delete_pattern), new_path(rename). <strong>op마다 필요한 필드만 사용</strong>, 나머지는 undefined.</p>',
+    },
+    {
+      id: 'control',
+      title: 'sleep.ms + shell.cmd',
+      lines: [41, 44],
+      body: '<p>수행 흐름 제어. shell은 <strong>Android 셸 명령 실행</strong> — iotest 밖의 세팅(예: mount) 수행.</p>',
+    },
+    {
+      id: 'loop',
+      title: 'loop — commands 재귀 자식',
+      lines: [45, 49],
+      body: '<p>loop_count 또는 loop_duration. <strong>commands는 자신과 같은 IOTestCommand[]</strong> → 자연스러운 재귀. items로 배열 순회도 지원.</p>',
+    },
+    {
+      id: 'if',
+      title: 'if — condition + then/else',
+      lines: [50, 53],
+      body: '<p>condition은 <code>"{{i % 2 == 0}}"</code> 같은 템플릿 표현식. then/else도 IOTestCommand[] → <strong>if 안에 또 loop 가능</strong>.</p>',
+    },
+    {
+      id: 'progress-event',
+      title: 'IOTestProgressEvent — 서버→클라 1 step',
+      lines: [55, 71],
+      body: '<p>op 실행 후 status/duration/bytes 보고. iter/progress/total은 <strong>loop 안에 있을 때만</strong>. op_inner는 중첩 op 이름(loop가 돌고 있는 내부 op).</p>',
+    },
+    {
+      id: 'thread-progress',
+      title: 'ThreadProgress — UI 상태',
+      lines: [73, 83],
+      body: '<p>totalSteps / completedSteps / currentOp / status. <strong>프론트가 이벤트 받아 누적 갱신</strong> — 서버는 개별 이벤트, 클라가 집계.</p>',
+    },
+  ]}
+/>
+
+## `{{i}}` 템플릿 — iotest의 mini-language
+
+loop 안에서 **반복 변수**를 값에 반영하려면:
+
+```json
+{"op": "loop", "loop_count": 256, "commands": [
+  {"op": "write", "offset": "{{i*4096}}", "bs": "4k", "count": 1}
+]}
+```
+
+- `i` = 현재 iteration (0부터)
+- `{{i*4096}}` = iteration마다 offset이 0, 4096, 8192, …
+- `{{i % 2 == 0}}` = 짝수/홀수 분기
+
+**지원 연산**: `+ - * /`, `%`, 비교(`==`, `!=`, `<`, `>`), 논리(`&&`, `||`)
+
+**왜 풀 스크립트 엔진을 안 넣었나**:
+- iotest DSL은 **I/O 시나리오 표현이 목적** — 복잡 로직은 shell op로 위임
+- JavaScript-like expression = 혼란 (이게 JS인가 다른 문법인가)
+- `{{…}}` 묶음으로 **"여기부터 여기까지가 계산"** 시각 경계 명확
+
+템플릿이 **"DSL 안의 또 다른 DSL"** 이지만 경계가 명확해 학습 비용 작음.
+
+## offset/bs 표현식 4 종
+
+필드 값 자체가 mini-DSL:
+
+| 형태 | 예 | 의미 |
+|---|---|---|
+| 리터럴 | `"4k"`, `"1m"`, `"512"` | 크기 단위 해석 |
+| 템플릿 | `"{{i*4096}}"` | iteration 계산 |
+| random | `"random:0-1m"` | 0~1MB 범위 무작위 |
+| seq | `"seq:0,4k,8k,16k"` | 리스트에서 순회 |
+
+**문자열로 통일**한 이유:
+
+- 타입이 `string | number | "4k" | "random:…"` 같이 복잡해지는 걸 회피
+- 프론트 폼에서 **input 하나로 여러 의미** 수용
+- Go Agent가 파싱할 때 같은 parser 재사용
+
+단점: **컴파일 타임 검증 불가** — `"randm:0-1m"` 오타가 실행 시점에야 발견. 방어: opDefs.ts에 `help` 문구로 올바른 형식 힌트.
+
+## presets.ts — 실제 DSL 예시 3종
+
+<CodeTour
+  client:visible
+  language="ts"
+  source="IOTEST_PRESETS — 3 examples"
+  height={620}
+  code={presetsRaw}
+  steps={[
+    {
+      id: 'preset-type',
+      title: 'IOTestPreset 타입 — DB 엔티티와 구분',
+      lines: [8, 18],
+      body: '<p>프론트 상수용 type. <strong>DB 엔티티(IOTestPreset.java)와 이름 같지만 구조 다름</strong> — DB는 configJson 한 컬럼, 프론트는 threads 리스트 직접. 변환은 JSON.stringify/parse.</p>',
+    },
+    {
+      id: 'offset-write',
+      title: 'Offset Write — 가장 단순한 loop',
+      lines: [20, 36],
+      body: '<p>open → loop 256회 (<code>{{i*4096}}</code> offset으로 4k zero 쓰기) → fsync → close. <strong>4 op로 "1MB 순차 쓰기"</strong> 완결.</p>',
+    },
+    {
+      id: 'offset-rw',
+      title: 'Offset R/W — write + read 쌍',
+      lines: [38, 53],
+      body: '<p>각 loop iteration에서 <strong>같은 offset에 write → read</strong>. 실제 비교는 read 후 별도 verify op 필요하지만 이 프리셋은 "잘 동작하는지" 확인 용도.</p>',
+    },
+    {
+      id: 'misalign',
+      title: 'Misaligned R/W — 비정렬 offset',
+      lines: [55, 70],
+      body: '<p>512B 단위 이동 (4096도 아니고 sector도 아닌 중간). <strong>align 오류 경로 테스트</strong>. loop가 2개 — write 200회 후 read 200회, 캐시 효과 분리.</p>',
+    },
+  ]}
+/>
+
+## "구조가 코드"의 이점
+
+IOTestConfig의 재귀 구조가 `presets.ts`에 **그대로 JS 객체 리터럴**로:
+
+- **문법 하이라이팅** — `op`/`path`/`loop_count` 오타 시 TypeScript가 잡음 (optional 필드여도 타입 체크)
+- **IDE 자동완성** — `op: '`에서 enum 후보 없지만 필드명은 자동완성
+- **git diff 친화** — 한 op가 한 줄 → 수정 diff 명확
+
+JSON 문자열 대신 JS 객체로 두는 이유 — **"수정 편의 + 타입 안전성"**. 실행 시에는 JSON.stringify로 변환.
+
+## 직접 해보기
+
+- [ ] `presets.ts`에 새 preset 추가 → 프론트 UI에 바로 반영되는지 (hot-reload)
+- [ ] loop 안에 loop 중첩 → `{{i}}` 가 **바깥 loop를 가리키는지, 안쪽인지** opDefs 도움말에서 확인
+- [ ] if condition에 산술/논리 연산 섞어서 — 어느 iteration에서 then이 실행되는지 progress 이벤트로 추적
+
+다음: [3. 20+ operation primitives](/learn/l2-iotest/03-ops/) →

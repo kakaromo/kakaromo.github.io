@@ -1,0 +1,194 @@
+---
+title: 1. IOTestEditor + Preset 저장
+description: 계층 편집 UX · IOTestPreset 엔티티 · CRUD 컨트롤러 · Preset 로드 2 모드(replace/append)
+sidebar:
+  order: 1
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import entityRaw from '../../../../snippets/IOTestPreset-entity.java?raw';
+import ctrlRaw from '../../../../snippets/IOTestPresetController.java?raw';
+
+## 30초 요약
+
+- **Editor UX**: thread 리스트 + 각 thread 안의 command 리스트 (loop/if는 중첩) + global 설정 (duration_seconds, sync_start)
+- **저장**: DB `portal_iotest_presets` 테이블, configJson **MEDIUMTEXT 단일 컬럼**에 IOTestConfig 통째 직렬화
+- **불러오기**: 내장 18 preset (`presets.ts`) + DB 유저 preset, 두 모드 — **replace**(새로 시작) · **append**(현재에 이어붙임)
+
+## IOTestPreset 엔티티 — "JSON을 한 컬럼에"
+
+<CodeTour
+  client:visible
+  language="java"
+  source="IOTestPreset.java"
+  height={460}
+  code={entityRaw}
+  steps={[
+    {
+      id: 'table',
+      title: '@Table portal_iotest_presets',
+      lines: [8, 12],
+      body: '<p>Lombok <code>@Data @Builder</code>로 boilerplate 제거. <strong>IDENTITY auto-ID</strong> + Serializable — 다른 엔티티들과 같은 패턴.</p>',
+    },
+    {
+      id: 'name-desc',
+      title: 'name(200) + description(500)',
+      lines: [14, 19],
+      body: '<p>name은 nullable=false(필수), description은 선택. <strong>length=200/500 명시</strong>로 MySQL VARCHAR 크기 고정 — 메모리 추정 쉬움.</p>',
+    },
+    {
+      id: 'category',
+      title: 'category(50) + 6종 허용값',
+      lines: [21, 22],
+      body: '<p>enum 대신 String + 주석. <strong>"Basic I/O" 같은 공백/슬래시 포함 표현</strong>을 유지하려면 enum은 불편. 프론트와 문자열로만 동기화.</p>',
+    },
+    {
+      id: 'configjson',
+      title: '@Lob MEDIUMTEXT configJson',
+      lines: [24, 25],
+      body: '<p>MySQL MEDIUMTEXT = <strong>최대 16MB</strong>. IOTestConfig JSON이 commands 중첩 깊어도 충분. <code>@Lob</code>은 JPA가 별도 처리(lazy 가능)하게 하는 힌트.</p>',
+    },
+    {
+      id: 'timestamps',
+      title: 'createdAt(updatable=false) + updatedAt',
+      lines: [27, 31],
+      body: '<p>createdAt은 <strong>한 번 쓰이면 JPA가 update 쿼리에서 제외</strong>. 다른 엔티티(PredefinedStruct 등)와 같은 규칙.</p>',
+    },
+    {
+      id: 'hooks',
+      title: '@PrePersist/@PreUpdate',
+      lines: [33, 37],
+      body: '<p>onCreate는 <strong>createdAt = updatedAt 동시 세팅</strong> — "수정 없음"을 명시. onUpdate는 updatedAt만.</p>',
+    },
+  ]}
+/>
+
+## "왜 normalize 안 했나"
+
+iotest preset을 **정규화**하려면:
+
+```sql
+CREATE TABLE iotest_preset (id, name, category, …);
+CREATE TABLE iotest_thread (id, preset_id, name, …);
+CREATE TABLE iotest_command (id, thread_id, op, parent_command_id, …);
+```
+
+3 테이블 + 재귀 self-join (commands 중첩 때문) → **쿼리 복잡도 급증**. 대신 **configJson 단일 컬럼**:
+
+| 기준 | 정규화 | JSON 단일 컬럼 |
+|---|---|---|
+| 스키마 변경 | 필드 추가마다 ALTER | 없음 |
+| loop/if 중첩 | 재귀 관계 지옥 | 자연스러운 트리 |
+| 부분 수정 | 가능 | 불가 (통째 rewrite) |
+| 검색 가능성 | SQL 집계 가능 | JSON 함수 필요 |
+| 쓰기 속도 | 여러 행 | 1 row |
+
+MOVE 선택: **"preset 수 수백 미만, 검색은 name/category로만, commands 변경은 통째 재저장"** → JSON 단일 컬럼이 최적.
+
+**같은 패턴의 다른 L2**:
+- **BinMapper** — `PredefinedStruct.structText` (TEXT)
+- **Agent 시나리오 빌더** — 시나리오 트리 JSON
+- **iotest** — `configJson` (MEDIUMTEXT)
+
+"**사용자 편집 가능한 복잡 트리 데이터 = 단일 컬럼 JSON**" 이 MOVE 반복 패턴.
+
+## CRUD 컨트롤러 + 자동 형 변환
+
+<CodeTour
+  client:visible
+  language="java"
+  source="AgentController — iotest-presets"
+  height={540}
+  code={ctrlRaw}
+  steps={[
+    {
+      id: 'list',
+      title: 'GET /iotest-presets — toIOTestPresetMap 변환',
+      lines: [6, 9],
+      body: '<p>엔티티 직접 노출 대신 <strong>LinkedHashMap으로 키 순서 고정</strong>. 프론트가 응답 순서에 의존 가능.</p>',
+    },
+    {
+      id: 'create',
+      title: 'POST — Map<String,Object> body',
+      lines: [11, 15],
+      body: '<p><code>@RequestBody Map</code>로 받아 <strong>DTO 클래스 없이 유연 처리</strong>. description/category가 있든 없든 허용.</p>',
+    },
+    {
+      id: 'update',
+      title: 'PUT /{id} — 전체 덮어쓰기',
+      lines: [17, 21],
+      body: '<p>부분 수정 아닌 전체 replace. JSON 단일 컬럼이라 <strong>PATCH를 정의하기 어려움</strong> → "통째 업데이트"가 자연스러움.</p>',
+    },
+    {
+      id: 'delete',
+      title: 'DELETE — success:true 응답',
+      lines: [23, 27],
+      body: '<p>단순 응답. <strong>ResponseEntity로 래핑</strong>해 204 대신 200 + body 유지 — 프론트가 성공 표시 통일되게.</p>',
+    },
+    {
+      id: 'builder',
+      title: 'configJson 타입 이중 처리',
+      lines: [29, 36],
+      body: '<p>body.get("configJson")이 <strong>String이면 그대로, 객체면 Jackson이 JSON 문자열화</strong>. 프론트가 이미 JSON.stringify한 경우와 구조체로 보낸 경우 둘 다 수용.</p>',
+    },
+    {
+      id: 'tomap',
+      title: 'toIOTestPresetMap — 키 순서 고정',
+      lines: [38, 48],
+      body: '<p>id → name → description → category → configJson → timestamps. <strong>프론트 UI가 이 순서를 그대로 폼 순서로</strong>. 뒷단과 UX 사이의 작은 계약.</p>',
+    },
+  ]}
+/>
+
+## Editor UX — 트리 조작 3 연산
+
+프론트 IOTestEditor는 계층 구조를 조작하는 **3 primitive**:
+
+1. **thread 추가/제거** — 최상위 리스트
+2. **command 추가/제거/순서변경** — thread 안
+3. **nested command 수정** — loop/if의 `commands`/`then`/`else` 안
+
+각 연산이 IOTestConfig의 **불변 업데이트(immutable spread)** 로 구현 — Svelte 5 `$state`가 깊은 변경을 감지 못 하는 케이스 방지.
+
+```svelte
+function addCommand(thread, newCmd) {
+  thread.commands = [...thread.commands, newCmd]; // 새 배열 할당
+}
+```
+
+## Preset 로드 — replace vs append
+
+내장 18 preset 각각이 "완결 시나리오" 또는 "조각":
+
+- **완결**: Offset Write 한 덩어리가 그 자체로 실행 가능 → **replace**로 현재 config 교체
+- **조각**: "sysfs_write 3 step 세트"처럼 재사용 조각 → **append**로 현재 editor에 이어붙임
+
+UI에 두 버튼 모두 제공:
+
+```
+┌─────────────┬──────────┬──────────┐
+│ Offset Write│ [Load]   │ [Append] │
+└─────────────┴──────────┴──────────┘
+```
+
+사용자가 **"이 프리셋을 시작점으로 쓸지, 현재에 섞을지"** 의도를 분명히 표현.
+
+## 내장 vs DB preset
+
+| 축 | 내장 (presets.ts) | DB (portal_iotest_presets) |
+|---|---|---|
+| 수정 | 코드 변경 → 배포 | UI에서 즉시 |
+| 공유 | 모든 설치판 | 해당 포털 인스턴스만 |
+| 버전 관리 | git | DB 백업 필요 |
+| 분류 | 코드 상수 | category 컬럼 |
+| 목적 | 팀 표준/예제 | 사용자 개인/실험 |
+
+**"팀 공유 = 코드, 개인/실험 = DB"** 의 분리. 내장이 늘어나면 category 개수도 늘어 UI 분류 정교화.
+
+## 직접 해보기
+
+- [ ] `POST /agent/iotest-presets` 호출 시 `configJson`을 **객체로** 보낸 경우와 **문자열로** 보낸 경우가 둘 다 성공하는지 테스트
+- [ ] 내장 preset 하나를 Load → 편집 → "Save as new preset" → DB에 저장된 후 UI 목록에 추가되는지
+- [ ] configJson 길이가 16MB 근처면 MEDIUMTEXT 한도 — 인위적으로 큰 config를 만들어 실패 지점 확인
+
+다음: [2. DSL 타입과 재귀 구조](/learn/l2-iotest/02-dsl/) →
