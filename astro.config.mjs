@@ -73,7 +73,7 @@ export default defineConfig({
               label: 'L2 — 기능 모듈',
               collapsed: true,
               items: [
-                { label: '🔎 L2 9종 비교', slug: 'learn/l2-compare' },
+                { label: '🔎 L2 10종 비교', slug: 'learn/l2-compare' },
                 {
                   label: '슬롯 모니터링 (Head TCP + SSE)',
                   autogenerate: { directory: 'learn/l2-slots' },
@@ -109,6 +109,10 @@ export default defineConfig({
                 {
                   label: 'Bitbucket 브랜치 모니터 (REST 폴링)',
                   autogenerate: { directory: 'learn/l2-bitbucket' },
+                },
+                {
+                  label: 'MinIO 파일 스토리지 (S3 오브젝트)',
+                  autogenerate: { directory: 'learn/l2-minio' },
                 },
               ],
             },
