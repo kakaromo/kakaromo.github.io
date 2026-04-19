@@ -1,0 +1,83 @@
+---
+title: 시스템 아키텍처
+description: MOVE 포털의 블록 구성과 통신 경로 — 한눈에 보는 전체상
+sidebar:
+  order: 2
+---
+
+import ArchitectureDiagram from '../../../../components/learn/ArchitectureDiagram.svelte';
+
+## 30초 요약
+
+MOVE는 **Spring Boot 백엔드**가 중앙 허브입니다. 브라우저(SvelteKit)는 이 허브에 REST·SSE·WebSocket으로 붙고, 허브는 각기 다른 외부 시스템(Head·Tentacle·Agent·Excel Service)을 **프로토콜별로 적절히** 부릅니다.
+
+데이터는 MySQL(3개 데이터소스) · Redis(캐시) · MinIO(파일)에 나누어 저장합니다.
+
+## 블록 다이어그램
+
+노드에 마우스를 올리면 연결된 경로만 강조되고, 클릭하면 해당 블록의 상세 문서로 이동합니다.
+
+<ArchitectureDiagram
+  client:visible
+  height={520}
+  caption="아래로 내려올수록 브라우저에서 멀어지고, 가로축은 역할(데이터 · 원격 · 외부 gRPC)로 나뉩니다."
+  altText="맨 위의 브라우저는 Spring Boot 백엔드와 REST/SSE/WebSocket으로 통신합니다. 백엔드는 왼쪽의 Head 서버(TCP)와 Tentacle VM(SSH)을, 아래쪽의 MySQL·Redis·MinIO와, 오른쪽의 guacd·Go Agent·Excel Service와 각각 다른 프로토콜로 연결됩니다. 브라우저는 원격 접속 시 백엔드를 경유해 guacd에 WebSocket으로도 연결됩니다."
+  nodes={[
+    { id: 'browser',  label: 'Browser',       sublabel: 'SvelteKit + Svelte 5',   layer: 'fe',    x: 430, y: 0,   href: '/architecture/frontend/' },
+    { id: 'spring',   label: 'Spring Boot',   sublabel: '중앙 허브',                 layer: 'be',    x: 420, y: 140, href: '/architecture/system-overview/' },
+
+    { id: 'head',     label: 'Head 서버',     sublabel: 'UFS 슬롯 · TCP',           layer: 'hw',    x: 60,  y: 60,  href: '/architecture/head-protocol/' },
+    { id: 'tentacle', label: 'Tentacle VM',   sublabel: '원격 장비 · SSH',          layer: 'hw',    x: 60,  y: 220, href: '/architecture/guacamole/' },
+
+    { id: 'mysql',    label: 'MySQL',         sublabel: '3 데이터소스',             layer: 'state', x: 220, y: 360, href: '/architecture/database/' },
+    { id: 'redis',    label: 'Redis',         sublabel: '캐시',                    layer: 'state', x: 420, y: 360, href: '/architecture/caching/' },
+    { id: 'minio',    label: 'MinIO',         sublabel: '파일 스토리지 · S3',        layer: 'state', x: 620, y: 360, href: '/architecture/minio/' },
+
+    { id: 'guacd',    label: 'guacd',         sublabel: 'RDP/SSH 터널',            layer: 'tx',    x: 800, y: 60,  href: '/architecture/guacamole/' },
+    { id: 'agent',    label: 'Go Agent',      sublabel: 'Android · gRPC',          layer: 'tx',    x: 800, y: 180, href: '/architecture/agent/' },
+    { id: 'excel',    label: 'Excel Service', sublabel: 'gRPC · .xlsx 생성',       layer: 'tx',    x: 800, y: 300, href: '/architecture/excel-export/' },
+  ]}
+  edges={[
+    { from: 'browser',  to: 'spring',   label: 'REST / SSE / WS', kind: 'sync' },
+    { from: 'browser',  to: 'guacd',    label: 'WebSocket',        kind: 'async' },
+
+    { from: 'spring',   to: 'head',     label: 'TCP',              kind: 'sync' },
+    { from: 'spring',   to: 'tentacle', label: 'SSH',              kind: 'sync' },
+
+    { from: 'spring',   to: 'mysql',    label: 'JDBC',             kind: 'sync' },
+    { from: 'spring',   to: 'redis',    label: 'cache',            kind: 'sync' },
+    { from: 'spring',   to: 'minio',    label: 'S3',               kind: 'sync' },
+
+    { from: 'spring',   to: 'guacd',    label: 'tunnel',           kind: 'sync' },
+    { from: 'spring',   to: 'agent',    label: 'gRPC',             kind: 'async' },
+    { from: 'spring',   to: 'excel',    label: 'gRPC',             kind: 'sync' },
+  ]}
+/>
+
+## 레이어 읽는 법
+
+- <span class="learn-layer-badge" data-layer="fe">Frontend</span> — 브라우저에서 돌아가는 UI (SvelteKit, Svelte 5 runes)
+- <span class="learn-layer-badge" data-layer="be">Backend</span> — Spring Boot 서버 본체
+- <span class="learn-layer-badge" data-layer="hw">Hardware</span> — 실제 장비 또는 장비를 대리하는 서버
+- <span class="learn-layer-badge" data-layer="state">State</span> — 데이터를 저장/캐시하는 계층
+- <span class="learn-layer-badge" data-layer="tx">Transport</span> — 외부 시스템을 부르는 경로·gRPC 서비스
+
+L2/L3에서도 동일 팔레트를 씁니다. 색만 봐도 "이게 어느 계층 이야기인지"가 감이 잡히도록 의도했습니다.
+
+## 왜 Spring Boot가 중앙 허브인가
+
+허브-스포크 구조는 다음 이유로 택했습니다.
+
+- **인증·권한 단일점**: ADFS SSO, 세션 타임아웃, URL 단위 액션 권한을 한 곳에서 검사.
+- **프로토콜 변환**: 각 외부 시스템은 서로 다른 프로토콜(TCP/SSH/gRPC)을 씁니다. 브라우저가 이걸 직접 상대하면 CORS·인증·재연결 로직을 전부 프론트에 복제해야 합니다.
+- **캐시·일관성**: Redis 캐시와 DB 트랜잭션을 한 프로세스에서 관리.
+- **장애 격리**: 외부 시스템 중 하나가 죽어도 다른 기능은 계속 동작.
+
+단점은 허브가 병목이 될 수 있다는 것입니다. MOVE는 실시간 스트림(슬롯 SSE, Agent 모니터링 SSE)에 별도 스레드·connection 관리를 두어 이를 완화합니다 — L2에서 상세히 봅니다.
+
+## 더 깊이 보고 싶다면
+
+- 기존 [아키텍처 / 시스템 개요](/architecture/system-overview/) — 상세 프로토콜 표
+- [데이터베이스](/architecture/database/) — 3개 데이터소스가 왜 분리되어 있는지
+- [Head TCP 프로토콜](/architecture/head-protocol/) — 다음 L2에서도 다룹니다
+- [Agent 아키텍처](/architecture/agent/) — Android 디바이스 제어 경로

@@ -1,0 +1,57 @@
+---
+title: 무엇을 만드는가 (도메인)
+description: MOVE 포털이 해결하는 문제와 핵심 사용자 여정 3가지
+sidebar:
+  order: 1
+---
+
+## 한 문장 요약
+
+**MOVE (Mobile OS Validation Eco-system)** 는 Samsung 내부에서 모바일 OS·스토리지를 검증하는 사람들이 테스트 장비·실제 디바이스·로그·리포트를 한 브라우저에서 다루기 위한 포털입니다.
+
+## 풀려는 문제
+
+전통적으로 검증 파이프라인은 여러 도구의 조합이었습니다 — 장비 화면을 보려면 원격 데스크톱, 로그는 SSH, 벤치마크는 스크립트, 결과 리포트는 엑셀. 도구 사이 이동과 수동 조작이 많을수록 **재현 가능성**, **협업 속도**, **검증 깊이**가 떨어집니다.
+
+MOVE는 이 작업을 한 곳에 모으고, 기계가 할 수 있는 일(반복 실행, 데이터 수집, 차트 생성, 리포트 내보내기)은 기계에게 맡기는 것을 지향합니다.
+
+## 핵심 사용자 여정 3가지
+
+아래 3가지가 L2에서 상세히 다뤄질 예정입니다. 현재는 1번만 완성되어 있습니다.
+
+<div class="learn-path-cards">
+  <a class="learn-path-card" href="/learn/l2-slots/">
+    <span class="learn-path-card__tag">L2 · 완성</span>
+    <h3 class="learn-path-card__title">1. 실시간 슬롯 모니터링</h3>
+    <p class="learn-path-card__desc">Head 하드웨어에 꽂힌 여러 슬롯의 상태(테스트 진행·상태 코드·온도 등)를 브라우저에서 실시간으로 확인합니다. TCP → SSE → 브라우저 스트림이 핵심.</p>
+  </a>
+
+  <a class="learn-path-card" href="/architecture/agent">
+    <span class="learn-path-card__tag">L2 · 예정</span>
+    <h3 class="learn-path-card__title">2. Android 디바이스 벤치마크</h3>
+    <p class="learn-path-card__desc">Go Agent와 gRPC로 통신해 실제 디바이스에서 fio/iozone/tiotest를 실행하고 I/O trace를 수집·분석합니다. 장기 시나리오·스케줄링까지.</p>
+  </a>
+
+  <a class="learn-path-card" href="/architecture/guacamole">
+    <span class="learn-path-card__tag">L2 · 예정</span>
+    <h3 class="learn-path-card__title">3. 원격 터미널 & 파일</h3>
+    <p class="learn-path-card__desc">guacd를 경유해 브라우저에서 RDP/SSH로 실제 장비를 제어하고, SSH로 Tentacle의 로그를 조회·검색합니다.</p>
+  </a>
+</div>
+
+## 주요 외부 연동
+
+MOVE는 스스로 모든 것을 하지 않고, 역할이 분명한 **외부 서비스·장비**를 조립합니다.
+
+- **Head 서버** — 실제 UFS 하드웨어를 제어하는 C 기반 서버. MOVE는 TCP로 슬롯 상태를 읽고 명령을 보냅니다.
+- **Tentacle VM / 실제 장비** — 테스트 대상 장비. SSH·RDP로 원격 접속하거나 로그 파일을 가져옵니다.
+- **Go Agent** — Android 디바이스 앞단에 붙는 gRPC 서버. 벤치마크·트레이스·매크로 실행 담당.
+- **Excel Service** — Go + excelize 기반 gRPC 서비스. 성능 결과를 네이티브 Excel 차트와 함께 내보냅니다.
+
+이 외부 경계를 이해하면 MOVE 자체 코드가 왜 이런 구조인지 설명이 쉬워집니다. 다음 페이지의 [시스템 아키텍처](/learn/l1-overview/architecture/)에서 블록 간 연결을 한눈에 볼 수 있습니다.
+
+## 이 프로젝트가 아닌 것
+
+- 일반 사용자용 SaaS 제품이 아닙니다 — 내부망에서만 동작하며 ADFS(SSO)로 인증합니다.
+- 자체적으로 장비를 제어하는 저수준 드라이버가 아닙니다 — Head/Agent 같은 전용 서비스에 위임합니다.
+- 범용 BI/시각화 도구가 아닙니다 — 검증 워크플로우에 특화된 차트·테이블·내보내기만 제공합니다.

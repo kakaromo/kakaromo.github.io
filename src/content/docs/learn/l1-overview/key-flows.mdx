@@ -1,0 +1,106 @@
+---
+title: 주요 데이터 흐름 3선
+description: 슬롯 모니터링 · 벤치마크 실행 · 원격 접속 — 한눈에 비교
+sidebar:
+  order: 4
+---
+
+import ArchitectureDiagram from '../../../../components/learn/ArchitectureDiagram.svelte';
+
+MOVE에서 가장 자주 등장하는 데이터 흐름 3가지입니다. 프로토콜·동기성·실시간성 조합이 서로 다릅니다.
+
+세 흐름은 모두 브라우저(<span class="learn-layer-badge" data-layer="fe">FE</span>) → Spring(<span class="learn-layer-badge" data-layer="be">BE</span>)까지는 같지만, 허브 이후의 경로가 다릅니다.
+
+## 1. 실시간 슬롯 모니터링 — TCP + SSE
+
+Head 하드웨어의 슬롯 상태가 1초 주기로 브라우저까지 푸시됩니다. [L2에서 상세히 다루는 흐름](/learn/l2-slots/)입니다.
+
+<ArchitectureDiagram
+  client:visible
+  height={220}
+  caption="동기 TCP 수신 → 인메모리 저장 → 스케줄된 SSE 푸시 → 브라우저 EventSource"
+  nodes={[
+    { id: 'head',   label: 'Head',        sublabel: 'TCP',           layer: 'hw',    x: 0,   y: 40 },
+    { id: 'tcp',    label: 'TcpClient',   sublabel: 'parse',         layer: 'be',    x: 170, y: 40 },
+    { id: 'store',  label: 'StateStore',  sublabel: 'in-memory',     layer: 'state', x: 340, y: 40 },
+    { id: 'sse',    label: 'SseController', sublabel: '@Scheduled 1s', layer: 'tx',  x: 510, y: 40 },
+    { id: 'fe',     label: 'Browser',    sublabel: 'EventSource',    layer: 'fe',    x: 680, y: 40 },
+  ]}
+  edges={[
+    { from: 'head',  to: 'tcp',   kind: 'sync' },
+    { from: 'tcp',   to: 'store', kind: 'sync' },
+    { from: 'store', to: 'sse',   kind: 'async', label: '1s' },
+    { from: 'sse',   to: 'fe',    kind: 'async', label: 'SSE' },
+  ]}
+/>
+
+- **사용 프로토콜**: TCP (Head ↔ BE), SSE (BE → 브라우저)
+- **지연**: 평균 ≤ 1초 (SSE 주기)
+- **연결성**: BE ↔ Head는 상시 유지, 브라우저 ↔ BE는 페이지별 하나의 EventSource
+- **핵심 질문**: Head가 바뀐 것만 어떻게 알아내서 효율적으로 보내는가? → `StateStore`의 version 필드
+
+## 2. Android 벤치마크 실행 — gRPC 양방향 스트림
+
+사용자가 벤치마크 시작 버튼을 누르면, Spring이 Go Agent에 `RunBenchmark` RPC를 호출하고, Agent는 실시간 진행률을 서버 스트림으로 돌려줍니다. Spring은 이를 다시 브라우저에 SSE로 중계합니다.
+
+<ArchitectureDiagram
+  client:visible
+  height={220}
+  caption="사용자 트리거 → Spring gRPC 호출 → Agent 실행 → 진행률 스트림 → SSE 중계"
+  nodes={[
+    { id: 'fe',     label: 'Browser',    sublabel: 'Button',          layer: 'fe',    x: 0,   y: 40 },
+    { id: 'spring', label: 'Spring',     sublabel: 'AgentController',  layer: 'be',    x: 170, y: 40 },
+    { id: 'agent',  label: 'Go Agent',   sublabel: 'gRPC 50051',       layer: 'tx',    x: 340, y: 40 },
+    { id: 'dev',    label: 'Android',    sublabel: 'fio/iozone',       layer: 'hw',    x: 510, y: 40 },
+    { id: 'sse',    label: 'SSE back',   sublabel: 'progress',         layer: 'tx',    x: 170, y: 160 },
+  ]}
+  edges={[
+    { from: 'fe',     to: 'spring', label: 'POST start',   kind: 'sync' },
+    { from: 'spring', to: 'agent',  label: 'RunBenchmark',  kind: 'async' },
+    { from: 'agent',  to: 'dev',    label: 'adb shell',     kind: 'sync' },
+    { from: 'agent',  to: 'sse',    label: 'stream',        kind: 'async' },
+    { from: 'sse',    to: 'fe',     label: 'SSE',           kind: 'async' },
+  ]}
+/>
+
+- **사용 프로토콜**: HTTP POST (트리거), gRPC 서버 스트림 (진행률), SSE (브라우저 중계)
+- **지연**: 첫 진행 이벤트까지 수초 (벤치마크 워밍업 포함)
+- **실행 위치**: 실제 I/O는 Android 디바이스에서. Spring과 Agent는 오케스트레이터
+- **핵심 질문**: 장시간(수십 분~시간) 작업을 어떻게 안정적으로 중계할까? → gRPC keepalive + SSE reconnect
+
+## 3. 원격 터미널 — WebSocket 양방향 바이너리
+
+브라우저가 guacd와 WebSocket으로 직접 붙어, 안에서 Guacamole 프로토콜로 RDP/SSH 터미널 세션을 주고받습니다. Spring은 세션 생성·인증 단계만 관여합니다.
+
+<ArchitectureDiagram
+  client:visible
+  height={220}
+  caption="세션 생성은 Spring 경유, 이후 실시간 I/O는 브라우저 ↔ guacd 직결"
+  nodes={[
+    { id: 'fe',     label: 'Browser',    sublabel: 'Terminal UI',      layer: 'fe',    x: 0,   y: 40 },
+    { id: 'spring', label: 'Spring',     sublabel: 'session create',   layer: 'be',    x: 170, y: 40 },
+    { id: 'guacd',  label: 'guacd',      sublabel: 'tunnel',           layer: 'tx',    x: 340, y: 40 },
+    { id: 'vm',     label: 'Tentacle',   sublabel: 'RDP / SSH',        layer: 'hw',    x: 510, y: 40 },
+  ]}
+  edges={[
+    { from: 'fe',     to: 'spring', label: 'auth',     kind: 'sync' },
+    { from: 'spring', to: 'guacd',  label: 'create',    kind: 'sync' },
+    { from: 'fe',     to: 'guacd',  label: 'WebSocket', kind: 'async' },
+    { from: 'guacd',  to: 'vm',     label: 'RDP/SSH',   kind: 'async' },
+  ]}
+/>
+
+- **사용 프로토콜**: WebSocket (브라우저 ↔ guacd), RDP/SSH (guacd ↔ 장비)
+- **지연**: 프레임 단위 실시간
+- **특이점**: Spring은 인증·세션 생성만 책임. 이후 트래픽은 브라우저와 guacd가 직접 주고받음
+- **핵심 질문**: 인증을 지나면 Spring이 왜 빠지는가? → 중계 비용 절감 + 터미널 지연 최소화
+
+## 요약 비교
+
+| 흐름 | 브라우저와 BE 사이 | BE 이후 | 지연 | 연결 수명 |
+|---|---|---|---|---|
+| 슬롯 모니터링 | SSE (단방향) | TCP | ≤ 1s | 페이지 생존 동안 |
+| 벤치마크 | HTTP + SSE | gRPC 스트림 | 수초 시작, 장시간 | 작업 단위 |
+| 원격 터미널 | WebSocket (BE 미경유) | RDP/SSH | 프레임 | 세션 단위 |
+
+다음: [L2 슬롯 모니터링 — 7단계 여정](/learn/l2-slots/) →

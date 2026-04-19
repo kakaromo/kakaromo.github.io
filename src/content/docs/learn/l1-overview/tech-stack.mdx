@@ -1,0 +1,75 @@
+---
+title: 기술 스택 개요
+description: MOVE 포털이 사용하는 언어·프레임워크·인프라 한 장 요약
+sidebar:
+  order: 3
+---
+
+이 페이지는 참고용 카탈로그입니다. 각 항목이 **왜** 이 선택인지보다 **무엇이 어디에 쓰이는지**를 빠르게 훑는 것이 목적입니다.
+
+## 백엔드
+
+| 영역 | 선택 | 어디에 쓰이나 |
+|---|---|---|
+| 언어·런타임 | Java 17 | 전체 백엔드 |
+| 프레임워크 | Spring Boot 4.0.2 | 웹·DI·스케줄링·이벤트 |
+| 웹 | Spring Web MVC | REST API |
+| 실시간 | `SseEmitter`, WebSocket | 슬롯 스트림, Guacamole 터널 |
+| 데이터 | Spring Data JPA (MySQL 8) | 3개 데이터소스 (testdb / ufsinfo / binmapper) |
+| 캐시 | Spring Cache + Redis | Entity 캐시, JDK serializer |
+| 보안 | Spring Security + OAuth2 Client | ADFS Hybrid Flow (수동 구현) |
+| RPC | Spring gRPC 1.0.2 | Go Agent · Excel Service 클라이언트 |
+| 툴 | Lombok, DevTools | 보일러플레이트 감소, hot reload |
+
+주요 진입점: `com.samsung.move.PortalApplication`. 패키지는 기능별(`head`, `testdb`, `agent`, `auth`, `metadata` …)로 분리.
+
+## 프론트엔드
+
+| 영역 | 선택 | 특이점 |
+|---|---|---|
+| 프레임워크 | SvelteKit + Svelte 5 | runes 기반 반응성 (`$state`, `$derived`, `$effect`, `$props`) |
+| 스타일 | Tailwind CSS + shadcn-svelte | 공통 유틸은 `$lib/styles/common.ts` |
+| 차트 | ECharts | `PerfChart` 컴포넌트로 래핑 |
+| 플로우 편집 | @xyflow/svelte | Agent 시나리오 캔버스 |
+| 테이블 | 자체 `DataTable` | 가상 스크롤·컬럼 리사이즈 |
+| 빌드 | Vite (SvelteKit 기본) | `npm run dev` / `npm run build` |
+
+주요 라우트: `frontend/src/routes/` — `testdb/slots`, `agent`, `remote`, `admin` 등.
+
+## 데이터·인프라
+
+| 영역 | 선택 | 용도 |
+|---|---|---|
+| DB | MySQL 3307 | 3개 데이터소스 분리 (도메인별 격리) |
+| 캐시 | Redis | Entity 조회 성능, 10분 TTL |
+| 파일 | MinIO (S3 호환) | 성능 결과·로그·이미지 업로드 |
+| 리버스 프록시 | nginx | 443→8080 (일반), 8443→8081 (test) |
+| 원격 접속 | guacd | RDP/SSH 터널 |
+| 빌드 | Maven (mvnd 권장) | 단일 모듈 |
+| 이미지 | `spring-boot:build-image` | OCI 이미지 빌드 가능 |
+
+## 외부 서비스 (별도 레포)
+
+| 이름 | 언어 | 포트 | 역할 | 레포 |
+|---|---|---|---|---|
+| Head 서버 | C | 10001+ | UFS 슬롯 제어 | 내부 |
+| Go Agent | Go | 50051 | Android 벤치마크·trace | `~/project/agent` |
+| Excel Service | Go (excelize) | 50052 | 성능 결과 → .xlsx | `~/project/excel-service` |
+
+MOVE가 이 서비스들과 맞춰야 하는 proto는 `src/main/proto/`에 두고, Maven 빌드 시 자동 컴파일됩니다 (`protobuf-maven-plugin`).
+
+## 개발 환경 포인트
+
+- **Java 17** — `/opt/homebrew/opt/openjdk@17`, `JAVA_HOME` 명시 필요
+- **mvnd** — Maven Daemon으로 JVM 재사용해 빌드 가속
+- **protoc** — macOS Sequoia의 xattr 이슈로 `protocExecutable=/opt/homebrew/bin/protoc` 경로 지정 (pom.xml)
+- **run.sh** — `PORTAL_PROFILE=dev|prod|test`, 8가지 메뉴로 기동
+
+## L3에서 다룰 개념 미리보기
+
+L2 슬롯 모니터링 튜토리얼에 등장할 개념들입니다. 단어가 익숙해지는 것만으로 충분, 깊이는 L3 개념 페이지에서.
+
+- **Spring**: `@Component`, `@Service`, `@RestController`, `@Scheduled`, `@EventListener`, `@ConfigurationProperties`, `SseEmitter`, `@PostConstruct`, `@RequiredArgsConstructor`
+- **Svelte 5**: `$state`, `$derived`, `$effect`, `$props`, `.svelte.ts` 확장자
+
+다음: [주요 데이터 흐름 3선](/learn/l1-overview/key-flows/) →
