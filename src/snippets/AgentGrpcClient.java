@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/agent/grpc/AgentGrpcClient.java
 // @lines 20-100
 // @note ManagedChannel 설정 + blocking/async stub + subscribeJobProgressAsync
-// @synced 2026-04-19T05:49:15.904Z
+// @synced 2026-04-19T06:17:28.815Z
 
 public class AgentGrpcClient implements AutoCloseable {
 

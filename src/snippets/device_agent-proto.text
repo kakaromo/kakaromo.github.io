@@ -1,7 +1,7 @@
 // @source src/main/proto/device_agent.proto
 // @lines 1-50
 // @note DeviceAgent service RPC 목록
-// @synced 2026-04-19T05:49:15.905Z
+// @synced 2026-04-19T06:17:28.816Z
 
 syntax = "proto3";
 package agent;

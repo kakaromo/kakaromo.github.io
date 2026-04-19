@@ -181,6 +181,50 @@ const manifest = [
     language: 'java',
     note: 'onMessage(heartbeat + 터널 write) + onClose(정리)',
   },
+
+  // ── Metadata 모니터링 (L2 metadata) ──
+  {
+    id: 'UfsMetadataCommand-entity',
+    source: 'src/main/java/com/samsung/move/metadata/entity/UfsMetadataCommand.java',
+    lines: [1, 65],
+    language: 'java',
+    note: 'ufs_metadata_commands — commandType 4가지(tool/sysfs/raw/keyvalue)',
+  },
+  {
+    id: 'MetadataMonitorProperties',
+    source: 'src/main/java/com/samsung/move/metadata/config/MetadataMonitorProperties.java',
+    lines: [1, 21],
+    language: 'java',
+    note: 'metadata.monitor.* — enabled / pollInterval / collectionInterval',
+  },
+  {
+    id: 'MetadataMonitor-fields',
+    source: 'src/main/java/com/samsung/move/metadata/service/MetadataMonitorService.java',
+    lines: [40, 133],
+    language: 'java',
+    note: '슬롯별 활성 모니터 · excluded types · 8개 스레드풀 + SlotMonitorContext',
+  },
+  {
+    id: 'MetadataMonitor-scheduled',
+    source: 'src/main/java/com/samsung/move/metadata/service/MetadataMonitorService.java',
+    lines: [134, 234],
+    language: 'java',
+    note: '@Scheduled checkSlotStateChanges + startMonitoring (TR 기반 제품→command 매핑 + 수집 주기)',
+  },
+  {
+    id: 'MetadataMonitor-monitorOnce',
+    source: 'src/main/java/com/samsung/move/metadata/service/MetadataMonitorService.java',
+    lines: [290, 351],
+    language: 'java',
+    note: 'monitorOnce — commandType 분기 + JSON 파싱 + 인메모리 + 파일 저장',
+  },
+  {
+    id: 'MetadataController-slot',
+    source: 'src/main/java/com/samsung/move/metadata/controller/MetadataController.java',
+    lines: [18, 91],
+    language: 'java',
+    note: 'REST API — types / for-tr / slot 상태 / slot 데이터',
+  },
 ];
 
 async function extractLines(text, lines) {
