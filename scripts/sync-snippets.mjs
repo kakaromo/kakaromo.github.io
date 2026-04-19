@@ -378,6 +378,36 @@ const manifest = [
     language: 'java',
     note: 'GET /download-dir — Local ZipOutputStream / SSH 원격 zip 후 SFTP',
   },
+
+  // ── Excel Export (L2 excel) ──
+  {
+    id: 'excel-service-proto',
+    source: 'src/main/proto/excel_service.proto',
+    lines: [1, 24],
+    language: 'text',
+    note: 'RPC GenerateExcel + ExcelRequest/Response 메시지',
+  },
+  {
+    id: 'ExcelGrpcClient',
+    source: 'src/main/java/com/samsung/move/testdb/excel/ExcelGrpcClient.java',
+    lines: [1, 30],
+    language: 'java',
+    note: 'GrpcChannelFactory → BlockingStub + generateExcel 빌더 호출',
+  },
+  {
+    id: 'PerformanceResultDataService-fetch',
+    source: 'src/main/java/com/samsung/move/testdb/service/PerformanceResultDataService.java',
+    lines: [36, 161],
+    language: 'java',
+    note: 'fetchResultData — History/TC/Parser DB 조합 + LogBrowser JSON 읽기 + 불완전 JSON 복구',
+  },
+  {
+    id: 'ExcelExportController',
+    source: 'src/main/java/com/samsung/move/testdb/controller/ExcelExportController.java',
+    lines: [1, 34],
+    language: 'java',
+    note: 'GET /{historyId}/excel — data fetch + gRPC call + ResponseEntity<byte[]>',
+  },
 ];
 
 async function extractLines(text, lines) {

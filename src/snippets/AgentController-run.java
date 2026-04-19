@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/agent/controller/AgentController.java
 // @lines 178-218
 // @note POST /api/agent/benchmark/run → gRPC RunBenchmark + JobExecution 저장
-// @synced 2026-04-19T07:33:06.830Z
+// @synced 2026-04-19T07:53:32.283Z
 
     @PostMapping("/benchmark/run")
     public Map<String, Object> runBenchmark(@RequestParam Long serverId, @RequestBody Map<String, Object> body) {

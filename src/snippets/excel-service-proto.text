@@ -1,0 +1,29 @@
+// @source src/main/proto/excel_service.proto
+// @lines 1-24
+// @note RPC GenerateExcel + ExcelRequest/Response 메시지
+// @synced 2026-04-19T07:53:32.298Z
+
+syntax = "proto3";
+package portal.excel;
+option go_package = "excel-service/proto";
+option java_package = "com.samsung.move.excel";
+option java_outer_classname = "ExcelServiceProto";
+
+service ExcelService {
+  rpc GenerateExcel(ExcelRequest) returns (ExcelResponse);
+}
+
+message ExcelRequest {
+  int64 parser_id = 1;
+  string tc_name = 2;
+  string fw = 3;
+  string data_json = 4;
+  string set_name = 5;
+  string file_system = 6;
+}
+
+message ExcelResponse {
+  bytes xlsx_data = 1;
+  string file_name = 2;
+}
+

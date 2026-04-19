@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/logbrowser/service/SshLogBrowserService.java
 // @lines 302-369
 // @note getOrCreateCachedSession + execCommand (exit>1만 예외, rg no-match=1 허용)
-// @synced 2026-04-19T07:33:06.843Z
+// @synced 2026-04-19T07:53:32.297Z
 
     private synchronized Session getOrCreateCachedSession(String tentacleName) throws Exception {
         PortalServer vm = findVm(tentacleName);

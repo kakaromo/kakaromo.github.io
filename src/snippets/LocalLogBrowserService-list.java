@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/logbrowser/service/LocalLogBrowserService.java
 // @lines 33-70
 // @note Local listFiles — Files.list + 동일 정렬 + ".." 엔트리
-// @synced 2026-04-19T07:33:06.844Z
+// @synced 2026-04-19T07:53:32.297Z
 
     @Override
     public List<FileEntry> listFiles(String tentacleName, String path) {

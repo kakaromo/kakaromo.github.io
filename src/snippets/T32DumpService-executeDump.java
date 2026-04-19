@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/t32/service/T32DumpService.java
 // @lines 78-220
 // @note executeDump 오케스트레이션 — 4 Step 순차 + 경로 변환 + Canary ZIP
-// @synced 2026-04-19T07:33:06.837Z
+// @synced 2026-04-19T07:53:32.291Z
 
     public SseEmitter executeDump(Long serverId, String tentacleName, int slotNumber, String fw, String branchPath,
                                      String setLocation, String testToolName, String testTrName) {
