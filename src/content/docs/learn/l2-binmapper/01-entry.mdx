@@ -1,0 +1,150 @@
+---
+title: 1. 진입점 + PredefinedStruct 사전
+description: 6가지 입력 소스 · MultipartFile · server path · predefined id · 엔티티 구조
+sidebar:
+  order: 1
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import controllerRaw from '../../../../snippets/BinMapperController.java?raw';
+import structRaw from '../../../../snippets/PredefinedStruct-entity.java?raw';
+
+## 30초 요약
+
+`POST /api/binmapper/parse`는 **한 엔드포인트에 6개 옵션 파라미터**. 세 묶음으로 나뉨:
+
+- **바이너리 소스**: `binaryFile`(MultipartFile) 또는 `serverPath + serverName`(Log Browser 경로)
+- **Struct 소스**: `structText`(inline) / `structFile`(MultipartFile) / `predefinedStructId`(DB FK) / `structName`(다중 struct에서 선택)
+- **옵션**: `endianness`(AUTO/BIG/LITTLE) · `repeatAsArray`(bool)
+
+`PredefinedStruct` 엔티티는 **Svelte devtool UX를 지탱하는 사전** — 한 번 만든 struct를 이름으로 불러오기 위함.
+
+## BinMapperController — 6 입력 + 3 엔드포인트
+
+<CodeTour
+  client:visible
+  language="java"
+  source="BinMapperController.java"
+  height={520}
+  code={controllerRaw}
+  steps={[
+    {
+      id: 'parse-signature',
+      title: '파라미터 6개 모두 required=false',
+      lines: [24, 34],
+      body: '<p>클라이언트가 골라서 제공. <strong>파일 경로와 MultipartFile 어느 쪽이든 받음</strong> — 로컬 파일 모드와 서버 모드 프론트 UX를 한 API로 지원. 파싱 실패는 <code>throws Exception</code>으로 컨트롤러가 변환.</p>',
+    },
+    {
+      id: 'endianness-enum',
+      title: 'endianness 문자열 → enum 변환',
+      lines: [35, 35],
+      body: '<p>AUTO/BIG/LITTLE 3값. <strong>Spring Converter 대신 직접 valueOf</strong> — 입력이 단순해 오버엔지니어링 회피. toUpperCase로 대소문자 관대.</p>',
+    },
+    {
+      id: 'delegate',
+      title: 'Service 위임 — 컨트롤러는 shape만',
+      lines: [36, 40],
+      body: '<p>BinMapperService가 6 파라미터를 소스별로 해석해 <strong>단일 <code>(StructDefinition, byte[])</code> 튜플로 축약</strong>. 컨트롤러는 파라미터 전달만.</p>',
+    },
+    {
+      id: 'parse-struct',
+      title: 'parse-struct — bin 없이 IR만',
+      lines: [42, 47],
+      body: '<p>struct 텍스트만 보내 <strong>"struct 문법이 맞는지" 미리 검증</strong>. 프론트의 실시간 lint 용도. JSON body로 받아 Content-Type 전환을 간결하게.</p>',
+    },
+    {
+      id: 'parse-header',
+      title: 'parse-header — C 헤더 업로드',
+      lines: [49, 52],
+      body: '<p>프로젝트 헤더 파일(.h)을 드래그해 <strong>포함된 모든 struct를 한 번에 IR</strong>로. 이후 사용자가 <code>structName</code>으로 어느 것을 쓸지 선택.</p>',
+    },
+  ]}
+/>
+
+## 왜 한 엔드포인트에 6 옵션인가
+
+REST에서는 보통 "입력 형태마다 다른 path" 가 권장되지만 BinMapper는 **반대로 한 API에 몰아넣음**:
+
+```
+POST /api/binmapper/parse
+  (binaryFile  | serverPath + serverName)  ×  (structText | structFile | predefinedStructId)
+```
+
+이유:
+
+- 바이너리-struct **조합이 6×2=12개** — 경로를 분리하면 프론트가 분기 로직 12개
+- **공통 응답 타입** (`MappedResult`) — 경로를 나눠도 return shape 동일
+- struct 소스는 "텍스트냐 파일이냐"가 **트랜스포트 차이**일 뿐 의미는 같음
+
+대신 컨트롤러 서명이 길어짐 — 그 비용을 받아들임.
+
+## PredefinedStruct — 재사용 사전
+
+<CodeTour
+  client:visible
+  language="java"
+  source="PredefinedStruct.java"
+  height={440}
+  code={structRaw}
+  steps={[
+    {
+      id: 'table',
+      title: '@Table predefined_structs + TEXT 컬럼',
+      lines: [11, 16],
+      body: '<p>MySQL TEXT(최대 64KB) — 일반 struct 정의는 수 KB라 충분. <strong>@Data + @Builder</strong>로 Lombok이 getter/setter/toString 자동. CRUD가 단순한 도메인에 적합.</p>',
+    },
+    {
+      id: 'fields',
+      title: 'name + category + structText + description',
+      lines: [17, 31],
+      body: '<p>name(필수) · category(nullable, UI 필터) · structText(필수, 본체) · description(설명). <strong>category를 nullable로 둬</strong> — "분류 안 할래"를 명시적으로 허용.</p>',
+    },
+    {
+      id: 'timestamps',
+      title: '@PrePersist/@PreUpdate — 자동 타임스탬프',
+      lines: [33, 47],
+      body: '<p>createdAt은 updatable=false — 한 번 기록되면 불변. updatedAt은 수정 시 갱신. <strong>createdAt 초기값을 onCreate에서도 updatedAt에 동기화</strong> — 초기 상태가 "수정 없음"임을 명시.</p>',
+    },
+  ]}
+/>
+
+## PredefinedStruct의 UX 의미
+
+엔티티가 단순하지만 프론트 devtool에서 **핵심 기능**을 만듦:
+
+```
+사용자: "이 UFS Descriptor 파싱을 또 해야 하네"
+       ↓
+첫 번째: struct 텍스트 입력 → parse → 저장 (name="UFS Desc v3")
+       ↓
+두 번째: 드롭다운에서 "UFS Desc v3" 선택 → bin 업로드 → 즉시 결과
+```
+
+- **팀 단위 공유 가능** — 모든 사용자가 같은 사전 조회
+- **category 필터**로 "UFS / ELF / 트레이스 프레임" 같은 그룹화
+- **description**이 "v3는 bitfield 2개 추가됨" 같은 메모 — 버전 추적 대체
+
+조직의 **"반복 struct 정의"를 DB에 축적해 지식으로 전환**하는 장치.
+
+## 서버 경로 모드 — Log Browser와의 연결
+
+`serverPath + serverName`이 채워져 오면 BinMapperService가 **내부적으로 Log Browser API를 호출**:
+
+```
+POST /api/binmapper/parse
+  serverName: "T10"
+  serverPath: "/home/octo/ufs/descriptor.bin"
+  predefinedStructId: 7
+```
+
+→ Service가 `logBrowserService.readFileBytes("T10", serverPath)` 호출 → byte[] 로드 → 나머지는 동일.
+
+**Log Browser L2 재사용**: Head 전용 경로 분기·SSH vs Local 전략을 BinMapper가 다시 구현하지 않음. Log Browser L2에서 본 **"하부 재사용 레이어"** 원칙이 그대로 작동.
+
+## 직접 해보기
+
+- [ ] `POST /api/binmapper/parse`에 `structText`와 `binaryFile` 모두 없이 호출 → 의미 있는 에러가 돌아오는지 확인
+- [ ] PredefinedStruct 하나를 DB에 `INSERT` → API로 list 조회 → devtool 드롭다운에 뜨는지
+- [ ] `structFile`에 여러 struct가 든 `.h` 업로드 → `structName`이 없으면 **첫 번째** struct가 쓰이는 관례를 코드에서 확인
+
+다음: [2. Lexer + Parser](/learn/l2-binmapper/02-parser/) →

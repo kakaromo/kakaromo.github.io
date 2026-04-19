@@ -1,0 +1,277 @@
+---
+title: 3. BinaryReader — ByteBuffer + 재귀 매핑
+description: calculateStructSize · 6-way mapFields · ByteBuffer 타입별 읽기 · bitfield 단순화 · ELF magic 자동감지
+sidebar:
+  order: 3
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import mapRaw from '../../../../snippets/BinaryReader-map.java?raw';
+import fieldsRaw from '../../../../snippets/BinaryReader-mapFields.java?raw';
+import primBitRaw from '../../../../snippets/BinaryReader-primitive-bitfield.java?raw';
+import alignRaw from '../../../../snippets/BinaryReader-align-endian.java?raw';
+import typeRaw from '../../../../snippets/CppType-readValue.java?raw';
+
+## 30초 요약
+
+IR(`StructDefinition`)이 있으면 실제 매핑은 세 단계:
+
+1. **calculateStructSize** — 필드마다 `align(offset, alignment)` 누적해 총 크기
+2. **mapFields** — 재귀 하강으로 struct/union/bitfield/char[]/array/primitive 6 분기
+3. **ByteBuffer.wrap(data, offset, size).order(byteOrder)** — 타입별 `.getInt() / .getFloat() / ...`
+
+**자바 Reflection 없음** — 필드 위치를 모두 수동 계산. "리플렉션은 Java 객체용이지 바이트 맵용이 아니다"는 철학.
+
+## map — 진입점 + 반복 처리
+
+<CodeTour
+  client:visible
+  language="java"
+  source="BinaryReaderService.map"
+  height={520}
+  code={mapRaw}
+  steps={[
+    {
+      id: 'resolve-endian',
+      title: 'resolveEndianness — AUTO 분기',
+      lines: [14, 17],
+      body: '<p>사용자 지정 또는 AUTO → ELF magic 자동감지. <strong>반환 ByteOrder를 resolvedEndianness 문자열</strong>로 기록 → MappedResult에 담아 UI가 "어떻게 읽었는가"를 표시.</p>',
+    },
+    {
+      id: 'instance-count',
+      title: 'repeatAsArray — 같은 struct N개로 반복',
+      lines: [19, 20],
+      body: '<p>structSize가 0보다 크고 repeatAsArray 있으면 <code>data.length / structSize</code>로 몇 개인지. <strong>주기적 프레임(UFS trace 등)을 한 번에 풀기</strong>.</p>',
+    },
+    {
+      id: 'loop',
+      title: '각 인스턴스 = baseOffset + mapFields',
+      lines: [22, 32],
+      body: '<p>for-loop i * structSize → baseOffset. <strong>경계 초과 시 break</strong> — 마지막 조각이 불완전한 경우 무시. i==0이면 전체 매핑 시도(짧은 bin도 허용).</p>',
+    },
+    {
+      id: 'rawbytes',
+      title: 'rawBytes[64KB 한도] — UI hex view',
+      lines: [34, 38],
+      body: '<p>최대 64KB까지만 프론트로. <strong>Byte.toUnsignedInt</strong>로 0~255 범위 int[]로 변환. JSON 전송이라 signed byte 직렬화가 번거로워 int로 통일.</p>',
+    },
+    {
+      id: 'return',
+      title: 'MappedResult 빌더 — 메타 + 인스턴스',
+      lines: [40, 49],
+      body: '<p>structName/Size/totalBytes/endianness/instanceCount/instances/hexDump/rawBytes 8필드. <strong>3 프론트 뷰가 동시에 필요한 정보를 한 번에 패킹</strong>.</p>',
+    },
+    {
+      id: 'calc-size',
+      title: 'calculateStructSize — union vs struct 분기',
+      lines: [52, 72],
+      body: '<p>union이면 모든 member의 최대 크기. struct면 <strong>isPacked면 alignment=1, 아니면 field size를 alignment로</strong>. 배열이면 count 곱하기.</p>',
+    },
+  ]}
+/>
+
+## mapFields — 6 분기 재귀
+
+<CodeTour
+  client:visible
+  language="java"
+  source="BinaryReaderService.mapFields"
+  height={660}
+  code={fieldsRaw}
+  steps={[
+    {
+      id: 'union-offset',
+      title: 'union 처리 — 모든 field 동일 offset',
+      lines: [6, 14],
+      body: '<p>union이면 <code>offset = unionStartOffset</code>으로 매번 리셋. <strong>모든 member가 같은 바이트를 덮어씀</strong> — C union의 본질.</p>',
+    },
+    {
+      id: 'align',
+      title: 'align(offset, fieldAlign) — padding 삽입',
+      lines: [15, 17],
+      body: '<p>packed면 alignment=1(padding 없음), 아니면 <strong>field 자체 크기를 alignment로</strong>. <code>align</code> 헬퍼가 offset을 다음 경계로 반올림.</p>',
+    },
+    {
+      id: 'count',
+      title: 'count = max(arraySize, 1)',
+      lines: [19, 19],
+      body: '<p>배열 아니면 arraySize=0, count=1. <strong>단일 field도 "크기 1 배열"처럼 처리</strong>해 분기를 단순화.</p>',
+    },
+    {
+      id: 'bitfield',
+      title: '분기 1: bitfield',
+      lines: [21, 28],
+      body: '<p>bitfieldWidth > 0이면 mapBitfield. <strong>simplified: 같은 storage unit 내 bit 위치 추적 안 함</strong> — 첫 bitfield마다 전체 단위를 다시 읽음. 엄밀하지 않지만 대부분 1개 bitfield 케이스에 동작.</p>',
+    },
+    {
+      id: 'char-array',
+      title: '분기 2: char 배열 → 문자열',
+      lines: [30, 42],
+      body: '<p><code>char name[16]</code>을 <strong>null-terminated 문자열로 해석</strong>. 일반 배열처럼 원소마다 children 만들지 않고 단일 parsedValue로. 가장 흔한 케이스를 특수 처리.</p>',
+    },
+    {
+      id: 'array-children',
+      title: '분기 3: 일반 배열',
+      lines: [43, 61],
+      body: '<p>struct 배열이든 primitive 배열이든 <strong>children 리스트로 펼침</strong>. 각 원소는 <code>[0]</code>, <code>[1]</code> 이름. nested가 있으면 재귀, 없으면 readPrimitiveField.</p>',
+    },
+    {
+      id: 'array-wrap',
+      title: '배열 자체를 wrapper MappedField로',
+      lines: [62, 69],
+      body: '<p>배열의 children을 갖는 부모 노드. hex는 최대 32바이트만 preview — 큰 배열이 UI를 터트리지 않도록.</p>',
+    },
+    {
+      id: 'nested',
+      title: '분기 4: nested struct (단일)',
+      lines: [71, 80],
+      body: '<p>배열 아닌 단일 중첩 struct. calculateStructSize로 크기 구해 offset 증가. <strong>children은 재귀 호출 결과</strong>.</p>',
+    },
+    {
+      id: 'primitive',
+      title: '분기 5: primitive field',
+      lines: [83, 96],
+      body: '<p>대부분의 경우. offset + size가 data 넘어가면 <strong>parsedValue="&lt;out of bounds&gt;"</strong>로 placeholder. 에러 던지지 않음 — 뒤 필드도 보여야 하므로.</p>',
+    },
+    {
+      id: 'unknown',
+      title: '분기 6: 알 수 없는 타입 fallback',
+      lines: [98, 108],
+      body: '<p>type이 null이고 nestedStruct도 없음 (Parser가 해석 못한 커스텀 타입). <strong>4바이트 기본 추정</strong>으로 전진 — 정확하지 않지만 UI가 "모름"을 인지 가능.</p>',
+    },
+  ]}
+/>
+
+## CppType.readValue — 타입별 ByteBuffer 호출
+
+<CodeTour
+  client:visible
+  language="java"
+  source="CppType.readValue"
+  height={520}
+  code={typeRaw}
+  steps={[
+    {
+      id: 'fromstring',
+      title: 'fromString — 100+ alias → CppType',
+      lines: [13, 16],
+      body: '<p>HashMap lookup. <code>DWORD</code>, <code>__u32</code>, <code>unsigned int</code> 모두 UINT32로 수렴. <strong>사용자가 C 어떤 스타일이든 받아들임</strong>.</p>',
+    },
+    {
+      id: 'switch',
+      title: 'readValue — 13 케이스 switch',
+      lines: [17, 35],
+      body: '<p>Java 14+ <strong>switch expression</strong>으로 yield 문법. 각 케이스는 ByteBuffer의 해당 메서드 호출(getInt/getShort/getLong/getFloat/…).</p>',
+    },
+    {
+      id: 'unsigned',
+      title: 'unsigned 처리 — Long으로 승격',
+      lines: [20, 26],
+      body: '<p>Java는 unsigned가 없어서 <strong>uint32 → Long, uint64 → String</strong>. UINT64는 <code>Long.toUnsignedString</code>으로 정확한 10진 표현. 오버플로 방지.</p>',
+    },
+    {
+      id: 'char',
+      title: 'CHAR — 인쇄 가능하면 문자, 아니면 \\xNN',
+      lines: [29, 32],
+      body: '<p>0x20~0x7E면 실제 character, 아니면 <code>\\x1b</code> 같은 이스케이프. <strong>ASCII 힌트를 타입 자체가 가진</strong> — readPrimitiveField의 toAsciiHint와 다른 경로.</p>',
+    },
+  ]}
+/>
+
+## bitfield·align·endian 헬퍼
+
+<CodeTour
+  client:visible
+  language="java"
+  source="BinaryReaderService — primitive / bitfield"
+  height={560}
+  code={primBitRaw}
+  steps={[
+    {
+      id: 'read-primitive',
+      title: 'readPrimitiveField — CppType 위임',
+      lines: [1, 14],
+      body: '<p>size 계산 → ByteBuffer.wrap으로 <strong>정확히 size 바이트만큼만</strong> 슬라이스 → order 설정 → readValue. 필요한 만큼만 읽어 out-of-bounds 방지.</p>',
+    },
+    {
+      id: 'ascii-hint',
+      title: 'ASCII 힌트 — 정수 값의 각 바이트가 printable이면',
+      lines: [16, 22],
+      body: '<p>값이 <code>0x53435349</code>("SCSI") 같이 문자 4개로 해석 가능하면 <strong>"1397244489 (\'SCSI\')"</strong>처럼 붙임. FW 매직값이 자주 이런 형태.</p>',
+    },
+    {
+      id: 'enum-resolve',
+      title: 'enum 값 → 라벨 치환',
+      lines: [24, 40],
+      body: '<p>필드에 enumType 있으면 <code>valueToName</code> 맵으로 <strong>"PASS (1)"</strong> 같이 치환. enum 정의가 Parser 단계에서 수집됨 → Reader가 소비.</p>',
+    },
+    {
+      id: 'mapbit',
+      title: 'mapBitfield — storage unit 읽고 mask',
+      lines: [50, 66],
+      body: '<p>storageSize는 CppType size(1/2/4/8). <strong>switch expression으로 unsigned 읽기</strong> → <code>(1L &lt;&lt; width) - 1</code> 마스크 → AND. simplified라 복수 bitfield가 같은 storage unit에 있을 때 정확하지 않음.</p>',
+    },
+  ]}
+/>
+
+<CodeTour
+  client:visible
+  language="java"
+  source="BinaryReaderService — align / endian"
+  height={480}
+  code={alignRaw}
+  steps={[
+    {
+      id: 'field-size',
+      title: 'getFieldSize — 재귀',
+      lines: [1, 9],
+      body: '<p>nestedStruct면 calculateStructSize로 재귀, 아니면 CppType.size, 모르면 <strong>4 기본</strong>. "대부분 int"라는 가정.</p>',
+    },
+    {
+      id: 'field-align',
+      title: 'getFieldAlignment — struct은 max member align',
+      lines: [11, 21],
+      body: '<p>C 표준: struct alignment = 그 내부 필드들의 최대 alignment. 재귀로 중첩 struct까지 올라감. <strong>padding이 struct 내/간에 모두 발생</strong>.</p>',
+    },
+    {
+      id: 'align-helper',
+      title: 'align(offset, alignment) — 올림 연산',
+      lines: [23, 27],
+      body: '<p>remainder == 0이면 그대로, 아니면 다음 경계로. <strong>alignment &lt;= 1이면 바로 return</strong> — packed struct 빠른 경로.</p>',
+    },
+    {
+      id: 'endian-auto',
+      title: 'resolveEndianness — ELF magic 자동감지',
+      lines: [29, 45],
+      body: '<p>BIG/LITTLE 명시는 바로 리턴. <strong>AUTO + ELF 매직(<code>0x7F E L F</code>)</strong>이면 data[5]가 1이면 little, 2면 big. 그 외 AUTO는 LITTLE 기본 (x86/ARM 관례).</p>',
+    },
+    {
+      id: 'read-char-arr',
+      title: 'readCharArray — null-terminated',
+      lines: [47, 56],
+      body: '<p>0 바이트 만나면 즉시 stop. printable이 아니면 <code>.</code>으로 치환 — <strong>hexdump 같은 관용 표현</strong>. C 관례를 그대로 UI에.</p>',
+    },
+  ]}
+/>
+
+## 왜 Java Reflection을 안 쓰는가
+
+Java 객체 필드를 바이트로 매핑하려면 Reflection이 자연스럽지만 BinMapper는 **쓰지 않음**:
+
+| 축 | Java Reflection 접근 | BinMapper 실제 |
+|---|---|---|
+| 사용자 정의 타입 | Java class 필요 → 런타임 컴파일 복잡 | **문자열로 struct 정의** → DB에 저장 쉬움 |
+| 타입 변환 | `Field.setInt(obj, value)` | `ByteBuffer.getInt()` 직접 |
+| 성능 | Reflection 호출 비용 | 직접 메서드 호출로 빠름 |
+| unsigned 지원 | Java Integer에 표현 불가 | Long 승격, String(UINT64) |
+| 사용자 영역 | Java class 업로드 필요 | C struct 텍스트 — **C/FW 팀이 그대로 복붙 가능** |
+
+**핵심 통찰**: "Java 객체를 바이트로" 가 아니라 "바이트를 **설명 가능한 트리로**" 가 목적. Reflection은 전자 문제 해결책이고, 후자에는 맞지 않음.
+
+## 직접 해보기
+
+- [ ] `struct { int a; char b; int c; };` 의 크기 계산 — 손으로 (4 + 1 + **3 padding** + 4 = 12) → `calculateStructSize` 결과와 일치 확인
+- [ ] `#pragma pack(1)` 추가하면 위 예제가 **9 바이트**가 되는지
+- [ ] bitfield 2개가 연속(`int a:4; int b:4;`)인 경우 현재 simplified 구현이 **둘 다 같은 4바이트 저장 단위를 두 번 읽어** 겹치는지 추적
+
+다음: [4. 프론트 UI 3뷰](/learn/l2-binmapper/04-ui/) →

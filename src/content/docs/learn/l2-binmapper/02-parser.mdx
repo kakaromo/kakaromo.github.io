@@ -1,0 +1,208 @@
+---
+title: 2. Lexer + Parser — 재귀 하강으로 IR 만들기
+description: TokenType 15 · KEYWORDS Set · CppStructParser 재귀 하강 · pragma pack 상태
+sidebar:
+  order: 2
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import DataFlowPath from '../../../../components/learn/DataFlowPath.svelte';
+import lexerRaw from '../../../../snippets/CppStructLexer-tokenize.java?raw';
+import parserRaw from '../../../../snippets/CppStructParser-entry.java?raw';
+
+## 30초 요약
+
+- **Lexer**: 문자 스트림 → Token 스트림 (`STRUCT`, `IDENT`, `LBRACE`, `NUMBER` 등 15종)
+- **Parser**: Token 스트림 → `StructDefinition` 리스트 (재귀 하강 / top-down)
+- **상태 1개**: `pragmaPackValue` — `#pragma pack(N)` 만나면 바뀌고 이후 struct에 적용
+- **에러 복구 없음** — invalid 입력은 조용히 skipToSemicolon — 엄격 모드 대신 "될 수 있는 부분만"
+
+## 파이프라인 시각화
+
+<DataFlowPath
+  client:visible
+  caption="문자 → 토큰 → IR의 3단계"
+  altText="입력된 C struct 문자열이 CppStructLexer.tokenize를 거쳐 Token 스트림이 됩니다. KEYWORDS Set으로 struct/enum/typedef/union/const/signed/unsigned 7개 keyword를 구분하고 나머지는 IDENT로 남깁니다. CppStructParser.parse가 이 토큰 스트림을 재귀 하강으로 읽어 StructDefinition 리스트를 반환합니다. typedefMap과 enumMap에 중간 결과를 누적해 다른 struct가 참조할 수 있게 하고 pragmaPackValue 상태 하나를 유지합니다."
+  stages={[
+    {
+      id: 'text',
+      label: '입력 텍스트',
+      layer: 'fe',
+      language: 'text',
+      sample: 'typedef struct {\n  uint32_t magic;\n  uint16_t version;\n  char     name[16];\n} Header;',
+      note: '사용자 입력',
+    },
+    {
+      id: 'tokens',
+      label: 'Token 스트림',
+      layer: 'be',
+      language: 'text',
+      sample: 'TYPEDEF STRUCT LBRACE\nIDENT(uint32_t) IDENT(magic) SEMICOLON\nIDENT(uint16_t) IDENT(version) SEMICOLON\nIDENT(char) IDENT(name) LBRACKET NUMBER(16) RBRACKET SEMICOLON\nRBRACE IDENT(Header) SEMICOLON',
+      note: 'Lexer 결과',
+    },
+    {
+      id: 'ir',
+      label: 'StructDefinition IR',
+      layer: 'state',
+      language: 'text',
+      sample: 'name: "Header"\nfields:\n  - magic: UINT32\n  - version: UINT16\n  - name: CHAR[16]\npacked: false\nalignment: 0',
+      note: 'Parser 결과',
+    },
+  ]}
+  transforms={[
+    { label: 'tokenize' },
+    { label: 'parse' },
+  ]}
+/>
+
+## Lexer — 한 번 훑으면서 분류
+
+<CodeTour
+  client:visible
+  language="java"
+  source="CppStructLexer.tokenize"
+  height={620}
+  code={lexerRaw}
+  steps={[
+    {
+      id: 'keywords',
+      title: 'KEYWORDS Set 7개 — 엄선',
+      lines: [9, 11],
+      body: '<p>전체 C 키워드가 아닌 <strong>struct 정의에 필요한 7개만</strong>. 나머지(if/while/return 등)는 struct 문맥에 안 나타나므로 무시. 언어가 아니라 <strong>"struct 정의 DSL"</strong>을 파싱한다는 철학.</p>',
+    },
+    {
+      id: 'position',
+      title: 'line/column — 에러 메시지용',
+      lines: [13, 16],
+      body: '<p>pos는 인덱스, line/column은 사람용. 현재 코드엔 명시적 에러 리포팅이 없지만 <strong>향후 "line 12에서 예상과 다름" 메시지를 위한 인프라</strong>.</p>',
+    },
+    {
+      id: 'skip-ws',
+      title: '공백/주석 스킵 후 다음 문자',
+      lines: [22, 31],
+      body: '<p><code>skipWhitespaceAndComments</code>로 정규화 — <code>/* */</code>와 <code>//</code> 둘 다 지원. <strong>토큰은 공백과 무관</strong>.</p>',
+    },
+    {
+      id: 'preproc',
+      title: '# 분기 — pragma/if-0/기타',
+      lines: [32, 42],
+      body: '<p>C 전처리기를 <strong>최소한으로 흉내</strong>: <code>#pragma pack</code>은 토큰으로, <code>#if 0 ... #endif</code>는 블록 스킵, 나머지 <code>#include</code>/<code>#define</code>은 줄 단위 스킵. 완전한 preprocessor 구현 회피.</p>',
+    },
+    {
+      id: 'attribute',
+      title: '__attribute__ 특수 처리',
+      lines: [44, 47],
+      body: '<p>GCC 전용 확장을 토큰 ATTRIBUTE로 묶음. <strong><code>__attribute__((packed))</code>를 "packed struct"로 인식</strong>하는 데 쓰임.</p>',
+    },
+    {
+      id: 'ident-keyword',
+      title: 'identifier vs keyword',
+      lines: [49, 63],
+      body: '<p>알파벳/언더스코어 시작 → identifier 읽은 뒤 <strong>switch로 keyword 체크</strong>. HashMap lookup 대신 switch — 7개뿐이라 오히려 빠름.</p>',
+    },
+    {
+      id: 'number',
+      title: '숫자 토큰',
+      lines: [65, 68],
+      body: '<p>배열 크기, bitfield 폭, enum 값 등에 사용. 16진수(0x...)와 10진수 모두 <code>readNumber</code>가 담당.</p>',
+    },
+    {
+      id: 'shift-left',
+      title: '<< 2글자 연산자 — 미리 확인',
+      lines: [70, 74],
+      body: '<p>enum 값에 비트 시프트가 자주 등장 (<code>1 &lt;&lt; 3</code>). <strong>연산자는 단일 문자 대부분, 예외는 여기만</strong>. <code>&lt;</code> 만 나오면 template syntax로 오해될 수 있어 미리 분기.</p>',
+    },
+    {
+      id: 'single-char',
+      title: '단일 문자 연산자 — switch 바로',
+      lines: [76, 80],
+      body: '<p>{}, [], (), ; : , * = | ~ -. <strong>10여 개 케이스를 switch로</strong> 짧게. 예외적인 것(SHIFT_LEFT)만 위에서 선처리.</p>',
+    },
+  ]}
+/>
+
+## Parser — top-down 재귀 하강
+
+<CodeTour
+  client:visible
+  language="java"
+  source="CppStructParser.parse"
+  height={560}
+  code={parserRaw}
+  steps={[
+    {
+      id: 'qualifiers',
+      title: 'QUALIFIERS — 파싱 시 무시할 13개',
+      lines: [12, 16],
+      body: '<p>volatile/static/extern/inline/register/_Atomic 등. <strong>struct layout에 영향 없는 키워드를 사전에 나열</strong>. field type 파싱 중 이들이 나오면 소리 없이 스킵.</p>',
+    },
+    {
+      id: 'state',
+      title: 'typedefMap + enumMap + pragmaPackValue',
+      lines: [18, 22],
+      body: '<p>Parser는 <strong>LinkedHashMap 두 개와 int 한 개만</strong> state로. "지금까지 본 타입 정의"를 누적해 <strong>뒤에 오는 struct가 앞의 것을 참조 가능</strong>.</p>',
+    },
+    {
+      id: 'entry',
+      title: 'parse 엔트리 — Lexer 호출 + pos 초기화',
+      lines: [24, 28],
+      body: '<p>외부에 Lexer를 노출하지 않음 — parse 하나로 완결. <strong>매번 새 Parser 인스턴스</strong>가 돌므로 state 공유 없음 (thread safety 자연스럽게 확보).</p>',
+    },
+    {
+      id: 'loop',
+      title: '메인 while — 4갈래 dispatch',
+      lines: [29, 31],
+      body: '<p><code>while (!isAtEnd())</code>. 매 반복마다 <code>#pragma pack</code> / <code>typedef</code> / <code>struct</code> / <code>union</code> 네 경로. <strong>top-level에 올 수 있는 것만 dispatch</strong>, 나머지는 skip.</p>',
+    },
+    {
+      id: 'pragma',
+      title: '#pragma pack — 상태 변경',
+      lines: [30, 32],
+      body: '<p>handlePragmaPack이 <code>pragmaPackValue</code>를 바꿈. 이후 <code>parseStruct</code>가 이 값을 읽어 alignment 결정. <strong>전역 상태지만 매 파서 인스턴스 독립</strong>이라 안전.</p>',
+    },
+    {
+      id: 'typedef',
+      title: 'typedef — 4 분기',
+      lines: [33, 69],
+      body: '<p>typedef 뒤에 <code>struct</code>/<code>union</code>/<code>enum</code>/기타. <strong>각각 이름이 typedefMap에 들어가 후속 참조 가능</strong>. 마지막 else의 <code>skipToSemicolon</code>이 "모르는 구문은 무시"라는 관대함.</p>',
+    },
+    {
+      id: 'anon-struct',
+      title: '이름 있는 typedef struct — 이름 부여',
+      lines: [35, 44],
+      body: '<p><code>typedef struct { ... } Name;</code>. struct 자체는 이름이 없을 수 있고 typedef 이름을 <strong>parseStruct 결과에 setName</strong>으로 주입. 그 뒤 typedefMap에 등록.</p>',
+    },
+    {
+      id: 'direct-struct',
+      title: '직접 struct — 이름 있으면 맵 등록',
+      lines: [70, 78],
+      body: '<p><code>struct Foo { ... };</code>. typedef 없어도 <strong>sd.getName() 비지 않으면 참조 가능</strong>. sd.getName은 parseStruct가 <code>struct IDENT</code> 형태를 만나면 채움.</p>',
+    },
+  ]}
+/>
+
+## "왜 ANTLR / JavaCC 를 안 쓰나"
+
+생성기 기반 파서는 학습·빌드·디버깅 오버헤드. 손으로 쓴 이유:
+
+- **지원 범위가 고정** — "필요하면 추가"가 아니라 "이 패턴만" → 생성기의 grammar 추상화가 오히려 제약
+- **에러 허용이 다름** — 생성기는 보통 strict. BinMapper는 **"모르면 skip"** 이 핵심 — skipToSemicolon 같은 복구 로직이 자연스러움
+- **의존성 절감** — Samsung 사내 빌드 정책상 새 의존성 추가가 비용. Java 표준만으로 구현
+- **개발자 이해 용이** — 새 팀원이 재귀 하강은 읽을 수 있지만 `.g4` 문법 파일은 낯섦
+
+결과: ~1000줄의 Lexer/Parser이지만 **전원이 읽고 고칠 수 있음**.
+
+## 상태 머신 vs 재귀 하강
+
+- **Lexer는 상태 머신** — 다음 문자만 보면 어느 토큰으로 갈지 결정 (피크 1회)
+- **Parser는 재귀** — `parseStruct → parseField → parseType → parseStruct`(중첩 struct) 재귀가 자연스럽게 AST 모양을 만듦
+
+이 조합이 **"간단한 Lexer + 풍부한 Parser"** 원칙 — 복잡성을 Parser로 몰아넣어 Lexer는 상수 시간.
+
+## 직접 해보기
+
+- [ ] `#pragma pack(4)` 선언 뒤의 struct와 `#pragma pack(1)` 뒤의 struct를 한 파일에 넣어 → 각각 calculateStructSize가 다른 값을 반환하는지
+- [ ] typedef 체인(`typedef int32_t MyInt; typedef MyInt YourInt;`)을 넣으면 Parser가 어떻게 처리하는지 (힌트: CppType.fromString의 기본 alias map 범위 확인)
+- [ ] 일부러 잘못된 token 순서 (예: `struct { int x }` — 세미콜론 빠짐)를 넣고 → Parser가 어디서 `skipToSemicolon`으로 복귀하는지
+
+다음: [3. BinaryReader 매핑](/learn/l2-binmapper/03-mapper/) →

@@ -1,0 +1,106 @@
+---
+title: BinMapper — 바이너리 구조 매퍼 엔진
+description: 13번째 L2 · 독립 개발도구 · C struct 정의문 → Lexer → Parser → IR → ByteBuffer 매핑
+sidebar:
+  order: 0
+---
+
+import ArchitectureDiagram from '../../../../components/learn/ArchitectureDiagram.svelte';
+
+## 30초 요약
+
+BinMapper는 **C struct 정의문과 바이너리 파일**을 받아 필드별로 해석해주는 사내 개발도구.
+
+1. 사용자가 C 스타일 struct 정의를 텍스트 또는 파일로 제공
+2. **Lexer**가 토큰(STRUCT, IDENT, LBRACE, …)으로 분해
+3. **Parser**가 재귀 하강으로 `StructDefinition` IR 생성 (pragma pack / typedef / union / enum / bitfield 처리)
+4. **BinaryReaderService**가 struct 크기·정렬·offset 계산 후 `ByteBuffer`로 타입별 읽기
+5. `MappedResult` 트리를 프론트로 반환 → Table / Hex+Struct / JSON 3뷰로 표시
+
+**다른 L2와 다른 축** — 이전 12개가 "시스템 내 어떤 흐름"이었다면 BinMapper는 **컴파일러 파이프라인을 축약한 엔진** 한 덩어리. 독립 devtool로 설치됨.
+
+## 왜 "파이프라인 엔진"인가
+
+지금까지의 L2는 Spring 컨트롤러 + 서비스 + 프론트 store 조합. BinMapper도 같은 외피를 쓰지만 **본질은 작은 컴파일러**:
+
+```
+┌─────────┐    Lexer     ┌──────────┐    Parser    ┌─────────┐    Mapper   ┌─────────┐
+│ 입력 텍스트 │ ──────────→  │  Token   │  ──────────→  │ StructDef│ ──────────→ │ MappedRes│
+│  (C src) │              │  Stream  │              │   IR    │             │  (트리)  │
+└─────────┘              └──────────┘              └─────────┘             └─────────┘
+```
+
+- **4단계 unidirectional 파이프라인** — 한 방향, side effect 없음
+- **상태 없음** — 요청마다 새 Lexer·Parser 인스턴스(DB에는 PredefinedStruct 사전만)
+- **도메인 검증** — Java 표준이 아닌 "우리가 자주 쓰는 C struct 패턴만 지원"
+
+## 5단계 구조
+
+<ArchitectureDiagram
+  client:visible
+  height={320}
+  caption="사용자 텍스트 → Lexer → Parser → BinaryReader → 3뷰"
+  altText="사용자가 C struct 정의와 바이너리 파일을 업로드합니다. CppStructLexer가 입력을 Token 스트림으로 바꾸고 CppStructParser가 재귀 하강 파싱으로 StructDefinition IR을 만듭니다. BinaryReaderService가 struct 크기와 필드 alignment를 계산한 뒤 ByteBuffer로 바이트를 읽어 MappedResult 트리로 반환합니다. 프론트에서 TableView, HexStructView, JsonView 세 탭이 같은 결과를 다른 각도로 보여줍니다."
+  nodes={[
+    { id: 'input',  label: 'C struct + bin', sublabel: 'MultipartFile + text', layer: 'fe',    x: 0,   y: 80, href: '/learn/l2-binmapper/01-entry/' },
+    { id: 'lexer',  label: 'Lexer',     sublabel: 'Token 스트림',         layer: 'be',    x: 200, y: 80,  href: '/learn/l2-binmapper/02-parser/' },
+    { id: 'parser', label: 'Parser',    sublabel: 'StructDefinition IR',  layer: 'be',    x: 380, y: 80,  href: '/learn/l2-binmapper/02-parser/' },
+    { id: 'layout', label: 'Layout',    sublabel: 'size + alignment',     layer: 'state', x: 560, y: 80,  href: '/learn/l2-binmapper/03-mapper/' },
+    { id: 'reader', label: 'BinaryReader', sublabel: 'ByteBuffer + 재귀', layer: 'tx',    x: 560, y: 200, href: '/learn/l2-binmapper/03-mapper/' },
+    { id: 'views',  label: 'Table/Hex/JSON', sublabel: '3뷰',            layer: 'fe',    x: 760, y: 140, href: '/learn/l2-binmapper/04-ui/' },
+    { id: 'store',  label: 'PredefinedStruct', sublabel: '사전 저장', layer: 'state', x: 380, y: 220, href: '/learn/l2-binmapper/01-entry/' },
+  ]}
+  edges={[
+    { from: 'input',  to: 'lexer',  label: 'text',       kind: 'sync' },
+    { from: 'lexer',  to: 'parser', label: 'tokens',     kind: 'sync' },
+    { from: 'parser', to: 'layout', label: 'IR',         kind: 'sync' },
+    { from: 'layout', to: 'reader', label: 'offsets',    kind: 'sync' },
+    { from: 'reader', to: 'views',  label: 'MappedResult', kind: 'sync' },
+    { from: 'store',  to: 'parser', label: 'load saved', kind: 'sync' },
+  ]}
+/>
+
+## 앞 12 L2와의 대조
+
+| 축 | 대부분의 L2 | Auth | TestDB | **BinMapper** |
+|---|---|---|---|---|
+| 주 소비자 | 다수 L2 | 모든 요청 | 6 L2 | **독립 devtool — 다른 L2 의존 없음** |
+| 트리거 | 다양 | 자동(인터셉터) | 외부 tentacle + 읽기 | **사용자 업로드 단발** |
+| 실시간 자원 | 일부 | 없음 | Reparse만 | **없음** (요청-응답 한 번) |
+| 상태 머신 | 각 L2별 | 세션 | RUNNING/PASS/FAIL | **없음 (stateless 계산)** |
+| 설계 영감 | 웹 시스템 흐름 | OAuth2 | ORM + FS | **컴파일러 구조 (Lexer/Parser/IR/Codegen)** |
+
+**"웹이지만 내용은 컴파일러"** 라는 점이 BinMapper의 유일성.
+
+## 지원 범위의 의도적 좁힘
+
+C struct 정의 전부를 파싱하려면 clang/gcc 프론트엔드가 필요. MOVE는 "자주 쓰는 부분 집합"만 지원:
+
+| 지원 | 미지원 |
+|---|---|
+| 기본 int/float/char/bool | 사용자 typedef 체인 완전 전개 |
+| `#pragma pack(N)` | `__attribute__((aligned(N)))` 정밀 제어 |
+| 고정 크기 배열 `x[10]` | 가변 배열 / VLA |
+| 중첩 struct · union | 함수 포인터 / 콜백 타입 |
+| bitfield (단순화) | bitfield 저장 단위 내 bit 위치 추적 |
+| enum ↔ 값 매핑 | 매크로(`#define`) 치환 |
+
+**의도된 제약**: 실제 기업 bin 파일(UFS descriptor, ELF 헤더, 트레이스 프레임)은 위 지원 범위에 들어감. 못 다루면 `StructInput.svelte`에서 사용자가 손으로 고침.
+
+## 학습 순서
+
+| 순서 | 페이지 | 관찰 포인트 |
+|---|---|---|
+| 1 | [진입점 + PredefinedStruct](/learn/l2-binmapper/01-entry/) | 6가지 입력 소스 + DB 엔티티 + 컨트롤러 분기 |
+| 2 | [Lexer + Parser](/learn/l2-binmapper/02-parser/) | TokenType 15종 + KEYWORDS + 재귀 하강 |
+| 3 | [BinaryReader 매핑](/learn/l2-binmapper/03-mapper/) | calculateStructSize · mapFields 6 분기 · Bitfield · Endianness 자동감지 |
+| 4 | [프론트 UI 3뷰](/learn/l2-binmapper/04-ui/) | Table/Hex+Struct/JSON 탭 + 드래그 드롭 + 서버 경로 모드 |
+| 5 | [엔진으로서의 BinMapper](/learn/l2-binmapper/05-engine/) | 컴파일러 파이프라인 대조 + 13 L2 전체 지도 + 확장 포인트 |
+
+## 직접 해보기
+
+- [ ] `/devtools/bin-mapper` 접속 → ELF 헤더 텍스트 붙여넣기 → ELF 바이너리 업로드 → Table 뷰 확인
+- [ ] `#pragma pack(1)` 추가 전후로 struct 크기 비교 (padding 제거 효과)
+- [ ] `POST /api/binmapper/parse-struct`에 struct 텍스트만 보내 IR 응답 확인 (struct 크기 · 필드 offset 리스트)
+
+다음: [1. 진입점 + PredefinedStruct](/learn/l2-binmapper/01-entry/) →

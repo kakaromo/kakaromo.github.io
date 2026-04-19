@@ -1,0 +1,164 @@
+---
+title: 4. 프론트 UI — Table · Hex+Struct · JSON 3뷰
+description: +page.svelte 2-컬럼 레이아웃 · 드래그드롭 · 서버 경로 + LogBrowserDialog · 3탭 같은 데이터 다른 각도
+sidebar:
+  order: 4
+---
+
+## 30초 요약
+
+`/devtools/bin-mapper` 페이지는 **2-컬럼 + 결과 3탭**:
+
+- **좌**: Binary 입력 (파일 업로드 | 서버 경로) + Struct 입력 (inline | file | predefined)
+- **우**: 결과 3탭 — `TableView`(트리 테이블) · `HexStructView`(hex + 오버레이) · `JsonView`(raw)
+- 같은 `MappedResult`를 세 각도로 — 한 결과로 검증·탐색·export 세 니즈 충족
+
+## 2-컬럼 + 3탭 구조
+
+```svelte
+<div class="grid grid-cols-2 gap-4">
+  <BinaryInput bind:file={binaryFile} bind:serverPath />
+  <StructInput bind:text={structText} bind:predefinedId />
+</div>
+
+{#if result}
+  <Tabs value={activeTab}>
+    <TabsContent value="table"><TableView {result} /></TabsContent>
+    <TabsContent value="hex"><HexStructView {result} /></TabsContent>
+    <TabsContent value="json"><JsonView {result} /></TabsContent>
+  </Tabs>
+{/if}
+```
+
+**왜 탭인가**: 3뷰를 **나란히 놓으면 각 뷰가 좁아져 정보 밀도가 떨어짐**. 사용자가 한 번에 한 시점만 본다는 사용 패턴을 존중.
+
+## BinaryInput — 두 가지 모드
+
+```svelte
+<Tabs bind:value={mode}>
+  <TabsList>
+    <TabsTrigger value="file">파일 업로드</TabsTrigger>
+    <TabsTrigger value="server">서버 경로</TabsTrigger>
+  </TabsList>
+
+  <TabsContent value="file">
+    <DragDropArea on:drop={handleDrop} />
+    <input type="file" on:change={handleFile} />
+  </TabsContent>
+
+  <TabsContent value="server">
+    <VmSelector bind:serverName />
+    <Button onclick={() => (dialogOpen = true)}>파일 탐색</Button>
+    <LogBrowserDialog bind:open={dialogOpen} bind:path={serverPath} />
+  </TabsContent>
+</Tabs>
+```
+
+- **파일 모드**: 드래그드롭 + 파일 피커. FormData로 multipart 전송
+- **서버 모드**: VM 선택 → Log Browser L2의 다이얼로그 재사용 → 경로 문자열만 API로
+
+**Log Browser 재사용 이익**: BinMapper가 자체 파일 탐색 UI를 만들 필요 없음. Log Browser L2의 SSH/Local 전략 · Head 경로 처리 · path traversal 방어가 모두 상속됨.
+
+## StructInput — 3 소스
+
+| 모드 | 입력 | 직렬화 |
+|---|---|---|
+| inline | `<textarea>` 붙여넣기 | `structText` form field |
+| file | `.h` 파일 업로드 | `structFile` multipart |
+| predefined | 드롭다운 선택 (`GET /api/binmapper/structs`) | `predefinedStructId` form field |
+
+**inline이 가장 흔함** — FW 팀이 코드 리뷰 중 한 부분만 떼어 붙여넣기. file은 전체 .h, predefined는 반복 사용.
+
+## TableView — 트리 테이블 (expandable)
+
+```
+┌─ fieldName ─┬─ type ─────┬─ offset ─┬─ size ─┬─ hex ─────────┬─ value ─────┐
+│ ▼ Header    │ struct     │ 0x0000   │    32  │ 7F 45 4C 46 … │             │
+│   ▶ magic   │ uint32_t   │ 0x0000   │     4  │ 7F 45 4C 46   │ 1179403647  │
+│   ▶ version │ uint16_t   │ 0x0004   │     2  │ 01 00         │ 1           │
+│   ▶ name[16]│ char[16]   │ 0x0006   │    16  │ 6E 61 6D …    │ "name-abc"  │
+│ ▶ Footer    │ struct     │ 0x0020   │    16  │ … …           │             │
+└─────────────┴────────────┴──────────┴────────┴───────────────┴─────────────┘
+```
+
+- **계층 들여쓰기**로 nested struct / array children 표현
+- **enum 패턴 자동 감지** — 연속된 숫자가 enum처럼 보이면 라벨 제안
+- **컬럼 리사이즈** — hex 컬럼이 특히 넓어질 수 있음
+
+## HexStructView — 바이트와 필드의 동시 표시
+
+상단: hexdump (16 바이트 / 줄 + ASCII 사이드). 하단: 필드 오버레이 — 현재 선택한 필드의 byte 범위가 hex에 하이라이트.
+
+```
+00000000  7F 45 4C 46  02 01 01 00  00 00 00 00 00 00 00 00  .ELF............
+          ┗━━━━━━━━━━━━━━━━━━━━━━━━┛
+          magic(4) + class(1) + data(1) + version(1) + abi(1) + padding(8)
+```
+
+**클릭/호버 상호작용**: TableView에서 field 클릭 → HexStructView가 해당 offset 스크롤 + 하이라이트. 역방향 동작도 가능.
+
+**왜 유용한가**: 하드웨어 디버깅 중 "이 바이트가 왜 이 값인가" 질문이 잦음. **바이트와 의미를 한 화면에 두면** 매번 두 창 전환 없이 즉답.
+
+## JsonView — raw export
+
+```json
+{
+  "structName": "Header",
+  "structSize": 32,
+  "totalBytes": 48,
+  "endianness": "LITTLE",
+  "instanceCount": 1,
+  "instances": [ ... ],
+  "hexDump": "00000000  7F 45 ..."
+}
+```
+
+- **원본 API 응답 그대로** — 디버깅/재현/외부 툴 연동
+- 사용자가 JSON을 복사해 분석 스크립트 입력으로 사용
+- `structSize` 값 하나만 필요한 경우에도 빠른 접근
+
+## 3뷰가 성립하는 이유
+
+같은 `MappedResult` 트리를 **세 가지 "질문"에 각각 최적화**:
+
+| 뷰 | 답하는 질문 |
+|---|---|
+| Table | "각 필드가 어떤 값이야?" (읽기) |
+| Hex+Struct | "이 바이트가 어느 필드야?" (역방향) |
+| JSON | "프로그램으로 처리할래" (export) |
+
+**디자인 결정**: 뷰마다 별도 API 호출이 아니라 **한 API 응답에서 세 뷰가 파생**. 탭 전환이 즉각적이고 상태 동기화 문제 없음.
+
+## 결과 메타데이터 헤더
+
+3뷰 위에 공통 상단 바:
+
+```
+┌──────────────────────────────────────────────────────┐
+│  Header (32 bytes) × 1 instance · 48 bytes input     │
+│  endianness: LITTLE (auto)                           │
+└──────────────────────────────────────────────────────┘
+```
+
+- struct 이름 / 크기 / 인스턴스 수 / 총 입력 크기 / endianness(auto 표시)
+- **매핑이 성공했다는 확인**이자 매핑 전체 상태의 요약
+- 에러 시 같은 자리에 빨간 에러 메시지
+
+## 에러 UX — 단계별 메시지
+
+| 단계 실패 | 메시지 예시 |
+|---|---|
+| Lexer 오류 | "line 12: unexpected character '@'" |
+| Parser 오류 | "line 15: expected SEMICOLON, got IDENT" |
+| Mapping 범위 초과 | 각 필드에 `<out of bounds>` placeholder (전체 실패 대신) |
+| 서버 파일 읽기 | "cannot read /path: no such file" (Log Browser 메시지 위임) |
+
+**부분 성공 허용** — mapping 단계에서는 앞쪽 필드들이 이미 성공했으면 그 값들을 보여주고, 뒤 실패 필드만 placeholder. "완전히 실패해야 뭔가를 보여주지 않는" 접근을 거부.
+
+## 직접 해보기
+
+- [ ] devtool 접속 → 아무 .h 파일 드래그 → StructInput이 자동으로 첫 struct를 골라 파싱되는지
+- [ ] Table에서 nested struct를 펼치고, 같은 필드를 HexStructView에서 클릭 → 두 뷰의 상태가 연동되는지
+- [ ] JsonView에서 `hexDump`를 그대로 복사해 텍스트 에디터에 붙여넣어 offset 수 확인 (16 바이트 × 줄)
+
+다음: [5. 엔진으로서의 BinMapper](/learn/l2-binmapper/05-engine/) →
