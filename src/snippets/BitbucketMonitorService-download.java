@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/bitbucket/service/BitbucketMonitorService.java
 // @lines 117-224
 // @note downloadBranch 6단계 — 디렉토리 생성 → ZIP 스트리밍(1MB SSE 진행) → extractZip(Zip Slip 방지) → ZIP 삭제 → DB 업데이트
-// @synced 2026-04-19T08:19:17.638Z
+// @synced 2026-04-19T08:33:48.685Z
 
     public BitbucketBranch downloadBranch(BitbucketRepo repo, String branchName, String branchId, String commitId,
                                           org.springframework.web.servlet.mvc.method.annotation.SseEmitter emitter) {

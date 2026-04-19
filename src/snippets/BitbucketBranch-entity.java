@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/bitbucket/entity/BitbucketBranch.java
 // @lines 1-48
 // @note portal_bitbucket_branches — status(DETECTED/DOWNLOADING/DOWNLOADED/FAILED) + filePath + commitDate
-// @synced 2026-04-19T08:19:17.637Z
+// @synced 2026-04-19T08:33:48.684Z
 
 package com.samsung.move.bitbucket.entity;
 

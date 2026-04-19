@@ -459,6 +459,50 @@ const manifest = [
     language: 'java',
     note: 'downloadBranch 6단계 — 디렉토리 생성 → ZIP 스트리밍(1MB SSE 진행) → extractZip(Zip Slip 방지) → ZIP 삭제 → DB 업데이트',
   },
+
+  // ── MinIO 파일 스토리지 (L2 minio) ──
+  {
+    id: 'MinioProperties',
+    source: 'src/main/java/com/samsung/move/minio/config/MinioProperties.java',
+    lines: [1, 17],
+    language: 'java',
+    note: '@ConfigurationProperties minio — endpoint / port / credentials',
+  },
+  {
+    id: 'MinioConfig',
+    source: 'src/main/java/com/samsung/move/minio/config/MinioConfig.java',
+    lines: [1, 18],
+    language: 'java',
+    note: 'MinioClient.builder() — io.minio:minio 8.5.14 SDK 래퍼',
+  },
+  {
+    id: 'MinioStorageService',
+    source: 'src/main/java/com/samsung/move/minio/service/MinioStorageService.java',
+    lines: [1, 150],
+    language: 'java',
+    note: '버킷/오브젝트 CRUD — list/listRecursive/upload/download/stat/createFolder/delete',
+  },
+  {
+    id: 'MinioUploadController',
+    source: 'src/main/java/com/samsung/move/minio/controller/MinioUploadController.java',
+    lines: [1, 53],
+    language: 'java',
+    note: 'POST /upload — MultipartFile + 2GB 압축 강제 검증 + prefix 경로 조립',
+  },
+  {
+    id: 'MinioController-list-visibility',
+    source: 'src/main/java/com/samsung/move/minio/controller/MinioController.java',
+    lines: [28, 80],
+    language: 'java',
+    note: 'GET /buckets — Admin은 visibility 토글 전체, User는 visible 만',
+  },
+  {
+    id: 'MinioController-download',
+    source: 'src/main/java/com/samsung/move/minio/controller/MinioController.java',
+    lines: [152, 206],
+    language: 'java',
+    note: '/download-folder (ZipOutputStream recursive) + /download (InputStreamResource + UTF-8 filename)',
+  },
 ];
 
 async function extractLines(text, lines) {
