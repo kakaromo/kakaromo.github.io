@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/head/tcp/HeadTcpClient.java
 // @lines 147-215
 // @note acceptLoop + readFromSocket + processChunk
-// @synced 2026-04-19T06:47:47.006Z
+// @synced 2026-04-19T07:03:50.660Z
 
     private void acceptLoop() throws IOException {
         long lastDataTime = System.currentTimeMillis();

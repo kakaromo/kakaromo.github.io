@@ -269,6 +269,57 @@ const manifest = [
     language: 'java',
     note: 'JSch SSH 실행 — stdout/stderr 실시간 step-output 전송 + timeout',
   },
+
+  // ── Pre-Command (L2 precmd) ──
+  {
+    id: 'PreCommand-entity',
+    source: 'src/main/java/com/samsung/move/head/precmd/entity/PreCommand.java',
+    lines: [1, 50],
+    language: 'java',
+    note: 'portal_pre_commands — 명령 템플릿 (name + commands JSON array)',
+  },
+  {
+    id: 'SlotPreCommand-entity',
+    source: 'src/main/java/com/samsung/move/head/precmd/entity/SlotPreCommand.java',
+    lines: [1, 55],
+    language: 'java',
+    note: 'portal_slot_pre_commands — setLocation(UK) + preCommand + tcPreCommandIds CSV',
+  },
+  {
+    id: 'PreCommandAutoExecutor-fields',
+    source: 'src/main/java/com/samsung/move/head/precmd/service/PreCommandAutoExecutor.java',
+    lines: [34, 83],
+    language: 'java',
+    note: '필드 + 중복 방지 Set + onSlotStateChanged 훅 진입점',
+  },
+  {
+    id: 'PreCommandAutoExecutor-tc',
+    source: 'src/main/java/com/samsung/move/head/precmd/service/PreCommandAutoExecutor.java',
+    lines: [85, 172],
+    language: 'java',
+    note: 'tryExecuteTcPreCommand — testcaseStatus에서 첫 미완료 position 찾고 TC Pre-Command 실행',
+  },
+  {
+    id: 'PreCommandService-exec',
+    source: 'src/main/java/com/samsung/move/head/precmd/service/PreCommandService.java',
+    lines: [190, 250],
+    language: 'java',
+    note: 'executeSync + parseCommands + resolveCommand(adb -s usbId) + extractVmName',
+  },
+  {
+    id: 'PreCommandController-slot',
+    source: 'src/main/java/com/samsung/move/head/precmd/controller/PreCommandController.java',
+    lines: [60, 128],
+    language: 'java',
+    note: '슬롯 CRUD — list / assign(TC 자동 초기화) / unassign',
+  },
+  {
+    id: 'PreCommandController-tc',
+    source: 'src/main/java/com/samsung/move/head/precmd/controller/PreCommandController.java',
+    lines: [130, 194],
+    language: 'java',
+    note: 'TC CRUD — assign(슬롯 자동 해제) / unassign — position 기반',
+  },
 ];
 
 async function extractLines(text, lines) {

@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/t32/service/T32DumpService.java
 // @lines 222-282
 // @note Step 1 JTAG (success pattern regex) + Step 2 Attach (Down 감지)
-// @synced 2026-04-19T06:47:47.019Z
+// @synced 2026-04-19T07:03:50.668Z
 
     // ── Step 1: JTAG 연결 ──
 

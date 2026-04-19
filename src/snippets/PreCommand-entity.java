@@ -1,9 +1,9 @@
-// @source src/main/java/com/samsung/move/agent/entity/AgentServer.java
-// @lines 1-57
-// @note portal_agent_servers — Agent gRPC 서버 등록
-// @synced 2026-04-19T07:03:50.661Z
+// @source src/main/java/com/samsung/move/head/precmd/entity/PreCommand.java
+// @lines 1-50
+// @note portal_pre_commands — 명령 템플릿 (name + commands JSON array)
+// @synced 2026-04-19T07:03:50.669Z
 
-package com.samsung.move.agent.entity;
+package com.samsung.move.head.precmd.entity;
 
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
@@ -11,37 +11,29 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-import java.io.Serializable;
 import java.time.LocalDateTime;
 
 @Entity
-@Table(name = "portal_agent_servers")
+@Table(name = "portal_pre_commands")
 @Data
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class AgentServer implements Serializable {
+public class PreCommand {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(nullable = false, unique = true, length = 100)
-    private String name;
-
     @Column(nullable = false, length = 100)
-    private String host;
-
-    @Column(nullable = false)
-    @Builder.Default
-    private int port = 50051;
-
-    @Column(nullable = false)
-    @Builder.Default
-    private boolean enabled = true;
+    private String name;
 
     @Column(length = 500)
     private String description;
+
+    /** JSON array of command strings, e.g. ["adb push file /dev", "adb shell chmod +x /dev/file"] */
+    @Column(nullable = false, columnDefinition = "TEXT")
+    private String commands;
 
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;
@@ -60,3 +52,4 @@ public class AgentServer implements Serializable {
         updatedAt = LocalDateTime.now();
     }
 }
+
