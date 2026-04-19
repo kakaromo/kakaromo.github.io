@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/testdb/service/PerformanceResultDataService.java
 // @lines 36-161
 // @note fetchResultData — History/TC/Parser DB 조합 + LogBrowser JSON 읽기 + 불완전 JSON 복구
-// @synced 2026-04-19T08:33:48.683Z
+// @synced 2026-04-19T08:48:08.178Z
 
     public ResultData fetchResultData(Long historyId) throws Exception {
         PerformanceHistory history = historyService.findById(historyId);

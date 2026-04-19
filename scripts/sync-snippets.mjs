@@ -503,6 +503,50 @@ const manifest = [
     language: 'java',
     note: '/download-folder (ZipOutputStream recursive) + /download (InputStreamResource + UTF-8 filename)',
   },
+
+  // ── 인증·권한 (L2 auth) ──
+  {
+    id: 'AdfsProperties',
+    source: 'src/main/java/com/samsung/move/auth/config/AdfsProperties.java',
+    lines: [1, 20],
+    language: 'java',
+    note: '@ConfigurationProperties portal.adfs — enabled/clientId/authorizeUrl/redirectUrl/logoutUrl/scope',
+  },
+  {
+    id: 'PortalUser-entity',
+    source: 'src/main/java/com/samsung/move/auth/entity/PortalUser.java',
+    lines: [1, 62],
+    language: 'java',
+    note: 'portal_users — username / adfsUserId / role(USER/ADMIN) / enabled',
+  },
+  {
+    id: 'AuthController-adfs-login',
+    source: 'src/main/java/com/samsung/move/auth/controller/AuthController.java',
+    lines: [158, 180],
+    language: 'java',
+    note: 'GET /adfs/login — nonce 생성 + authorize URL 조립 + redirect',
+  },
+  {
+    id: 'AuthController-adfs-callback',
+    source: 'src/main/java/com/samsung/move/auth/controller/AuthController.java',
+    lines: [181, 252],
+    language: 'java',
+    note: 'POST /adfs/callback — id_token 파싱 + claims 추출 + PortalUser 생성/갱신 + 세션 저장',
+  },
+  {
+    id: 'UserPermissionService-constants',
+    source: 'src/main/java/com/samsung/move/auth/service/UserPermissionService.java',
+    lines: [1, 55],
+    language: 'java',
+    note: 'ALL_PERMISSIONS 17개 정의 (메뉴 8 + 액션 9)',
+  },
+  {
+    id: 'ActionPermissionInterceptor',
+    source: 'src/main/java/com/samsung/move/auth/interceptor/ActionPermissionInterceptor.java',
+    lines: [1, 101],
+    language: 'java',
+    note: 'URL + HTTP method → DB ActionPermission 매칭 + 권한 체크 + 403 응답',
+  },
 ];
 
 async function extractLines(text, lines) {

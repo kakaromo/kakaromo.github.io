@@ -1,9 +1,9 @@
-// @source src/main/java/com/samsung/move/agent/entity/AgentServer.java
-// @lines 1-57
-// @note portal_agent_servers — Agent gRPC 서버 등록
-// @synced 2026-04-19T08:48:08.164Z
+// @source src/main/java/com/samsung/move/auth/entity/PortalUser.java
+// @lines 1-62
+// @note portal_users — username / adfsUserId / role(USER/ADMIN) / enabled
+// @synced 2026-04-19T08:48:08.184Z
 
-package com.samsung.move.agent.entity;
+package com.samsung.move.auth.entity;
 
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
@@ -11,37 +11,42 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-import java.io.Serializable;
 import java.time.LocalDateTime;
 
 @Entity
-@Table(name = "portal_agent_servers")
+@Table(name = "portal_users")
 @Data
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class AgentServer implements Serializable {
+public class PortalUser {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
     @Column(nullable = false, unique = true, length = 100)
-    private String name;
+    private String username;
 
-    @Column(nullable = false, length = 100)
-    private String host;
+    /** ADFS 고유 ID (변경 안 됨). AD 사용자 식별 키. */
+    @Column(name = "adfs_user_id", unique = true, length = 100)
+    private String adfsUserId;
 
-    @Column(nullable = false)
+    @Column(nullable = true)
+    private String password;
+
+    @Column(name = "display_name", length = 100)
+    private String displayName;
+
+    @Column(length = 200)
+    private String email;
+
+    @Column(nullable = false, length = 20)
     @Builder.Default
-    private int port = 50051;
+    private String role = "USER";
 
-    @Column(nullable = false)
     @Builder.Default
     private boolean enabled = true;
-
-    @Column(length = 500)
-    private String description;
 
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;
