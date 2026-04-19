@@ -1,0 +1,209 @@
+---
+title: L2 4종 비교 — 공통 패턴과 갈림길
+description: 슬롯 · 벤치마크 · 원격 · Metadata — 네 모듈을 한 화면에서 대조
+sidebar:
+  order: 0
+---
+
+import ArchitectureDiagram from '../../../components/learn/ArchitectureDiagram.svelte';
+import DataFlowPath from '../../../components/learn/DataFlowPath.svelte';
+
+## 왜 이 문서인가
+
+L2 네 모듈을 순서대로 읽으면 **공통 패턴**이 점점 눈에 들어옵니다. 네 번째 L2(Metadata)를 끝낸 시점에는 "**다섯 번째 L2도 같은 방식으로 쓸 수 있겠다**"는 감이 생깁니다. 이 문서는 그 감을 체크리스트와 표로 고정해 둡니다.
+
+이 문서의 쓰임:
+
+1. **빠른 참고** — "벤치마크에서 SSE 중계를 어떻게 했더라?" 같은 교차 조회
+2. **다음 L2를 쓸 때의 출발점** — 아래 체크리스트와 축별 분기표를 골조로 사용
+3. **리뷰어 체크리스트** — 새 L2 PR이 기존 원칙을 따르는지 확인
+
+## 한 줄 요약 네 줄
+
+- **슬롯**: Head TCP → StateStore version → SSE 1초 diff push → 브라우저 상시 스트림
+- **벤치마크**: Run 버튼 → Spring gRPC 호출 → Agent 스트림 → SSE 재중계 → 완료까지 Job Card
+- **원격**: 서버 선택 → WebSocket 열림 → Spring ↔ guacd TCP 릴레이 → 양방향 프레임
+- **Metadata**: running 감지 → slot별 ScheduledExecutor → adb shell 4-way → HTTP 폴링으로 조회
+
+## 축별 대조
+
+### 트리거·수명
+
+| 축 | 슬롯 | 벤치마크 | 원격 | Metadata |
+|---|---|---|---|---|
+| 누가 시작하는가 | Head 하드웨어 | 사용자 Run 버튼 | 사용자 서버 선택 | **스케줄러 자동** |
+| 언제 끝나는가 | 페이지 나갈 때 | Agent가 complete 이벤트 | 세션 창 닫기 | testState가 running에서 벗어날 때 |
+| 세션당 수명 | 상시 (초) | 수초~수시간 | 세션 (분~시간) | 수 분 주기 |
+| 인증 필요 시점 | SSE 연결 시 | POST /run 시 | WebSocket onOpen | HTTP GET마다 |
+
+### 백엔드 전송 계층
+
+| 축 | 슬롯 | 벤치마크 | 원격 | Metadata |
+|---|---|---|---|---|
+| 외부 서비스 | Head (TCP) | Go Agent (gRPC) | guacd (TCP 4822) | Android (adb shell) |
+| 브라우저 ↔ Spring | SSE | REST + SSE | **WebSocket** | **HTTP** 폴링 |
+| 프로토콜 전환 | Custom TCP → JSON SSE | gRPC stream → JSON SSE | 그대로 터널링 | adb 출력 → JSON |
+| 추상체 | `SseEmitter` | `SseEmitter` + `StreamObserver` | `GuacamoleTunnel` + `@ServerEndpoint` | `@Scheduled` + `ScheduledExecutorService` |
+
+### 영속 vs 인메모리
+
+| 데이터 | 슬롯 | 벤치마크 | 원격 | Metadata |
+|---|---|---|---|---|
+| 설정 | DB (`HeadConnection`) | DB (`AgentServer`) | DB (`PortalServer`) | DB (`UfsMetadataType/Command/Product`) |
+| 런타임 상태 | **인메모리** (`StateStore`) | **DB** (`JobExecution`) + 인메모리 | 인메모리 세션 맵 | **인메모리 + SFTP 파일** |
+| 이력 보관 | 없음 | DB 영속 | 없음 | SFTP JSON |
+
+벤치마크와 Metadata는 **"나중에 다시 열어볼 가치"** 가 있는 데이터라서 영속화. 슬롯과 원격은 현재성만 중요.
+
+### 프론트 실시간 패턴 (공통)
+
+```svelte
+<script lang="ts">
+  import { createHeadSlotStore } from '$lib/api/headSlotStore.svelte';
+  const store = createHeadSlotStore('foo');
+  $effect(() => {
+    store.connect();
+    return () => store.disconnect();
+  });
+</script>
+```
+
+**네 L2 모두 `$effect` 안에서 리소스를 획득하고 return cleanup으로 해제**합니다. 획득하는 리소스만 다릅니다.
+
+| L2 | 획득 리소스 | cleanup |
+|---|---|---|
+| 슬롯 | `EventSource` | `es.close()` |
+| 벤치마크 | `EventSource`(job당 하나) | `es.close()` |
+| 원격 | `Guacamole.Client` + keyboard/mouse | `client.disconnect() + keyboard.reset()` |
+| Metadata | `setInterval(30s)` | `clearInterval()` |
+
+## 공통 아키텍처 블록
+
+모든 L2는 아래 5 블록으로 환원됩니다. 모듈마다 블록의 **두께**만 다릅니다.
+
+<ArchitectureDiagram
+  client:visible
+  height={300}
+  caption="(영속 설정 | 런타임 상태) — 트리거 — 중계/변환 — 전송 — 프론트 상태"
+  altText="L2 공통 패턴: 영속 설정 DB와 런타임 상태 스토어를 기반으로, 트리거(사용자/자동)가 들어오면 중계/변환 계층을 거쳐 전송층(SSE/WebSocket/폴링)으로 브라우저에 닿고, 프론트 상태로 $effect 패턴 안에 보관됩니다."
+  nodes={[
+    { id: 'cfg',    label: '영속 설정',    sublabel: 'DB 엔티티',           layer: 'state', x: 0,   y: 70 },
+    { id: 'state',  label: '런타임 상태',  sublabel: '인메모리/DB',         layer: 'state', x: 200, y: 70 },
+    { id: 'trig',   label: '트리거',      sublabel: '사용자 or 자동',        layer: 'be',    x: 400, y: 0 },
+    { id: 'relay',  label: '중계·변환',    sublabel: 'SseEmitter · Stream',  layer: 'tx',    x: 400, y: 150 },
+    { id: 'front',  label: '프론트 상태',  sublabel: '$effect 패턴',          layer: 'fe',    x: 600, y: 70 },
+  ]}
+  edges={[
+    { from: 'cfg',   to: 'state', label: 'read',   kind: 'sync' },
+    { from: 'trig',  to: 'state', label: 'write',  kind: 'sync' },
+    { from: 'state', to: 'relay', label: 'diff',   kind: 'async' },
+    { from: 'relay', to: 'front', label: 'SSE/WS/HTTP', kind: 'async' },
+  ]}
+/>
+
+## 설계 결정의 공통 원칙
+
+L2 4종을 읽으며 반복되는 판단 기준:
+
+1. **"얼마나 오래 살아야 하는가"로 저장소를 가른다** — 분 미만이면 인메모리, 그 이상이면 DB.
+2. **"얼마나 자주 바뀌는가"로 yaml vs DB를 가른다** — 빌드 단위면 yaml, 운영 중 바뀌면 DB.
+3. **"빠른 감지자 + 느린 작업자"로 스레드풀을 분리한다** — Spring 기본 `@Scheduled` 풀이 I/O에 막히지 않게.
+4. **프로토콜 변환은 한 곳에서만** — 컨트롤러가 겹겹이 감싸지 않도록, 한 진입점에서 단일 번역 레이어.
+5. **에러 격리** — 한 item의 실패가 루프를 멈추지 않도록 try/catch 후 continue.
+6. **cleanup은 finally/return** — 획득한 자원은 모든 경로에서 해제 보장.
+
+## 갈림길 — 어느 전송을 골라야 하는가
+
+다음 L2를 쓸 때 첫 번째 질문:
+
+<DataFlowPath
+  client:visible
+  caption="전송 계층 결정 트리"
+  altText="데이터 갱신 주기가 분 단위면 HTTP 폴링, 초 단위 단방향이면 SSE, 양방향이 필요하면 WebSocket, 긴 job의 진행률이면 gRPC 스트림 + SSE 중계를 선택합니다."
+  stages={[
+    {
+      id: 'q1',
+      label: 'Q1: 실시간성?',
+      layer: 'fe',
+      language: 'text',
+      sample: '갱신 주기가 분 단위?\n → HTTP 폴링으로 충분\n\n초 단위?\n → SSE / WebSocket 필요',
+      note: 'Metadata는 5분 → 폴링',
+    },
+    {
+      id: 'q2',
+      label: 'Q2: 방향?',
+      layer: 'be',
+      language: 'text',
+      sample: '서버 → 클라만?\n → SSE\n\n양방향?\n → WebSocket',
+      note: '원격은 양방향 → WebSocket',
+    },
+    {
+      id: 'q3',
+      label: 'Q3: 외부 시스템?',
+      layer: 'tx',
+      language: 'text',
+      sample: '긴 job의 진행률?\n → gRPC 스트림 + SSE 중계\n\n커스텀 TCP?\n → 별도 client + SSE',
+      note: '벤치마크는 gRPC, 슬롯은 TCP',
+    },
+    {
+      id: 'decision',
+      label: '결정',
+      layer: 'state',
+      language: 'text',
+      sample: '선택된 전송 +\n프론트 cleanup 전략 +\n스레드풀 분리 여부',
+      note: '$effect 패턴은 무엇을 고르든 동일',
+    },
+  ]}
+  transforms={[
+    { label: 'narrow' },
+    { label: 'match' },
+    { label: 'lock-in' },
+  ]}
+/>
+
+## 다섯 번째 L2 체크리스트
+
+새 L2 모듈을 작성할 때 아래 순서를 따르면 앞 4 L2와 형태가 맞습니다.
+
+### 문서 골격 (N단계 여정)
+
+- [ ] `learn/l2-<name>/index.mdx` — N단계 인터랙티브 `ArchitectureDiagram` + 앞 L2와의 차이 테이블
+- [ ] `01-...mdx` ~ `0N-...mdx` — 각 단계는 "30초 요약 + 본문 + 코드 투어 + 직접 해보기" 구조
+- [ ] 시각화: 각 페이지에 최소 1개(CodeTour/ArchitectureDiagram/SequenceTimeline/DataFlowPath/BeforeAfterSlider 중)
+- [ ] L3 개념 팝오버 — 새 개념 발견 시 `l3-concepts/` 추가, 기존 사전 재사용 우선
+
+### 코드 쪽 (동기화 + 라벨)
+
+- [ ] `scripts/sync-snippets.mjs` manifest에 portal 경로·라인 범위 추가
+- [ ] `npm run sync-snippets` 실행
+- [ ] CodeTour `lines`는 **스니펫 파일의 절대 라인** — 헤더 4줄 + 빈 줄 1줄 후 본문
+- [ ] `astro.config.mjs` 사이드바 L2 섹션에 새 항목 추가 (`(예정)` 없이)
+
+### 문장 원칙
+
+- [ ] 각 페이지 맨 위 **"30초 요약"** — 독자가 스크롤 없이 요지 파악
+- [ ] 표는 결정 근거, 리스트는 행동 — **설명 문단은 3~4줄 이내**
+- [ ] **"왜 X가 아닌가"** 문단 — 버려진 대안이 질문으로 살아남게
+- [ ] 각 페이지 끝 **"직접 해보기"** 3~5 체크 — 읽기만 해도 무방, 따라하면 보상
+
+### 빌드·PR
+
+- [ ] `description`이 `@`로 시작하면 frontmatter에서 `"..."` 로 감싸기
+- [ ] MDX 헤딩(`##`) 안에 JSX 컴포넌트는 한 줄로만
+- [ ] `npm run build` 통과 확인
+- [ ] 커밋 분할: 스니펫 / 본문 / (선택) L3 개념
+
+## 아직 L2로 없는 후보
+
+메모리에 기록된 기능들 중 템플릿에 잘 맞을 것:
+
+- **T32 Dump** — 4단계 Stepper Dialog + SSE. "절차 기반 작업"의 좋은 예시
+- **Pre-Command** — setLocation 기반 pre/tc 우선순위. 상태 머신 중심
+- **Bitbucket 브랜치 감지** — Polling + 저장 경로 관리. Metadata와 구조 유사
+- **iotest syscall 엔진** — I/O 테스트 실행. 벤치마크와 구조 유사
+
+어느 것을 다음에 쓸지는 "신규 개발자 온보딩에 가장 일찍 나타나는 모듈"로 고르면 됩니다.
+
+---
+
+**돌아가기**: [학습 가이드 개요](/learn/) · [L1 전체상](/learn/l1-overview/architecture/)
