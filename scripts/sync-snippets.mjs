@@ -320,6 +320,64 @@ const manifest = [
     language: 'java',
     note: 'TC CRUD — assign(슬롯 자동 해제) / unassign — position 기반',
   },
+
+  // ── Log Browser (L2 log-browser) ──
+  {
+    id: 'LogBrowserConfig',
+    source: 'src/main/java/com/samsung/move/logbrowser/config/LogBrowserConfig.java',
+    lines: [1, 39],
+    language: 'java',
+    note: '@ConditionalOnProperty tentacle.access-mode로 Local vs SSH 빈 선택',
+  },
+  {
+    id: 'LogBrowserService-interface',
+    source: 'src/main/java/com/samsung/move/logbrowser/service/LogBrowserService.java',
+    lines: [1, 33],
+    language: 'java',
+    note: '공통 인터페이스 + FileEntry/FileContent/SearchResult record',
+  },
+  {
+    id: 'SshLogBrowserService-list',
+    source: 'src/main/java/com/samsung/move/logbrowser/service/SshLogBrowserService.java',
+    lines: [59, 97],
+    language: 'java',
+    note: 'SSH listFiles — ChannelSftp.ls + 폴더 먼저 정렬',
+  },
+  {
+    id: 'SshLogBrowserService-search',
+    source: 'src/main/java/com/samsung/move/logbrowser/service/SshLogBrowserService.java',
+    lines: [191, 211],
+    language: 'java',
+    note: 'SSH searchInFile — rg -n --no-heading --encoding auto + shellEscape + iconv pipe',
+  },
+  {
+    id: 'SshLogBrowserService-session',
+    source: 'src/main/java/com/samsung/move/logbrowser/service/SshLogBrowserService.java',
+    lines: [302, 369],
+    language: 'java',
+    note: 'getOrCreateCachedSession + execCommand (exit>1만 예외, rg no-match=1 허용)',
+  },
+  {
+    id: 'LocalLogBrowserService-list',
+    source: 'src/main/java/com/samsung/move/logbrowser/service/LocalLogBrowserService.java',
+    lines: [33, 70],
+    language: 'java',
+    note: 'Local listFiles — Files.list + 동일 정렬 + ".." 엔트리',
+  },
+  {
+    id: 'LocalLogBrowserService-search-path',
+    source: 'src/main/java/com/samsung/move/logbrowser/service/LocalLogBrowserService.java',
+    lines: [206, 312],
+    language: 'java',
+    note: 'Local searchInFile (ProcessBuilder rg) + resolveLocalPath (path traversal 방어)',
+  },
+  {
+    id: 'LogBrowserController-download-dir',
+    source: 'src/main/java/com/samsung/move/logbrowser/controller/LogBrowserController.java',
+    lines: [82, 144],
+    language: 'java',
+    note: 'GET /download-dir — Local ZipOutputStream / SSH 원격 zip 후 SFTP',
+  },
 ];
 
 async function extractLines(text, lines) {

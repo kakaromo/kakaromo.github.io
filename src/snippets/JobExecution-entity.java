@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/agent/entity/JobExecution.java
 // @lines 1-81
 // @note portal_job_executions — job 이력 (벤치마크/시나리오/Trace 공용)
-// @synced 2026-04-19T07:03:50.662Z
+// @synced 2026-04-19T07:33:06.828Z
 
 package com.samsung.move.agent.entity;
 

@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/t32/controller/T32DumpController.java
 // @lines 1-52
 // @note POST /api/t32/dump/execute — SSE 반환 + DumpRequest record
-// @synced 2026-04-19T07:03:50.668Z
+// @synced 2026-04-19T07:33:06.836Z
 
 package com.samsung.move.t32.controller;
 
