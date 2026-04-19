@@ -98,6 +98,10 @@ export default defineConfig({
                   label: 'Pre-Command (이벤트 훅 + SSH)',
                   autogenerate: { directory: 'learn/l2-precmd' },
                 },
+                {
+                  label: 'Log Browser (SSH + Local 전략 패턴)',
+                  autogenerate: { directory: 'learn/l2-logbrowser' },
+                },
               ],
             },
             {
