@@ -73,7 +73,7 @@ export default defineConfig({
               label: 'L2 — 기능 모듈',
               collapsed: true,
               items: [
-                { label: '🔎 L2 5종 비교', slug: 'learn/l2-compare' },
+                { label: '🔎 L2 6종 비교', slug: 'learn/l2-compare' },
                 {
                   label: '슬롯 모니터링 (Head TCP + SSE)',
                   autogenerate: { directory: 'learn/l2-slots' },
@@ -93,6 +93,10 @@ export default defineConfig({
                 {
                   label: 'T32 Dump (Stepper + SSH × 2)',
                   autogenerate: { directory: 'learn/l2-t32' },
+                },
+                {
+                  label: 'Pre-Command (이벤트 훅 + SSH)',
+                  autogenerate: { directory: 'learn/l2-precmd' },
                 },
               ],
             },
