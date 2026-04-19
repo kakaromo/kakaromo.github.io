@@ -1,0 +1,106 @@
+---
+title: 1. 설정과 모드 결정
+description: tentacle.access-mode 한 줄로 SSH · Local 중 한 Bean만 등록
+sidebar:
+  order: 1
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import configRaw from '../../../../snippets/LogBrowserConfig.java?raw';
+
+## 30초 요약
+
+`application.yaml`의 **`tentacle.access-mode`** 값 하나가 전체 동작을 바꿉니다. Spring Boot의 **`@ConditionalOnProperty`** 가 조건에 맞는 Bean만 등록 — 컨트롤러는 `LogBrowserService` 인터페이스에 의존하므로 **구현체 교체가 투명**.
+
+- `ssh` (또는 미지정): `SshLogBrowserService` Bean 생성
+- `local`: `LocalLogBrowserService` Bean 생성
+
+yaml 핵심:
+
+```yaml
+tentacle:
+  access-mode: ssh           # or 'local'
+  log-prefix: /home/octo/tentacle
+  ssh:
+    username: samsung
+    password: tentacle
+    port: 22
+  mount-path: /mnt
+  head:
+    log-path: /home/octo/nas
+    mount-path: /mnt/head/nas
+```
+
+## 코드 투어
+
+<CodeTour
+  client:visible
+  language="java"
+  source="LogBrowserConfig.java"
+  height={500}
+  code={configRaw}
+  steps={[
+    {
+      id: 'config',
+      title: '@Configuration — Bean 공장',
+      lines: [18, 20],
+      body: '<p>Spring이 이 클래스의 <code>@Bean</code> 메서드를 스캔해 컨테이너에 등록. <code>LogBrowserService</code> 타입 Bean이 정확히 하나 생성되도록 설계.</p>',
+    },
+    {
+      id: 'local-bean',
+      title: 'Local Bean — @ConditionalOnProperty',
+      lines: [21, 28],
+      body: '<p><code>havingValue = "local"</code>. yaml에 <code>access-mode: local</code>일 때만 이 메서드가 호출되어 Bean이 생성됨. <strong>SSH Bean은 아예 만들어지지 않음</strong> — 리소스·커넥션도 낭비 없음.</p>',
+    },
+    {
+      id: 'ssh-bean',
+      title: 'SSH Bean — matchIfMissing + destroyMethod',
+      lines: [30, 43],
+      body: '<p>두 가지 중요한 차이점. <strong>matchIfMissing=true</strong>: 설정 키 자체가 없을 때 기본으로 선택 — 안전한 기본값. <strong>destroyMethod="destroy"</strong>: Spring이 빈 소멸 시 호출해 SSH 세션 캐시를 정리 (단계 3의 Cleanup).</p>',
+    },
+    {
+      id: 'constructor-injection',
+      title: '@Value — yaml 값 주입',
+      lines: [32, 37],
+      body: '<p><code>${...:default}</code> 문법으로 <strong>기본값 명시</strong>. yaml이 빠져도 동작 — 개발자가 설정 키를 외울 필요 없이 기본 실행 후 필요한 것만 override.</p>',
+    },
+    {
+      id: 'setter-pattern',
+      title: '생성자 + setter 혼용',
+      lines: [38, 42],
+      body: '<p>생성자 2 파라미터 + setter 3개. <strong>왜 생성자로 다 받지 않았는가</strong> — SSH 인증 정보는 옵셔널 성격(기본값이 있음)이라 필드 초기화 순서보다 명시성이 중요하다고 판단.</p>',
+    },
+  ]}
+/>
+
+## 왜 조건부 Bean인가 (switch문 대신)
+
+컨트롤러 한 개에 `if (mode == ssh) sshService else localService` 형태로 들어가는 방법도 가능합니다. MOVE는 **조건부 Bean**을 택했습니다.
+
+- **컴파일 시점에 선택** — 한 가지 구현만 컨테이너에 존재. 잘못된 구현이 런타임에 끼어들 여지 없음.
+- **테스트 단순화** — 단위 테스트에서 `mode=ssh`로 띄우면 Local 구현은 로드 자체가 안 됨.
+- **리소스 효율** — 반대편 구현의 의존성(예: SSH 모드일 때 NFS 마운트 경로)이 로드되지 않음.
+
+`@ConditionalOnProperty`는 Spring Boot의 auto-configuration 스타일. **여러 모듈 중 하나를 선택**할 때 표준 패턴.
+
+## 설정 레이어 — Head 전용 경로가 별도인 이유
+
+yaml을 자세히 보면 `tentacle.head.*`가 분리되어 있습니다.
+
+```yaml
+tentacle:
+  log-prefix: /home/octo/tentacle   # 일반 VM 로그
+  head:
+    log-path: /home/octo/nas        # HEAD NAS (SSH 모드)
+    mount-path: /mnt/head/nas       # HEAD NAS (Local 모드)
+```
+
+**HEAD 장비는 일반 Tentacle과 다른 NAS를 가리킴**. 같은 서비스가 두 종류의 장비를 처리하므로 경로 매핑이 둘이어야 함. Local 구현의 `resolveLocalPath`가 `tentacleName == "HEAD"` 특수 분기를 가짐 (단계 4).
+
+## 직접 해보기
+
+- [ ] `application-dev.yaml`에서 `access-mode`를 `local`로 바꾸고 재시작 → `SshLogBrowserService`가 더 이상 Bean이 아니어야 (Spring 로그 확인)
+- [ ] 반대로 돌아갔을 때 기본값 `ssh`가 뜨는지 `matchIfMissing` 검증
+- [ ] Spring Boot Actuator `/beans`에서 `LogBrowserService`로 검색 → 정확히 한 개 Bean 조회
+
+다음: [2. 서비스 인터페이스](/learn/l2-logbrowser/02-interface/) →

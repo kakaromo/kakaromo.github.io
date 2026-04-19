@@ -1,0 +1,206 @@
+---
+title: 5. 컨트롤러 + ZIP 스트리밍
+description: REST 엔드포인트와 Local/SSH 두 경로의 ZIP 생성 전략
+sidebar:
+  order: 5
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import DataFlowPath from '../../../../components/learn/DataFlowPath.svelte';
+import downloadDirRaw from '../../../../snippets/LogBrowserController-download-dir.java?raw';
+
+## 30초 요약
+
+`LogBrowserController`는 **6 개의 엔드포인트**를 제공합니다.
+
+| Method | Path | 용도 |
+|---|---|---|
+| GET | `/prefix` | log-prefix, headPrefix, headHost 반환 (UI 초기화) |
+| GET | `/files` | 디렉토리 리스팅 |
+| GET | `/download` | 파일 다운로드 (스트리밍) |
+| GET | `/download-dir` | **폴더 ZIP 다운로드** |
+| GET | `/view/lines` | 라인 범위 읽기 (뷰어) |
+| GET | `/view/search` | ripgrep 검색 |
+
+이 페이지는 그중 **가장 특이한 `/download-dir`** 한 가지에 집중합니다. 같은 엔드포인트가 SSH·Local 모드에서 **전혀 다른 전략**으로 ZIP을 만듭니다.
+
+## download-dir 두 전략
+
+<DataFlowPath
+  client:visible
+  caption="모드별 ZIP 생성 경로 — 같은 결과, 다른 방식"
+  altText="Local 모드는 Files.walkFileTree로 로컬 파일 시스템을 순회하며 ZipOutputStream에 직접 기록합니다. SSH 모드는 원격 VM에서 zip -r 명령을 실행해 임시 zip 파일을 만들고, SFTP로 다운로드한 뒤 원격 임시 파일을 정리합니다."
+  stages={[
+    {
+      id: 's1',
+      label: 'GET /download-dir',
+      layer: 'fe',
+      language: 'text',
+      sample: '?tentacleName=T1&path=/mnt/T1/result',
+      note: '사용자 요청',
+    },
+    {
+      id: 's2',
+      label: '모드 분기',
+      layer: 'be',
+      language: 'java',
+      sample: 'if (service instanceof\n    LocalLogBrowserService)\n  // Local path\nelse\n  // SSH path',
+      note: 'instanceof 한 번',
+    },
+    {
+      id: 's3a',
+      label: 'Local: ZipOutputStream',
+      layer: 'tx',
+      language: 'java',
+      sample: 'Files.walkFileTree(dir, visitor)\n  → zos.putNextEntry\n  → Files.copy(file, zos)',
+      note: '메모리에 직접',
+    },
+    {
+      id: 's3b',
+      label: 'SSH: 원격 zip + SFTP',
+      layer: 'tx',
+      language: 'text',
+      sample: 'SSH: cd parent && zip -r tmp.zip dir\nSFTP: downloadFile(tmp.zip)\nSSH: rm -f tmp.zip',
+      note: '원격 도구 재활용',
+    },
+    {
+      id: 's4',
+      label: 'Response',
+      layer: 'fe',
+      language: 'text',
+      sample: 'Content-Type: application/zip\nContent-Disposition:\n  attachment; filename=...',
+      note: '브라우저 다운로드',
+    },
+  ]}
+  transforms={[
+    { label: 'route' },
+    { label: 'branch' },
+    { label: 'stream' },
+    { label: 'respond' },
+  ]}
+/>
+
+## 코드 투어
+
+<CodeTour
+  client:visible
+  language="java"
+  source="LogBrowserController.downloadDir"
+  height={680}
+  code={downloadDirRaw}
+  steps={[
+    {
+      id: 'signature',
+      title: 'GET /download-dir — byte[] 반환',
+      lines: [6, 12],
+      body: '<p>인자 2개 + zip 이름 계산 (폴더명 + ".zip"). <strong>반환 타입이 <code>ResponseEntity&lt;byte[]&gt;</code></strong> — 스트리밍이 아닌 전체 버퍼. 폴더 크기가 제한된 사용처(T32 결과)만 다루므로 OK.</p>',
+    },
+    {
+      id: 'instanceof',
+      title: 'instanceof로 모드 분기',
+      lines: [14, 14],
+      body: '<p>Strategy 패턴이 깨지는 <strong>의도된 한 줄</strong>. ZIP 생성은 인터페이스에 없는 비일반 동작이라 컨트롤러가 구현체를 알게 됨. 인터페이스에 <code>downloadDir</code>을 추가할 수도 있었지만 <strong>쓰는 곳이 하나</strong>라 여기서만 처리.</p>',
+    },
+    {
+      id: 'local-check',
+      title: 'Local — 디렉토리 확인 + 404',
+      lines: [15, 19],
+      body: '<p><code>Files.isDirectory(dirPath)</code>로 존재 확인. <strong>path traversal 방어는 안 함</strong> — Local 구현의 <code>resolveLocalPath</code>가 이미 했다고 가정. 여기는 <code>path</code>를 그대로 받는데, 실제로는 컨트롤러 레이어에서 한 번 더 검증해야 이상적.</p>',
+    },
+    {
+      id: 'local-walk',
+      title: 'Local — ZipOutputStream + walkFileTree',
+      lines: [20, 32],
+      body: '<p><code>Files.walkFileTree</code>가 <code>SimpleFileVisitor</code>로 모든 파일을 방문. <code>putNextEntry + Files.copy</code> 한 쌍으로 <strong>파일 내용을 zip 엔트리로 그대로 복사</strong>. 디렉토리 구조가 그대로 보존.</p>',
+    },
+    {
+      id: 'local-response',
+      title: 'Local — Content-Disposition UTF-8',
+      lines: [33, 37],
+      body: '<p><code>filename*=UTF-8&apos;&apos;...</code> RFC 5987 문법 — 한글 파일명도 브라우저가 올바르게 디코드. <code>URLEncoder.encode</code>로 특수문자 이스케이프.</p>',
+    },
+    {
+      id: 'ssh-remote-zip',
+      title: 'SSH — 원격 zip 명령 실행',
+      lines: [38, 49],
+      body: '<p><code>readFileContent</code>가 <strong>사실은 명령 실행 트릭</strong>. <code>$(cd ... && zip -r ... && echo OK)</code>의 stdout을 "파일 내용"인 척 받음. catch하고 결과 무시 — <strong>side effect(zip 생성)만 필요</strong>.</p>',
+    },
+    {
+      id: 'ssh-download',
+      title: 'SSH — SFTP 다운로드',
+      lines: [50, 53],
+      body: '<p>방금 만든 원격 zip을 SFTP로 가져와 메모리로. <code>readAllBytes</code>가 다 받을 때까지 대기 — <strong>큰 폴더면 메모리 부담</strong>이 있지만 현재 사용처에선 문제 없음.</p>',
+    },
+    {
+      id: 'ssh-cleanup',
+      title: 'SSH — 원격 tmp 정리',
+      lines: [54, 57],
+      body: '<p>같은 명령 실행 트릭으로 <code>rm -f</code>. <strong>실패해도 무시</strong> — 원격 디스크에 zip 몇 개 남아도 큰 문제 아님. 이상적으로는 cron으로 주기 정리.</p>',
+    },
+    {
+      id: 'ssh-response',
+      title: 'SSH — 응답 + 에러 처리',
+      lines: [58, 66],
+      body: '<p>성공 시 Local과 <strong>완전히 같은 포맷의 응답</strong>. 실패 시 500 + 메시지. 전체 try가 <code>IOException</code>을 throws 선언에 포함.</p>',
+    },
+  ]}
+/>
+
+## 왜 Strategy가 깨지는가 — 의도된 누수
+
+인터페이스에 `downloadDir`을 추가하면 양쪽 구현체가 각자의 로직을 가지게 됩니다. 하지만:
+
+- **메서드 증가** — 인터페이스가 9개로. 쓰는 곳 하나를 위해 전체 API 확장.
+- **Local은 ZIP 바이너리를 어떻게 반환?** — `byte[]` vs `InputStream`의 일관성 문제.
+- **SSH의 side-effect 명령 트릭을 정당화하기 어려움** — `readFileContent`가 zip 생성에 쓰이면 안 되는 오남용.
+
+**"인터페이스가 깨끗한 대신 한 컨트롤러에서 분기"** 를 선택. Strategy 패턴이 절대적 규칙은 아님. 한 모듈 안에서 **드물게 특수한 동작**은 추상화를 억지로 넓히지 말고 그 자리에서 처리.
+
+## SSH 쪽 readFileContent 오남용은 왜 허용되는가
+
+본래 `readFileContent(tentacleName, path)`는 **path의 파일 내용**을 반환해야 합니다. SSH 구현은 path를 SSH 명령 문자열로 해석해 실행하는 것이 **의도되지 않은 방식**입니다. 리팩토링이 필요한 신호:
+
+```java
+// 더 올바른 API 설계:
+interface LogBrowserService {
+    String execRawCommand(String tentacleName, String command);  // 명시적으로
+}
+```
+
+현재는 **작동하지만 이름이 거짓말**. 이런 부채는 비교 문서 체크리스트의 "왜 X가 아닌가" 문단 후보입니다 — 다음 리팩토링 때 다듬을 가치.
+
+## 다른 L2에서 이 엔드포인트 소비 지점
+
+[T32 Dump L2](/learn/l2-t32/05-ui/)의 Stepper UI에서 완료 후 **"전체 ZIP 다운로드"** 버튼:
+
+```ts
+window.open(`/api/log-browser/download-dir?tentacleName=${t}&path=${encodeURIComponent(p)}`);
+```
+
+T32는 자기 로직 없이 **이 모듈의 엔드포인트를 그대로 사용**. Log Browser가 "재사용 레이어"인 좋은 예.
+
+## 일곱 L2의 역할 유형 최종 요약
+
+| L2 | 주 사용자 | 역할 |
+|---|---|---|
+| 슬롯 | 사용자 직접 | 실시간 대시보드 |
+| 벤치마크 | 사용자 직접 | job 실행·중계 |
+| 원격 | 사용자 직접 | 터미널 세션 |
+| Metadata | 사용자 직접 | 시계열 수집·시각화 |
+| T32 Dump | 사용자 직접 | 절차 실행 |
+| Pre-Command | 자동 (도메인 이벤트) | 사전 명령 실행 |
+| **Log Browser** | **다른 L2 + 사용자** | **재사용 파일 레이어** |
+
+**일곱 번째 L2에서 처음 등장한 패턴**: 주된 소비자가 다른 모듈. 이런 "하부 레이어" L2는 인터페이스 설계가 문서화의 중심.
+
+## 직접 해보기
+
+- [ ] T32 Dump 완료 후 "전체 ZIP 다운로드" 버튼 → 어떤 엔드포인트가 호출되는지 DevTools로 확인 (`/api/log-browser/download-dir`)
+- [ ] 같은 폴더를 Local 모드·SSH 모드에서 다운로드 → 두 ZIP의 내용이 동일한지 비교
+- [ ] 매우 큰 폴더에서 `readAllBytes`의 메모리 부담을 측정 → 스트리밍 개선 대상 파악
+
+---
+
+**L2 Log Browser 튜토리얼 완료**. 돌아가기:
+
+- [L2 6종 비교](/learn/l2-compare/) · [T32 Dump L2](/learn/l2-t32/) · [슬롯 L2](/learn/l2-slots/) · [벤치마크 L2](/learn/l2-benchmark/) · [원격 L2](/learn/l2-remote/) · [Metadata L2](/learn/l2-metadata/) · [Pre-Command L2](/learn/l2-precmd/)

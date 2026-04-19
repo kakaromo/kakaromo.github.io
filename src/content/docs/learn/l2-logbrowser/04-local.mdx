@@ -1,0 +1,175 @@
+---
+title: 4. Local 구현 — NIO Files + ProcessBuilder
+description: 마운트된 경로를 로컬 파일처럼 다루되, path traversal 방어와 HEAD 특수 경로를 챙김
+sidebar:
+  order: 4
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import listRaw from '../../../../snippets/LocalLogBrowserService-list.java?raw';
+import searchPathRaw from '../../../../snippets/LocalLogBrowserService-search-path.java?raw';
+
+## 30초 요약
+
+`LocalLogBrowserService`는 NFS/SMB로 포털 서버에 **마운트된 동일 파일 시스템**을 로컬 파일처럼 다룹니다.
+
+- **탐색**: `java.nio.file.Files.list()`
+- **검색**: `ProcessBuilder("rg", ...)` — 서버 로컬에서 직접 실행
+- **보안**: `resolveLocalPath`가 **path traversal 방어** (경로가 base 밖으로 나가면 `SecurityException`)
+
+SSH 구현과 반환 타입·정렬 규칙이 완전히 같아 **UI에서 두 모드를 구분 불가능** (의도된 설계).
+
+## listFiles — 로컬 파일 시스템 탐색
+
+<CodeTour
+  client:visible
+  language="java"
+  source="LocalLogBrowserService.listFiles"
+  height={480}
+  code={listRaw}
+  steps={[
+    {
+      id: 'resolve',
+      title: 'VM 이름 해석 + 로컬 경로',
+      lines: [6, 12],
+      body: '<p><code>findVm(tentacleName)</code>으로 PortalServer 조회(SSH 구현과 같은 패턴) → <code>resolveLocalPath</code>로 마운트 경로와 합성. 디렉토리가 아니면 예외.</p>',
+    },
+    {
+      id: 'try-with',
+      title: 'try-with-resources Stream<Path>',
+      lines: [14, 15],
+      body: '<p><code>Files.list()</code>는 <strong>반드시 close해야 하는 스트림</strong> — 열어둔 디렉토리 핸들을 풀어야 함. try-with-resources가 보장.</p>',
+    },
+    {
+      id: 'map-entry',
+      title: '각 Path → FileEntry 변환',
+      lines: [16, 27],
+      body: '<p>이름·isDir·size(폴더는 0)·mtime. <code>IOException</code>을 <code>RuntimeException</code>으로 wrap 해서 stream 안에서 던짐 — Java 스트림 API 제약을 우회하는 패턴.</p>',
+    },
+    {
+      id: 'sort',
+      title: '동일한 정렬 — Comparator',
+      lines: [28, 31],
+      body: '<p>SSH 구현과 <strong>완전히 같은 정렬 규칙</strong>. 사용자가 모드 차이를 감지하지 못하게 의도됨.</p>',
+    },
+    {
+      id: 'dotdot',
+      title: '".." 엔트리 추가',
+      lines: [33, 39],
+      body: '<p>현재 경로가 base가 아니면 상위로 가는 <code>".."</code> 엔트리를 맨 앞에 추가. SSH 쪽은 SFTP가 기본 포함하므로 일관성을 위해 Local이 수동으로 맞춤.</p>',
+    },
+    {
+      id: 'catch',
+      title: '예외 — RuntimeException으로 래핑',
+      lines: [40, 43],
+      body: '<p>컨트롤러는 Checked Exception을 모르게 — <strong>모든 IO 실패를 RuntimeException으로</strong>. 인터페이스가 <code>throws</code>를 안 선언한 이유이기도 함.</p>',
+    },
+  ]}
+/>
+
+## searchInFile — ProcessBuilder rg
+
+<CodeTour
+  client:visible
+  language="java"
+  source="LocalLogBrowserService.searchInFile"
+  height={600}
+  code={searchPathRaw}
+  steps={[
+    {
+      id: 'signature',
+      title: '시그니처 — SSH와 완전 동일',
+      lines: [6, 8],
+      body: '<p>인터페이스 규약이라 <strong>SSH 구현과 반환 타입·인자가 같음</strong>. 호출자는 이 둘을 구분 못 함.</p>',
+    },
+    {
+      id: 'pb',
+      title: 'ProcessBuilder — rg 명령 직접 구성',
+      lines: [11, 14],
+      body: '<p>인자를 <strong>배열로 분리해 전달</strong> — shell 해석을 거치지 않아 인젝션 방어가 기본. SSH 구현의 shellEscape가 여기서는 필요 없음.</p>',
+    },
+    {
+      id: 'redirect',
+      title: 'redirectErrorStream(true) + start',
+      lines: [15, 16],
+      body: '<p>stderr를 stdout에 합쳐 한 스트림으로. rg 에러가 stdout에 섞여도 <strong>exit code로 구분</strong>되므로 문제 없음.</p>',
+    },
+    {
+      id: 'read-wait',
+      title: 'readAllBytes + waitFor',
+      lines: [17, 18],
+      body: '<p>stdout 전체를 메모리로(작음 가정) + 프로세스 종료 대기. <strong>큰 결과 방어가 필요하면</strong> 스트리밍 읽기로 바꿔야 함.</p>',
+    },
+    {
+      id: 'exit-check',
+      title: 'exit > 1만 예외',
+      lines: [20, 22],
+      body: '<p>SSH 구현과 동일. rg no-match(exit=1)는 정상.</p>',
+    },
+    {
+      id: 'parse-results',
+      title: '결과 파싱 — "lineNo:text"',
+      lines: [24, 40],
+      body: '<p>빈 줄 스킵 → 첫 <code>:</code> 위치로 라인 번호·텍스트 분리. SSH 구현의 <code>parseSearchOutput</code>과 같은 포맷이지만 여기서는 인라인 — <strong>두 곳의 파싱 차이가 없음</strong>을 주석으로 유지.</p>',
+    },
+    {
+      id: 'errors',
+      title: '예외 처리 이중 catch',
+      lines: [42, 48],
+      body: '<p><code>RuntimeException</code>은 그대로 재throw, 나머지는 로그 + wrap. <strong>SecurityException(path traversal)</strong>이 그대로 올라가 컨트롤러에서 적절한 상태 코드로.</p>',
+    },
+    {
+      id: 'resolve-path',
+      title: 'resolveLocalPath — path traversal 방어',
+      lines: [98, 112],
+      body: '<p><strong>가장 중요한 메서드</strong>. <code>Paths.get(mountPath, vmName).normalize()</code>로 base 설정 후 <code>baseDir.resolve(path).normalize()</code>로 입력 경로 해석. <code>startsWith(baseDir)</code> 체크로 base 밖으로 나가면 <code>SecurityException</code>. <code>HEAD</code>는 별도 mountPath를 쓰는 특수 분기.</p>',
+    },
+  ]}
+/>
+
+## 왜 path traversal 방어가 필수인가
+
+Local 모드는 **포털 서버 프로세스의 권한**으로 파일을 읽습니다. 사용자가 `../../../etc/passwd` 같은 경로를 보내면 마운트 범위 **밖**의 파일도 읽힐 수 있음.
+
+```java
+Path baseDir = Paths.get(mountPath, vmName).normalize();      // /mnt/T1
+Path resolved = baseDir.resolve(path).normalize();             // /mnt/T1/../etc/passwd → /etc/passwd
+if (!resolved.startsWith(baseDir)) throw new SecurityException;
+```
+
+- `normalize()`가 `..`을 해석해 실제 경로로 축소
+- `startsWith(baseDir)`로 탈출 여부 감지
+
+**SSH 모드는 SSH 서버의 로그인 사용자가 자동으로 격리**되므로 이 검사가 필요 없음. Local 모드에서만 직접 방어가 필요.
+
+## HEAD 특수 분기
+
+```java
+if ("HEAD".equalsIgnoreCase(vmName)) {
+    baseDir = Paths.get(headMountPath).normalize();       // /mnt/head/nas
+} else {
+    baseDir = Paths.get(mountPath, vmName).normalize();   // /mnt/T1
+}
+```
+
+HEAD는 Tentacle VM이 아니라 **공용 NAS**를 가리킴 — 경로 구성이 다릅니다. 이 분기 하나로 인터페이스·컨트롤러는 "HEAD도 그냥 tentacle 중 하나"처럼 다룰 수 있음.
+
+## 두 구현 요약 비교
+
+| 작업 | SSH | Local |
+|---|---|---|
+| listFiles | `ChannelSftp.ls` | `Files.list` |
+| download | `SftpInputStream`(래퍼) | `Files.newInputStream` |
+| search | `ChannelExec rg` (shellEscape) | `ProcessBuilder rg` (인자 배열) |
+| 인증 | JSch 세션 | 포털 서버 프로세스 권한 |
+| 인젝션 방어 | shellEscape | ProcessBuilder 인자 |
+| 경로 방어 | SSH 서버 로그인 격리 | resolveLocalPath + startsWith |
+| 세션 캐시 | 5분 TTL | 없음 |
+
+## 직접 해보기
+
+- [ ] `access-mode: local`로 재시작 후 경로에 `..`을 넣어 요청 → `SecurityException`이 컨트롤러에서 403으로 매핑되는지
+- [ ] `/mnt/T1`에 실제 파일 하나 둔 뒤 Local 모드 listFiles로 보이는지 + SSH 모드와 같은 결과인지 비교
+- [ ] HEAD 경로 요청 → `headMountPath` 분기가 타는지 디버거로 확인
+
+다음: [5. 컨트롤러 + ZIP 스트리밍](/learn/l2-logbrowser/05-controller/) →

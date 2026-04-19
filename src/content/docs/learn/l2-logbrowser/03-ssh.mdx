@@ -1,0 +1,187 @@
+---
+title: 3. SSH 구현 — JSch SFTP + ChannelExec ripgrep
+description: 원격 Tentacle VM에 붙어 SFTP로 파일 탐색, exec로 검색
+sidebar:
+  order: 3
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import listRaw from '../../../../snippets/SshLogBrowserService-list.java?raw';
+import searchRaw from '../../../../snippets/SshLogBrowserService-search.java?raw';
+import sessRaw from '../../../../snippets/SshLogBrowserService-session.java?raw';
+
+## 30초 요약
+
+`SshLogBrowserService`는 JSch 라이브러리로 원격 VM에 붙습니다.
+
+- **파일 탐색**: `ChannelSftp` (SFTP 세션) — ls / get / put
+- **검색**: `ChannelExec` — 원격에서 `rg -n --no-heading` 실행
+- **세션 캐싱**: `ConcurrentHashMap` + 5분 TTL + 스케줄러로 정리 — 매 요청마다 새 세션 맺는 비용 회피
+
+세션은 **요청 type별로 생명주기가 다릅니다**. ls·download 같은 단발 작업은 매번 새로 만들고, 검색(exec)만 캐시된 세션을 재사용. 이유는 아래.
+
+## listFiles — SFTP로 디렉토리 리스팅
+
+<CodeTour
+  client:visible
+  language="java"
+  source="SshLogBrowserService.listFiles"
+  height={500}
+  code={listRaw}
+  steps={[
+    {
+      id: 'resolve',
+      title: '경로 해석 + 세션·채널 준비',
+      lines: [6, 11],
+      body: '<p><code>resolvePath</code>가 상대 경로를 절대 경로로 (logPrefix prefix 붙이기). <strong>새 세션 + SFTP 채널</strong>을 연다 — listFiles는 캐시 안 씀 (이유는 아래).</p>',
+    },
+    {
+      id: 'sftp-connect',
+      title: 'ChannelSftp.connect + cd',
+      lines: [12, 17],
+      body: '<p>30초 timeout. <code>cd(remotePath)</code>로 해당 디렉토리로 이동. 실패하면 catch로 예외 래핑.</p>',
+    },
+    {
+      id: 'ls',
+      title: 'ls(".") + 각 엔트리 처리',
+      lines: [18, 31],
+      body: '<p>Vector&lt;LsEntry&gt;로 파일 목록. <code>"."</code> 자체는 스킵. <code>SftpATTRS</code>에서 isDir/size/mtime 추출 → FileEntry로 변환. <strong>mtime은 초 단위이므로 × 1000</strong>.</p>',
+    },
+    {
+      id: 'sort',
+      title: 'Comparator — 폴더 먼저, 이름순',
+      lines: [32, 35],
+      body: '<p><code>!f.directory()</code>로 폴더를 먼저 (false < true 정렬). 같은 종류면 이름 오름차순. <strong>Local 구현과 동일한 정렬</strong>이라 UI가 일관적.</p>',
+    },
+    {
+      id: 'cleanup',
+      title: 'finally — 채널·세션 해제',
+      lines: [36, 42],
+      body: '<p>예외 나도 반드시 정리. <strong>JSch 자원을 안 닫으면 VM 쪽 프로세스가 쌓임</strong>. listFiles가 캐시를 안 쓰는 이유 — 한 요청 단위로 세션을 끝내는 쪽이 단순.</p>',
+    },
+  ]}
+/>
+
+## searchInFile — 원격 ripgrep
+
+<CodeTour
+  client:visible
+  language="java"
+  source="SshLogBrowserService.searchInFile"
+  height={360}
+  code={searchRaw}
+  steps={[
+    {
+      id: 'escape',
+      title: 'shellEscape — 인젝션 방어',
+      lines: [6, 9],
+      body: '<p>경로·패턴 모두 <code>shellEscape</code>로 감쌈 — <code>$(...)</code> · <code>;</code> 같은 메타문자를 안전하게. <strong>원격 셸에 문자열을 합성해 보내므로</strong> 이 방어가 필수.</p>',
+    },
+    {
+      id: 'cached-sess',
+      title: '캐시된 세션 + execCommand',
+      lines: [11, 17],
+      body: '<p>여기서만 캐시를 사용. rg는 <strong>인터랙티브하게 여러 번 호출</strong>될 수 있어(사용자가 검색어 바꿔가며) 세션 재활용이 효과 있음. listFiles는 단발이라 캐시 효과 미미.</p>',
+    },
+    {
+      id: 'command',
+      title: 'rg -n --no-heading --encoding auto',
+      lines: [14, 16],
+      body: '<p><code>-n</code> 라인 번호, <code>--no-heading</code> 파일명 제외(단일 파일이니), <code>--encoding auto</code> 인코딩 자동 감지. 결과는 stdout에 라인 단위.</p>',
+    },
+    {
+      id: 'parse',
+      title: 'parseSearchOutput — SearchResult 변환',
+      lines: [18, 20],
+      body: '<p>rg 출력 <code>"42:some line"</code>을 <code>SearchResult(42, "some line")</code>으로. 예외 시 로그 + RuntimeException으로 래핑 — 컨트롤러가 500으로 응답.</p>',
+    },
+  ]}
+/>
+
+## 세션 캐싱 + execCommand
+
+<CodeTour
+  client:visible
+  language="java"
+  source="SshLogBrowserService (세션 + exec)"
+  height={600}
+  code={sessRaw}
+  steps={[
+    {
+      id: 'sync',
+      title: 'synchronized 메서드',
+      lines: [3, 8],
+      body: '<p>여러 요청이 동시에 캐시 조회 → 없으면 새로 만들기. <strong>한 시점에 한 세션만 생성</strong>되도록 메서드 전체를 synchronized. 세션 수가 많지 않아(VM당 하나) 성능 영향 없음.</p>',
+    },
+    {
+      id: 'vm-fallback',
+      title: 'VM 인증 정보 결정',
+      lines: [9, 19],
+      body: '<p>PortalServer DB에 등록된 VM이면 그 계정, 없으면 <strong>yaml의 기본 SSH 계정</strong>(samsung/tentacle). 환경마다 다른 자격 증명 패턴을 한 곳에서 처리.</p>',
+    },
+    {
+      id: 'cache-hit',
+      title: '캐시 hit — 연결 확인 + lastAccess 갱신',
+      lines: [20, 26],
+      body: '<p><code>isConnected()</code>로 죽은 세션 걸러냄 + <code>lastAccess</code> 갱신(TTL 재설정). <strong>이 한 줄이 없으면</strong> 자주 쓰는 세션이 오히려 먼저 만료될 수 있음.</p>',
+    },
+    {
+      id: 'new-session',
+      title: '새 세션 생성 — StrictHostKeyChecking=no + KeepAlive',
+      lines: [27, 38],
+      body: '<p>내부망 전제로 호스트 키 체크 안 함. <strong>ServerAliveInterval=30 + CountMax=10</strong>으로 5분 유휴에도 살아있게. <code>connect(30000)</code> 30초 timeout.</p>',
+    },
+    {
+      id: 'exec-channel',
+      title: 'execCommand — 단일 채널, 단일 명령',
+      lines: [40, 48],
+      body: '<p><code>ChannelExec</code> 생성 + 명령 세팅 + stdin 닫기 + stdout 스트림 획득. 30초 connect timeout.</p>',
+    },
+    {
+      id: 'read-utf8',
+      title: 'UTF-8 스트림 읽기',
+      lines: [49, 56],
+      body: '<p>8KB 버퍼 루프로 전체 stdout 읽기. <strong>ripgrep 결과는 보통 작지만</strong> 대용량 검색이면 여기가 병목. (실제로는 검색 결과 수 제한을 클라이언트 쪽에서 자름)</p>',
+    },
+    {
+      id: 'wait-exit',
+      title: 'channel.isClosed() 폴링',
+      lines: [57, 59],
+      body: '<p>프로세스 종료 대기. <code>sleep(50)</code>이 간단하지만 효과적.</p>',
+    },
+    {
+      id: 'exit-check',
+      title: 'exit > 1만 예외 — rg no-match=1 허용',
+      lines: [61, 68],
+      body: '<p><strong>핵심 한 줄</strong>: ripgrep은 매치 없음이 exit 1. <code>exitStatus > 1</code>로 필터해 "매치 없음"을 정상 케이스로 처리. 이 분기를 안 두면 "검색 결과 없음"도 500 에러가 됨.</p>',
+    },
+  ]}
+/>
+
+## 왜 listFiles는 캐시 안 쓰고 searchInFile만 쓰는가
+
+디렉토리 리스팅은 **요청 간 시간차가 큼** (사용자가 폴더를 탐색하는 속도). 캐시가 있어도 대부분 TTL 만료 후 재연결이 됨. 캐시 관리 복잡도만 늘어남.
+
+검색은 반대: **같은 파일을 키워드 바꿔가며 여러 번** 하는 패턴이 흔함. 세션 재사용의 이득이 큼.
+
+**"자주 오는 호출만 캐시"**. 모든 호출에 캐시를 다는 것은 나쁜 설계.
+
+## SftpInputStream 트릭
+
+`downloadFile`은 `InputStream`을 반환합니다. 하지만 스트림이 끝나기 전에 **세션·채널을 닫아버리면 스트림도 끊김**.
+
+```java
+return new SftpInputStream(channel, session, channel.get(remotePath));
+```
+
+SftpInputStream은 **세션·채널·내부 InputStream 세 가지를 모두 소유**하고, `close()`에서 다 함께 닫습니다. 컨트롤러가 `InputStreamResource`를 응답하면 Spring이 전송 후 close → 자원 정리 자동.
+
+이 래퍼가 없었다면 컨트롤러가 직접 채널 lifecycle을 관리해야 했음.
+
+## 직접 해보기
+
+- [ ] Actuator `/beans` 또는 커스텀 엔드포인트로 `getActiveSessionCount()` 조회 → 검색 여러 번 후 캐시된 세션 수 증가 관찰
+- [ ] yaml `ssh.password`를 일부러 틀리게 → session.connect에서 실패하는 에러 로그 확인
+- [ ] 큰 로그 파일에서 자주 나오는 키워드로 `rg` 검색 → 결과 수·응답 시간 체감
+
+다음: [4. Local 구현](/learn/l2-logbrowser/04-local/) →

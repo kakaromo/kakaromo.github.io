@@ -1,0 +1,88 @@
+---
+title: Log Browser — 한 인터페이스 · 두 구현 (SSH + Local)
+description: Tentacle VM의 파일 시스템을 원격 SSH 또는 마운트된 로컬 경로로 추상화해 브라우저에서 탐색·검색·ZIP 다운로드
+sidebar:
+  order: 0
+---
+
+import ArchitectureDiagram from '../../../../components/learn/ArchitectureDiagram.svelte';
+
+## 이 모듈에서 배울 것
+
+"Tentacle VM의 로그·테스트 결과 폴더를 **브라우저에서** 탐색·검색·ZIP 다운로드하는 건 어떤 구조로 되어 있는가? 왜 **SSH 모드**와 **Local 모드** 두 가지가 필요하고, 어떻게 한 인터페이스로 뭉쳐져 있는가?"
+
+일곱 번째 L2입니다. **다른 L2가 소비하는 "재사용 레이어"** 성격이 가장 뚜렷합니다:
+
+- [T32 Dump L2](/learn/l2-t32/)의 **완료 후 결과 폴더 탐색**이 이 모듈의 `/files`·`/download-dir` 엔드포인트를 사용
+- [Pre-Command L2](/learn/l2-precmd/)의 명령이 남긴 로그도 이곳에서 확인
+- Bitbucket 브랜치 감지 모듈이 FW 코드 폴더를 조회할 때도 이 경로
+
+## 여정 한눈에
+
+<ArchitectureDiagram
+  client:visible
+  height={320}
+  caption="tentacle.access-mode → 한쪽 Bean만 선택 → 컨트롤러는 인터페이스에 의존 → 두 구현체가 각기 다른 실제 세계를 다룸"
+  altText="application.yaml의 tentacle.access-mode 값이 ssh 또는 local이면 LogBrowserConfig가 조건부로 해당 Bean만 등록합니다. 컨트롤러는 LogBrowserService 인터페이스에 의존하므로 구현체 교체에 영향받지 않습니다. SSH 구현은 JSch로 Tentacle VM에 붙어 SFTP·ChannelExec rg를 실행하고, Local 구현은 NFS/SMB로 마운트된 로컬 경로를 NIO Files API로 접근합니다."
+  nodes={[
+    { id: 's1', label: '1. 설정·모드',    sublabel: 'yaml · @ConditionalOnProperty', layer: 'state', x: 0,   y: 80,  href: '/learn/l2-logbrowser/01-config/' },
+    { id: 's2', label: '2. 인터페이스',    sublabel: '8 메서드 + 3 record',           layer: 'be',    x: 200, y: 80,  href: '/learn/l2-logbrowser/02-interface/' },
+    { id: 's3', label: '3. SSH 구현',      sublabel: 'JSch SFTP + ChannelExec rg',    layer: 'tx',    x: 400, y: 0,   href: '/learn/l2-logbrowser/03-ssh/' },
+    { id: 's4', label: '4. Local 구현',    sublabel: 'NIO Files + ProcessBuilder rg', layer: 'tx',    x: 400, y: 160, href: '/learn/l2-logbrowser/04-local/' },
+    { id: 's5', label: '5. 컨트롤러·ZIP',  sublabel: 'REST + 스트리밍',               layer: 'be',    x: 600, y: 80,  href: '/learn/l2-logbrowser/05-controller/' },
+  ]}
+  edges={[
+    { from: 's1', to: 's2', label: 'bind',    kind: 'sync' },
+    { from: 's2', to: 's3', label: 'impl',    kind: 'sync' },
+    { from: 's2', to: 's4', label: 'impl',    kind: 'sync' },
+    { from: 's3', to: 's5', label: 'used-by', kind: 'sync' },
+    { from: 's4', to: 's5', label: 'used-by', kind: 'sync' },
+  ]}
+/>
+
+## 왜 두 모드인가
+
+**SSH 모드**(기본): Tentacle VM에 JSch로 붙어 SFTP·원격 명령 실행. 설치가 최소(VM에 SSH만 있으면 됨)하고 보안망이 분리된 환경에서도 동작.
+
+**Local 모드**: NFS/SMB로 **같은 파일 시스템을 포털 서버 쪽에도 마운트**해두고, 로컬 파일로 읽음. 큰 파일·자주 접근 시 SSH 왕복이 없어 훨씬 빠름.
+
+두 모드는 **같은 디렉토리 내용**을 보지만 **접근 방법**이 다릅니다. 인터페이스가 같아 컨트롤러는 모드 차이를 모릅니다.
+
+| 축 | SSH 모드 | Local 모드 |
+|---|---|---|
+| 장비 요구 | VM에 sshd, ripgrep | 포털 서버에 NFS/SMB 마운트 |
+| 파일 읽기 | SFTP (ChannelSftp) | NIO `Files.newInputStream` |
+| 검색 | SSH ChannelExec `rg` | ProcessBuilder `rg` |
+| 세션 | JSch 세션 캐시 (5분 TTL) | 없음 |
+| 성능 | 네트워크 왕복 | 로컬 ≈ 디스크 |
+| 설치 복잡도 | 낮음 | 중간 (마운트 설정) |
+
+## 앞 여섯 L2와의 차이
+
+| 축 | 이전 L2 (슬롯/벤치마크/…) | **Log Browser** |
+|---|---|---|
+| 주 소비자 | 사용자 직접 | **다른 L2 모듈 + 사용자** |
+| 실시간 | SSE/WS/폴링 | **CRUD + 스트리밍 응답** |
+| 트리거 | 사용자·자동 이벤트 | **HTTP GET 요청** |
+| 설계 축 | 데이터 흐름 | **인터페이스 + 두 구현 전략 패턴** |
+| 재사용 | 독립 기능 | **공통 레이어로 여러 모듈이 의존** |
+
+핵심은 **전략 패턴(Strategy)**. "파일을 어떻게 다루는가"를 인터페이스로 추상화하고 구현체를 환경별로 바꾸는 고전적 OO 패턴이 Spring의 조건부 Bean으로 자연스럽게 구현되어 있습니다.
+
+## 학습 순서와 예상 시간
+
+| 단계 | 제목 | 성격 | 시간 |
+|---|---|---|---|
+| 1 | 설정과 모드 결정 | 코드 투어 | 8분 |
+| 2 | 서비스 인터페이스 | 코드 투어 | 8분 |
+| 3 | SSH 구현 (JSch + ripgrep) | 코드 투어 | 15분 |
+| 4 | Local 구현 (NIO + ProcessBuilder) | 코드 투어 | 10분 |
+| 5 | 컨트롤러 + ZIP 스트리밍 | 코드 투어 | 10분 |
+
+총 약 **50분**. 두 구현을 모두 읽지 않고 한쪽만 깊이 봐도 됩니다 — 운영 환경에 맞는 쪽을.
+
+## 새로 등장할 L3 개념
+
+**없음**. `@Configuration`·`@ConditionalOnProperty`·`@Value` 등 기존 사전 재사용. 새로 만나는 API는 `JSch ChannelSftp/ChannelExec`, `java.nio.file.Files`, `ZipOutputStream`이지만 모두 **표준 Java API**로 도메인 개념이 아님.
+
+다음: [1. 설정과 모드 결정](/learn/l2-logbrowser/01-config/) →

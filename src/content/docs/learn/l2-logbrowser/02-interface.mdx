@@ -1,0 +1,118 @@
+---
+title: 2. 서비스 인터페이스 — 8 메서드 · 3 record
+description: 파일 탐색·읽기·검색·업로드·삭제를 하나의 인터페이스로 추상화
+sidebar:
+  order: 2
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import ifaceRaw from '../../../../snippets/LogBrowserService-interface.java?raw';
+
+## 30초 요약
+
+`LogBrowserService` 인터페이스는 **8 개의 메서드**와 **3 개의 record**로 이뤄져 있습니다.
+
+- **탐색**: `listFiles` → `List<FileEntry>`
+- **읽기**: `downloadFile` (InputStream) / `readFileContent` (전체 문자열) / `readLines` (범위) / `readLastLines` (tail)
+- **검색**: `searchInFile` (ripgrep)
+- **판정**: `isBinaryFile`
+- **쓰기**: `uploadFile` / `deleteFile`
+- **추가**: `getActiveSessionCount` default
+
+인터페이스에서 record로 반환 타입까지 함께 정의 — **API를 한 파일에서 완결**.
+
+## 코드 투어
+
+<CodeTour
+  client:visible
+  language="java"
+  source="LogBrowserService.java"
+  height={500}
+  code={ifaceRaw}
+  steps={[
+    {
+      id: 'package',
+      title: 'interface + tentacleName 첫 인자',
+      lines: [6, 8],
+      body: '<p>모든 메서드가 <code>String tentacleName</code>을 받음. <strong>어느 VM에 대한 요청인지</strong>가 매 호출마다 식별됨. 상태를 가진 서비스가 아니라 <strong>함수형 스타일</strong>.</p>',
+    },
+    {
+      id: 'list-download',
+      title: 'listFiles + downloadFile',
+      lines: [8, 10],
+      body: '<p><code>listFiles</code>는 디렉토리 메타데이터, <code>downloadFile</code>은 <strong>InputStream</strong>을 돌려줌 — 스트리밍 응답으로 큰 파일도 메모리 안 잡아먹게. 컨트롤러가 <code>InputStreamResource</code>로 감싸 응답.</p>',
+    },
+    {
+      id: 'read',
+      title: 'readFileContent / readLines / readLastLines',
+      lines: [12, 16],
+      body: '<p>세 읽기 모드. <strong>전체 문자열</strong>(작은 파일), <strong>특정 라인 범위</strong>(뷰어 페이지네이션), <strong>마지막 N 라인</strong>(tail). UI가 요구하는 패턴에 맞춘 세분화.</p>',
+    },
+    {
+      id: 'search',
+      title: 'searchInFile — List<SearchResult>',
+      lines: [18, 18],
+      body: '<p>ripgrep 포맷 결과를 <code>SearchResult(lineNumber, text)</code>로. 구현체가 두 개(SSH는 exec, Local은 ProcessBuilder)이지만 <strong>반환 타입은 같음</strong>.</p>',
+    },
+    {
+      id: 'binary',
+      title: 'isBinaryFile — 렌더 여부 판정',
+      lines: [20, 20],
+      body: '<p>프론트가 텍스트 뷰어로 열 수 있는지 사전 확인. 바이너리면 "다운로드만 가능" 메시지. <strong>사용자가 의미 없는 문자열로 터지는 것을 방지</strong>.</p>',
+    },
+    {
+      id: 'write',
+      title: 'uploadFile + deleteFile',
+      lines: [22, 24],
+      body: '<p>읽기 전용 모듈이 아님 — 업로드·삭제도 지원. <strong>Admin 경로에서 관리용</strong>으로. 권한 체크는 컨트롤러 레이어에서 (세부는 이 L2 범위 밖).</p>',
+    },
+    {
+      id: 'session-count',
+      title: 'getActiveSessionCount — default 0',
+      lines: [26, 26],
+      body: '<p>SSH 구현만 의미 있음 — 캐시된 세션 수. Local은 default 0 그대로. <strong>인터페이스에 default 메서드</strong>로 둬서 Local이 따로 오버라이드 안 해도 됨.</p>',
+    },
+    {
+      id: 'records',
+      title: 'record 3종 — FileEntry / FileContent / SearchResult',
+      lines: [28, 32],
+      body: '<p><strong>인터페이스 안에 중첩 record</strong>. Java 16+ 스타일. 네임스페이스가 자연스럽게 <code>LogBrowserService.FileEntry</code>가 되어 import 하나로 끝.</p>',
+    },
+  ]}
+/>
+
+## 왜 인터페이스 안에 record를 두었는가
+
+세 record는 이 서비스 전용 DTO. 별도 파일로 빼면 파일 수가 늘고 스캔 복잡도만 증가. **중첩으로 두면 "이 타입이 어디 속하는가"가 이름으로 드러남**.
+
+```java
+// 호출 쪽
+import com.samsung.move.logbrowser.service.LogBrowserService;
+import com.samsung.move.logbrowser.service.LogBrowserService.FileEntry;
+
+List<FileEntry> files = service.listFiles("T1", "/var/log");
+```
+
+`FileEntry`만 임포트해도 의미가 명확. 인터페이스명 + 타입명 조합이 **문서 역할**을 함.
+
+## 왜 메서드가 8개나 되는가 (합칠 수 있지 않나?)
+
+예를 들어 `readLines(start, limit)`와 `readLastLines(n)`을 하나로 합칠 수도 있지만:
+
+- **의미가 다름** — 앞에서부터 vs 뒤에서부터
+- **구현이 다름** — `readLines`는 `sed`/`head`/`tail`, `readLastLines`는 `tail -n`
+- **사용처가 다름** — 뷰어 페이지네이션 vs tail 뷰
+
+**도메인의 동사를 그대로 드러내는 API**가 오히려 유지보수가 쉽습니다. 억지로 합치면 파라미터가 튀어나오고 분기가 내부에 숨음.
+
+## 인터페이스가 하는 일 한 문장
+
+**"파일 시스템을 도메인 스타일로 요청하면 된다"**. 호출자(컨트롤러·다른 모듈)는 SSH인지 Local인지 몰라도 됨. 이 분리 덕분에 T32 L2가 SSH 환경에서도 Local 환경에서도 똑같이 `/api/log-browser/download-dir`을 호출할 수 있음.
+
+## 직접 해보기
+
+- [ ] `grep -rn "LogBrowserService" src/` 로 이 인터페이스를 누가 주입받는지 확인 — 컨트롤러·T32·BinaryMapper 등
+- [ ] 구현체 직접 이용하는 코드는 없는지 확인 (인터페이스만 써야 Strategy 패턴이 살아있음)
+- [ ] `getActiveSessionCount()`가 SSH 모드에서는 실시간 세션 수를 반환하는지 Actuator로 확인
+
+다음: [3. SSH 구현](/learn/l2-logbrowser/03-ssh/) →
