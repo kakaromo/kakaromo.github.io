@@ -9,12 +9,15 @@
     "dev": "astro dev",
     "build": "astro build",
     "preview": "astro preview",
-    "astro": "astro"
+    "astro": "astro",
+    "sync-snippets": "node scripts/sync-snippets.mjs"
   },
   "dependencies": {
     "@astrojs/starlight": "^0.38.1",
+    "@astrojs/svelte": "^8.0.5",
     "astro": "^6.0.4",
     "playwright": "^1.59.1",
-    "remark-mermaidjs": "^7.0.0"
+    "remark-mermaidjs": "^7.0.0",
+    "svelte": "^5.55.4"
   }
 }

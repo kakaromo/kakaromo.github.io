@@ -1,0 +1,142 @@
+---
+title: 시각화 컴포넌트 Playground
+description: ArchitectureDiagram / CodeTour / ConceptPopover 데모 (dev 전용)
+draft: true
+sidebar:
+  hidden: true
+---
+
+import ArchitectureDiagram from '../../../components/learn/ArchitectureDiagram.svelte';
+import CodeTour from '../../../components/learn/CodeTour.svelte';
+import ConceptPopover from '../../../components/learn/ConceptPopover.svelte';
+
+이 페이지는 Phase 1 시각화 컴포넌트 3종의 동작 확인용이며 프로덕션 빌드에서는 제외됩니다 (`draft: true`).
+
+---
+
+## 1. ArchitectureDiagram — 슬롯 모니터링 7단계
+
+<ArchitectureDiagram
+  client:visible
+  height={380}
+  caption="Head 하드웨어부터 브라우저까지 — 노드에 마우스를 올리거나 Tab으로 포커스하면 연결된 경로가 강조됩니다."
+  altText="Head 하드웨어가 TCP로 HeadTcpClient에 연결되고, HeadMessageParser가 메시지를 파싱해 HeadSlotStateStore에 저장합니다. HeadSseController가 1초 간격으로 diff를 브라우저의 headSlotStore로 푸시합니다."
+  nodes={[
+    { id: 'hw',     label: 'Head 하드웨어', sublabel: 'TCP 소켓',            layer: 'hw',    x: 0,    y: 60  },
+    { id: 'tcp',    label: 'HeadTcpClient', sublabel: '듀얼 소켓 관리',        layer: 'be',    x: 210,  y: 0,   href: '/learn/l2-slots/03-tcp-client/' },
+    { id: 'parser', label: 'HeadMessageParser', sublabel: '메시지 → DTO',    layer: 'be',    x: 210,  y: 120, href: '/learn/l2-slots/04-parser/' },
+    { id: 'store',  label: 'SlotStateStore', sublabel: 'ConcurrentHashMap',   layer: 'state', x: 420,  y: 60,  href: '/learn/l2-slots/05-state-store/' },
+    { id: 'sse',    label: 'HeadSseController', sublabel: '@Scheduled 1s',    layer: 'tx',    x: 630,  y: 60,  href: '/learn/l2-slots/06-sse-push/' },
+    { id: 'fe',     label: 'headSlotStore',  sublabel: 'EventSource + runes', layer: 'fe',    x: 840,  y: 60,  href: '/learn/l2-slots/07-frontend-store/' },
+  ]}
+  edges={[
+    { from: 'hw',     to: 'tcp',    label: 'TCP', kind: 'sync' },
+    { from: 'hw',     to: 'parser', label: 'data', kind: 'sync' },
+    { from: 'tcp',    to: 'parser', label: 'frame', kind: 'sync' },
+    { from: 'parser', to: 'store',  label: 'put',   kind: 'sync' },
+    { from: 'store',  to: 'sse',    label: 'diff',  kind: 'async' },
+    { from: 'sse',    to: 'fe',     label: 'SSE',   kind: 'async' },
+  ]}
+/>
+
+---
+
+## 2. CodeTour — 스크롤 싱크 설명 ↔ 코드
+
+아래 왼쪽 설명을 스크롤하거나 제목을 클릭하면 오른쪽 코드의 하이라이트가 이동합니다.
+
+<CodeTour
+  client:visible
+  language="java"
+  source="HeadSseController.java"
+  height={420}
+  code={`@RestController
+@RequiredArgsConstructor
+public class HeadSseController {
+
+    private final HeadSlotStateStore stateStore;
+    private final List<SseEmitter> emitters = new CopyOnWriteArrayList<>();
+    private long lastVersion = -1;
+
+    @GetMapping("/api/head/slots/stream")
+    public SseEmitter stream() {
+        SseEmitter emitter = new SseEmitter(0L);
+        emitter.onCompletion(() -> emitters.remove(emitter));
+        emitter.onTimeout(() -> emitters.remove(emitter));
+        emitters.add(emitter);
+
+        // 초기 스냅샷 전송
+        var snapshot = stateStore.snapshot();
+        trySend(emitter, "init", snapshot);
+        return emitter;
+    }
+
+    @Scheduled(fixedRate = 1000)
+    public void pushDiff() {
+        long version = stateStore.version();
+        if (version == lastVersion) return;
+        var diff = stateStore.diffSince(lastVersion);
+        lastVersion = version;
+        for (SseEmitter emitter : emitters) {
+            trySend(emitter, "update", diff);
+        }
+    }
+
+    private void trySend(SseEmitter emitter, String event, Object payload) {
+        try {
+            emitter.send(SseEmitter.event().name(event)
+                .data(payload, MediaType.APPLICATION_JSON));
+        } catch (IOException e) {
+            emitters.remove(emitter);
+        }
+    }
+}`}
+  steps={[
+    {
+      id: 'setup',
+      title: '구성 — SseEmitter 컬렉션',
+      lines: [1, 7],
+      body: '<p><code>CopyOnWriteArrayList</code>에 활성 Emitter들을 보관합니다. <code>lastVersion</code>은 이전 push 시점의 store 버전을 기억합니다.</p>',
+    },
+    {
+      id: 'connect',
+      title: '연결 — 초기 스냅샷 전송',
+      lines: [9, 19],
+      body: '<p>새 클라이언트가 붙으면 현재 스냅샷을 <code>init</code> 이벤트로 먼저 보내 초기 상태를 맞춥니다.</p>',
+    },
+    {
+      id: 'schedule',
+      title: '1초 주기 — diff push',
+      lines: [21, 29],
+      body: '<p>버전이 변하지 않았으면 건너뜁니다. 바뀌었으면 <code>diffSince</code>로 변화분만 뽑아 모든 Emitter에 <code>update</code>로 내보냅니다.</p>',
+    },
+    {
+      id: 'send',
+      title: '전송 실패 → 자동 정리',
+      lines: [31, 39],
+      body: '<p>전송에 실패하면 해당 Emitter는 컬렉션에서 제거됩니다. 클라이언트가 떠난 후 다음 tick에 자동 정리되는 구조입니다.</p>',
+    },
+  ]}
+/>
+
+---
+
+## 3. ConceptPopover — 인라인 용어 팝오버
+
+Spring Boot의 <ConceptPopover client:visible term="@Scheduled" concept="spring/at-scheduled">
+  **주기 실행 어노테이션.** `fixedRate`는 작업 시작 시각 기준, `fixedDelay`는 종료 시각 기준으로 다음 실행을 예약합니다. `@EnableScheduling`이 필요하며 MOVE에서는 `PortalApplication`에 설정되어 있습니다.
+</ConceptPopover>는 1초 주기 push에 사용되고, 그 결과를 프론트엔드의 <ConceptPopover client:visible term="$state" concept="svelte/state">
+  **Svelte 5의 반응형 상태 rune.** 할당·배열 push 등 변이를 추적하며, deep proxy로 감싸집니다. 단순 참조 보관이 필요하면 `$state.raw`를 사용하세요.
+</ConceptPopover>로 저장해 UI에 반영합니다.
+
+---
+
+## 테스트 체크리스트
+
+- [ ] 다이어그램 노드 호버 시 연결선만 강조, 나머지 dim
+- [ ] 다이어그램 노드 Tab 포커스 → Enter 시 해당 L2 페이지로 이동
+- [ ] CodeTour 스크롤 시 코드 하이라이트가 step 따라 이동
+- [ ] CodeTour step 제목 클릭 → 해당 step 위로 스크롤
+- [ ] ConceptPopover 호버/포커스 시 요약 표시, Esc 시 닫힘, Enter/클릭 시 L3 페이지 이동
+- [ ] 다크모드 토글 시 색·콘트라스트 OK
+- [ ] `prefers-reduced-motion` 켠 상태에서 애니메이션/부드러운 스크롤 꺼짐

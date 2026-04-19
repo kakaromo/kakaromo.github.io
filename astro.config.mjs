@@ -1,6 +1,7 @@
 // @ts-check
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
+import svelte from '@astrojs/svelte';
 import remarkMermaidjs from 'remark-mermaidjs';
 
 export default defineConfig({
@@ -9,13 +10,14 @@ export default defineConfig({
     remarkPlugins: [remarkMermaidjs],
   },
   integrations: [
+    svelte(),
     starlight({
       title: 'Portal Docs',
       defaultLocale: 'root',
       locales: {
         root: { label: '한국어', lang: 'ko-KR' },
       },
-      customCss: ['./src/styles/custom.css'],
+      customCss: ['./src/styles/custom.css', './src/styles/learn.css'],
       head: [
         {
           tag: 'script',
@@ -46,6 +48,41 @@ export default defineConfig({
             { label: '소개', slug: 'getting-started/overview' },
             { label: '설치 및 실행', slug: 'getting-started/installation' },
             { label: '프로젝트 구조', slug: 'getting-started/project-structure' },
+          ],
+        },
+        {
+          label: '학습 가이드',
+          items: [
+            { label: '개요', slug: 'learn' },
+            {
+              label: 'L1 — 프로젝트 전체상',
+              collapsed: true,
+              autogenerate: { directory: 'learn/l1-overview' },
+            },
+            {
+              label: 'L2 — 기능 모듈',
+              collapsed: true,
+              items: [
+                {
+                  label: '슬롯 모니터링 (Head TCP + SSE)',
+                  autogenerate: { directory: 'learn/l2-slots' },
+                },
+              ],
+            },
+            {
+              label: 'L3 — 언어/프레임워크 개념',
+              collapsed: true,
+              items: [
+                {
+                  label: 'Spring Boot 4',
+                  autogenerate: { directory: 'learn/l3-concepts/spring' },
+                },
+                {
+                  label: 'Svelte 5',
+                  autogenerate: { directory: 'learn/l3-concepts/svelte' },
+                },
+              ],
+            },
           ],
         },
         {

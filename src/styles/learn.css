@@ -1,0 +1,140 @@
+/* MOVE 학습 UX — 계층 팔레트 및 공통 스타일 */
+
+:root {
+  /* 레이어 색상 (라이트) */
+  --learn-layer-hw: #8b5cf6;
+  --learn-layer-be: #1428a0;
+  --learn-layer-state: #0f766e;
+  --learn-layer-tx: #b45309;
+  --learn-layer-fe: #be185d;
+
+  /* 레이어 배경 (10% alpha tint, 라이트) */
+  --learn-layer-hw-bg: #8b5cf61a;
+  --learn-layer-be-bg: #1428a01a;
+  --learn-layer-state-bg: #0f766e1a;
+  --learn-layer-tx-bg: #b453091a;
+  --learn-layer-fe-bg: #be185d1a;
+
+  /* 보더/포커스 */
+  --learn-border: var(--sl-color-gray-5);
+  --learn-focus: var(--sl-color-accent);
+  --learn-radius: 6px;
+  --learn-radius-lg: 12px;
+}
+
+:root[data-theme='dark'] {
+  /* 레이어 색상 (다크 — 채도/명도 올림) */
+  --learn-layer-hw: #a78bfa;
+  --learn-layer-be: #4285f4;
+  --learn-layer-state: #14b8a6;
+  --learn-layer-tx: #f59e0b;
+  --learn-layer-fe: #ec4899;
+
+  /* 레이어 배경 (다크) */
+  --learn-layer-hw-bg: #a78bfa26;
+  --learn-layer-be-bg: #4285f426;
+  --learn-layer-state-bg: #14b8a626;
+  --learn-layer-tx-bg: #f59e0b26;
+  --learn-layer-fe-bg: #ec489926;
+
+  --learn-border: var(--sl-color-gray-4);
+}
+
+/* 학습 UX 공통 콘텐츠 박스 */
+.learn-callout {
+  border: 1px solid var(--learn-border);
+  border-radius: var(--learn-radius-lg);
+  padding: 1rem 1.25rem;
+  margin: 1.5rem 0;
+  background: var(--sl-color-bg-nav);
+}
+
+.learn-callout--try {
+  border-left: 4px solid var(--learn-layer-tx);
+}
+
+.learn-callout--concept {
+  border-left: 4px solid var(--learn-layer-state);
+}
+
+/* 학습 경로 카드 */
+.learn-path-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem;
+  margin: 1.5rem 0;
+}
+
+.learn-path-card {
+  display: block;
+  padding: 1.25rem;
+  border: 1px solid var(--learn-border);
+  border-radius: var(--learn-radius-lg);
+  background: var(--sl-color-bg-nav);
+  text-decoration: none;
+  color: inherit;
+  transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.learn-path-card:hover,
+.learn-path-card:focus-visible {
+  transform: translateY(-2px);
+  border-color: var(--learn-focus);
+  box-shadow: 0 4px 16px -8px var(--learn-focus);
+  outline: none;
+}
+
+.learn-path-card__tag {
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  background: var(--sl-color-accent-low);
+  color: var(--sl-color-accent);
+  margin-bottom: 0.5rem;
+}
+
+.learn-path-card__title {
+  font-size: 1rem;
+  font-weight: 700;
+  margin: 0 0 0.35rem;
+}
+
+.learn-path-card__desc {
+  font-size: 0.8125rem;
+  color: var(--sl-color-gray-2);
+  line-height: 1.55;
+  margin: 0;
+}
+
+/* 레이어 뱃지 (개념/노드 라벨용) */
+.learn-layer-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  border: 1px solid currentColor;
+}
+
+.learn-layer-badge[data-layer='hw']    { color: var(--learn-layer-hw);    background: var(--learn-layer-hw-bg); }
+.learn-layer-badge[data-layer='be']    { color: var(--learn-layer-be);    background: var(--learn-layer-be-bg); }
+.learn-layer-badge[data-layer='state'] { color: var(--learn-layer-state); background: var(--learn-layer-state-bg); }
+.learn-layer-badge[data-layer='tx']    { color: var(--learn-layer-tx);    background: var(--learn-layer-tx-bg); }
+.learn-layer-badge[data-layer='fe']    { color: var(--learn-layer-fe);    background: var(--learn-layer-fe-bg); }
+
+/* 애니메이션 감소 모드 */
+@media (prefers-reduced-motion: reduce) {
+  .learn-path-card {
+    transition: none;
+  }
+  .learn-path-card:hover,
+  .learn-path-card:focus-visible {
+    transform: none;
+  }
+}
