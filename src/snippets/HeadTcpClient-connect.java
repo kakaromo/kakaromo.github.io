@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/head/tcp/HeadTcpClient.java
 // @lines 109-141
 // @note connect() — listen bind + outSocket + connect 커맨드
-// @synced 2026-04-19T09:18:51.153Z
+// @synced 2026-04-19T09:32:45.507Z
 
     private void connect() throws Exception {
         localIp = resolveLocalIp();

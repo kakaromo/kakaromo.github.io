@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/head/precmd/service/PreCommandAutoExecutor.java
 // @lines 34-83
 // @note 필드 + 중복 방지 Set + onSlotStateChanged 훅 진입점
-// @synced 2026-04-19T09:18:51.167Z
+// @synced 2026-04-19T09:32:45.522Z
 
 @Component
 @RequiredArgsConstructor

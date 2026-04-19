@@ -684,6 +684,64 @@ const manifest = [
     language: 'java',
     note: '/api/binmapper/parse (MultipartFile + 6가지 struct 소스) + parse-struct + parse-header',
   },
+
+  // ── Perf Generator (L2 perfgen) · 프론트엔드 전용 devtool ──
+  {
+    id: 'PerfGenerator-types',
+    source: 'frontend/src/lib/components/PerfGenerator.types.ts',
+    lines: [1, 26],
+    language: 'ts',
+    note: 'FieldRole · FieldType · TopLevelShape · FieldNode · TabInfo · AnalysisResult 공유 타입',
+  },
+  {
+    id: 'PerfGenerator-flatten',
+    source: 'frontend/src/lib/components/PerfGenerator.svelte',
+    lines: [17, 79],
+    language: 'svelte',
+    note: '$state 정의 · guessYAxisUnit/capitalize · flattenFields 재귀 (4 분기 + role 휴리스틱)',
+  },
+  {
+    id: 'PerfGenerator-analyzeA',
+    source: 'frontend/src/lib/components/PerfGenerator.svelte',
+    lines: [81, 133],
+    language: 'svelte',
+    note: 'analyzeJson Case 1 — object-of-arrays 분기 (arrayKeys 수집 → tabs · cycleField)',
+  },
+  {
+    id: 'PerfGenerator-analyzeB',
+    source: 'frontend/src/lib/components/PerfGenerator.svelte',
+    lines: [135, 220],
+    language: 'svelte',
+    note: 'analyzeJson Case 2 — array-of-objects 분기 (top fields + nested tabs + 빈 tabKeys fallback)',
+  },
+  {
+    id: 'PerfGenerator-derived',
+    source: 'frontend/src/lib/components/PerfGenerator.svelte',
+    lines: [222, 274],
+    language: 'svelte',
+    note: '$derived analysis · $effect tabOverrides 동기화 · uniqueFields 중복 제거 · setFieldRole',
+  },
+  {
+    id: 'PerfGenerator-gen-header',
+    source: 'frontend/src/lib/components/PerfGenerator.svelte',
+    lines: [304, 395],
+    language: 'svelte',
+    note: 'generateObjectOfArrays — interface 조립 + tabDefs + chartOption 문자열 템플릿 조립',
+  },
+  {
+    id: 'JsonTreeView-effect',
+    source: 'frontend/src/lib/components/JsonTreeView.svelte',
+    lines: [1, 60],
+    language: 'svelte',
+    note: 'parseResult $derived + auto-expand $effect (depth≤2, array limit 5)',
+  },
+  {
+    id: 'PerfPreview-header',
+    source: 'frontend/src/lib/components/PerfPreview.svelte',
+    lines: [1, 80],
+    language: 'svelte',
+    note: 'Props + tabData $derived (shape 분기) + cycleAccessor / data/stat 필드 선별',
+  },
 ];
 
 async function extractLines(text, lines) {

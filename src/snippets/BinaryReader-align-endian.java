@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/binmapper/service/BinaryReaderService.java
 // @lines 267-322
 // @note getFieldSize/Alignment + align (padding 계산) + resolveEndianness (ELF magic) + readCharArray
-// @synced 2026-04-19T09:18:51.185Z
+// @synced 2026-04-19T09:32:45.541Z
 
     private int getFieldSize(StructField field) {
         if (field.getNestedStruct() != null) {

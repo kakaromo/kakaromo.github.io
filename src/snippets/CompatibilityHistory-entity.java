@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/testdb/entity/CompatibilityHistory.java
 // @lines 1-60
 // @note 호환성 실행 결과 — LocalDateTime 기반 + failCause + setProductName
-// @synced 2026-04-19T09:18:51.181Z
+// @synced 2026-04-19T09:32:45.535Z
 
 package com.samsung.move.testdb.entity;
 
