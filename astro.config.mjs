@@ -78,7 +78,7 @@ export default defineConfig({
                   autogenerate: { directory: 'learn/l2-slots' },
                 },
                 {
-                  label: 'Agent 벤치마크 (예정)',
+                  label: 'Agent 벤치마크 (gRPC + SSE 중계)',
                   autogenerate: { directory: 'learn/l2-benchmark' },
                 },
                 {
