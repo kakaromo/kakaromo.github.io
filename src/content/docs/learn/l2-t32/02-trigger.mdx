@@ -1,0 +1,189 @@
+---
+title: 2. 사용자 트리거 & Bitbucket 연동
+description: 프론트에서 브랜치·FW code 선택 · ConfirmDialog · executeT32Dump 호출
+sidebar:
+  order: 2
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import ctrlRaw from '../../../../snippets/T32DumpController.java?raw';
+
+## 30초 요약
+
+사용자가 dump 버튼을 누르면 프론트는 **Bitbucket 브랜치 드롭다운**을 열어 어떤 FW 코드를 쓸지 선택하게 합니다. 선택 후 **ConfirmDialog**로 실행 확정 → `executeT32Dump(...)` 호출 → 응답은 **SSE 스트림**.
+
+백엔드는 `POST /api/t32/dump/execute`가 `SseEmitter`를 반환. 단발 실행이지만 경로가 SSE인 이유는 **Step별 실시간 중계가 필요**하기 때문.
+
+## 프론트 흐름 (의사코드)
+
+```svelte
+<!-- T32DumpDialog.svelte -->
+<script lang="ts">
+  import { listBranches, downloadBranch } from '$lib/api/bitbucket';
+  import { executeT32Dump } from '$lib/api/t32';
+  import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
+
+  interface Props {
+    serverId: number;
+    tentacleName: string;
+    slotNumber: number;
+    setLocation: string;
+    testToolName: string;
+    testTrName: string;
+  }
+  let { ... }: Props = $props();
+
+  let branches = $state<BranchInfo[]>([]);          // [{ name, status, linuxPath, windowsPath }]
+  let selectedBranch = $state<BranchInfo | null>(null);
+  let fw = $state('');                                // 추가 FW 버전 입력
+  let running = $state(false);
+  let steps = $state<StepState[]>(initSteps());      // 4단계 초기화
+
+  // 1) 브랜치 목록 로드 (DOWNLOADED/DETECTED/DOWNLOADING 필터)
+  $effect(() => {
+    (async () => { branches = await listBranches(); })();
+  });
+
+  // 2) 브랜치 선택 → Linux/Windows 경로 같이 표시
+  const pathPreview = $derived(selectedBranch
+    ? `${selectedBranch.linuxPath}  →  ${selectedBranch.windowsPath}`
+    : '브랜치를 선택하세요');
+
+  // 3) 실행 버튼 → Confirm → SSE 시작
+  let confirmOpen = $state(false);
+
+  async function handleRun() {
+    running = true;
+    const cleanup = await executeT32Dump({
+      serverId, tentacleName, slotNumber,
+      fw,
+      branchPath: selectedBranch!.linuxPath,
+      setLocation, testToolName, testTrName,
+    }, onEvent);
+    // cleanup은 호출자가 언마운트 시 실행 ($effect cleanup과 유사)
+  }
+</script>
+
+<BranchDropdown bind:selected={selectedBranch} {branches} />
+<p class="path-preview">{pathPreview}</p>
+
+<button disabled={!selectedBranch || running} onclick={() => confirmOpen = true}>
+  T32 Dump 실행
+</button>
+
+<ConfirmDialog bind:open={confirmOpen}
+  message={`브랜치 "${selectedBranch?.name}"로 dump를 시작합니다. 진행 중에는 JTAG 장비가 점유됩니다.`}
+  onConfirm={handleRun} />
+
+<Stepper {steps} />
+```
+
+핵심:
+
+- **브랜치 드롭다운**은 Bitbucket 모듈(별도 L2 후보)과의 접점. 상태별 필터(DOWNLOADED/DETECTED/DOWNLOADING)로 "지금 쓸 수 있는" 브랜치만 보여줌.
+- **Linux/Windows 경로 동시 표시** — 관리자·개발자가 "dump 결과가 어느 경로에 저장될지" 미리 보게.
+- **ConfirmDialog** — 실수로 진행 중인 테스트 슬롯을 잠그지 않도록 방어. 앞 L2들에서 드물었던 패턴.
+
+## 백엔드 진입점 — 코드 투어
+
+<CodeTour
+  client:visible
+  language="java"
+  source="T32DumpController.java"
+  height={420}
+  code={ctrlRaw}
+  steps={[
+    {
+      id: 'class',
+      title: '@RestController · /api/t32/dump',
+      lines: [6, 10],
+      body: '<p>prefix <code>/api/t32/dump</code>. 체크(가용성) + 실행 두 엔드포인트만 존재 — 매우 얇은 컨트롤러.</p>',
+    },
+    {
+      id: 'check',
+      title: 'GET /check — 버튼 노출 여부',
+      lines: [14, 21],
+      body: '<p>슬롯 UI가 렌더 시점에 호출. 응답은 <code>{ available, configId }</code>. <strong>사용자에게 버튼을 보일지 결정</strong>하는 최초 판정이므로 매우 가벼워야 함.</p>',
+    },
+    {
+      id: 'execute',
+      title: 'POST /execute — SSE 반환',
+      lines: [23, 35],
+      body: '<p><code>produces = TEXT_EVENT_STREAM_VALUE</code>. body JSON을 <code>DumpRequest</code> record로 바인딩해 서비스에 위임. 컨트롤러는 <strong>인자 파싱만</strong>, 나머지는 서비스.</p>',
+    },
+    {
+      id: 'record',
+      title: 'DumpRequest record — Java 21 기록 타입',
+      lines: [37, 46],
+      body: '<p>Java 16+ <code>record</code>로 immutable DTO. getter·equals·hashCode 자동 생성. Lombok 없이도 깔끔. MOVE 전반에 record 쓰임이 늘어나는 추세.</p>',
+    },
+  ]}
+/>
+
+## 왜 POST가 SSE를 반환하는가
+
+일반적으로 SSE는 GET입니다. 이 컨트롤러만 POST인 이유:
+
+- **실행 매개변수가 많음** — URL 쿼리로 다 넘기기엔 지저분 (8개 필드)
+- **일부 필드가 민감** — `fw`, `testTrName` 등은 URL 로그에 남지 않는 편이 나음
+- **브라우저가 POST + EventSource 조합을 지원** — `fetch + ReadableStream` 또는 `EventSourcePolyfill` 이용. MOVE는 `fetch` 스트림 방식을 사용
+
+이 선택은 **사용성과 표준 준수의 타협**입니다. 엄격한 RFC 준수만 따지자면 GET + sessionId 방식이 맞지만, 실무에서는 많은 사이트가 이 패턴을 씁니다.
+
+## DumpRequest 필드의 의미
+
+| 필드 | 용도 |
+|---|---|
+| `serverId` | `T32ConfigServer`를 찾기 위한 대상 tentacle의 PortalServer.id |
+| `tentacleName` · `slotNumber` | 명령 템플릿의 `{tentacle}` / `{slot}` 치환 |
+| `fw` | 메모·로그용 FW 버전 (현재는 명령 치환에 쓰이지 않음) |
+| `branchPath` | Bitbucket에서 선택한 FW 코드 폴더 (Linux 경로) — `resultLinuxPath` 생성 기준 |
+| `setLocation` · `testToolName` · `testTrName` | **결과 폴더 이름**을 구성하는 메타정보 |
+
+결과 폴더 이름 규칙:
+
+```
+{datetime}_{setLocation}_{testToolName}_{testTrName}/
+```
+
+예: `20260419_15h30m00s_CLE-A_fio_TR_042/`. 나중에 파일 시스템에서 **무슨 테스트의 dump인지 이름만으로 식별** 가능하게 하려는 의도.
+
+## 프론트 SSE 소비 (의사코드)
+
+```ts
+// lib/api/t32.ts
+export async function executeT32Dump(req: DumpRequest, onEvent: EventHandler) {
+  const resp = await fetch('/api/t32/dump/execute', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  });
+  const reader = resp.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let cancelled = false;
+
+  (async () => {
+    while (!cancelled) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      // event:, data: 라인 파싱 → onEvent(name, json)
+    }
+  })();
+
+  return () => { cancelled = true; reader.cancel(); };  // cleanup
+}
+```
+
+반환값이 **cleanup 함수**인 점에 주목. 호출자가 언마운트 시 이 함수를 부르면 reader가 즉시 취소되고 서버의 SseEmitter가 연결 해제를 감지해 정리됩니다.
+
+앞 L2의 `EventSource.close()` / `clearInterval()` / `client.disconnect()`와 마찬가지로 **cleanup 패턴의 한 변주**.
+
+## 직접 해보기
+
+- [ ] DevTools Network → `POST /api/t32/dump/execute` 응답의 Content-Type이 `text/event-stream`인지 확인
+- [ ] 응답 스트림 샘플 몇 줄 — `event: step-start\ndata: {...}\n\n` 형식인지 관찰
+- [ ] 브랜치 선택 전에 실행 버튼이 비활성화되는지 UI 확인
+
+다음: [3. Step 실행자 (SSH × 2)](/learn/l2-t32/03-steps/) →

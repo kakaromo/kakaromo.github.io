@@ -1,0 +1,133 @@
+---
+title: 1. 엔티티 & 템플릿 설정
+description: 서버 그룹당 한 개의 T32Config에 JTAG·T32PC·경로 매핑·명령 템플릿을 담는다
+sidebar:
+  order: 1
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import configRaw from '../../../../snippets/T32Config-entity.java?raw';
+
+## 30초 요약
+
+`T32Config`는 **서버 그룹 한 개당 한 행**입니다. 그 안에 "이 그룹의 장비를 dump하려면 어떻게 해야 하는가"에 필요한 **세 범주의 설정**이 모여 있습니다.
+
+- **연결 정보**: `jtagServerId` + `t32PcId`(각 `PortalServer` 외래키) + 각자의 전용 계정(선택)
+- **명령 템플릿**: `jtagCommand` / `t32PortCheckCommand` / `dumpCommand` / `jtagSuccessPattern`
+- **경로 매핑**: `fwCodeLinuxBase ↔ fwCodeWindowsBase` / `resultBasePath ↔ resultWindowsBasePath`
+
+추가로 `T32ConfigServer`라는 M:N 테이블이 "이 Config가 적용되는 구체적 tentacle들"을 묶어줍니다.
+
+## 왜 Config 하나에 다 모으는가
+
+직관적으로는 **명령 템플릿을 별도 테이블**로 빼서 "템플릿을 여러 Config가 공유" 하게 만들고 싶을 수 있습니다. MOVE는 그러지 않았습니다.
+
+- **서버 그룹마다 하드웨어가 미묘하게 다름** — 같은 `dumpCommand`라도 경로·옵션이 다를 때가 많음.
+- **변경 비용이 낮음** — Admin UI에서 textarea로 편집. 여러 줄의 쉘 명령도 그대로.
+- **조인 개수 줄이기** — dump 한 번에 5~6개 쿼리가 들어가는데, 템플릿을 별도 테이블로 빼면 더 늘어남.
+
+"**재사용보다 응집**"을 택한 결정입니다. 장기적으로 템플릿 중복이 커지면 분리하면 됩니다.
+
+## 코드 투어
+
+<CodeTour
+  client:visible
+  language="java"
+  source="T32Config.java"
+  height={620}
+  code={configRaw}
+  steps={[
+    {
+      id: 'entity-header',
+      title: '@Entity portal_t32_configs',
+      lines: [16, 22],
+      body: '<p>다른 엔티티와 같은 Lombok 조합. 테이블 이름은 <code>portal_t32_configs</code>. 한 행 = 한 서버 그룹의 T32 설정.</p>',
+    },
+    {
+      id: 'server-group',
+      title: 'serverGroupId — 단일 FK',
+      lines: [24, 27],
+      body: '<p>이 Config가 어느 그룹에 속하는지. 그룹 내 실제 적용 대상은 별도 <code>T32ConfigServer</code> M:N 테이블로 관리.</p>',
+    },
+    {
+      id: 'server-ids',
+      title: 'jtagServerId + t32PcId — 두 물리 서버',
+      lines: [26, 36],
+      body: '<p>모두 <code>PortalServer</code> 외래키. JTAG는 보통 리눅스(라즈베리파이), T32 PC는 윈도우. <strong>두 서버가 반드시 분리</strong>되어 있다는 점을 DB 수준에서 명시.</p>',
+    },
+    {
+      id: 'custom-creds',
+      title: '전용 계정 (선택)',
+      lines: [29, 42],
+      body: '<p><code>jtagUsername/Password</code>, <code>t32PcUsername/Password</code>가 설정되어 있으면 <strong>PortalServer의 계정 대신 이 값을 사용</strong>. 같은 서버를 여러 사용 케이스가 공유하되 T32 실행은 전용 계정으로 하고 싶을 때.</p>',
+    },
+    {
+      id: 'command-templates',
+      title: '명령 템플릿 4종',
+      lines: [44, 54],
+      body: '<p><code>jtagCommand</code> (Step 1) + <code>jtagSuccessPattern</code>(regex) + <code>t32PortCheckCommand</code> (Step 2) + <code>dumpCommand</code> (Step 3). 각 500자 제한 — 길어지면 wrapper 스크립트로.</p>',
+    },
+    {
+      id: 'path-mapping',
+      title: '경로 매핑 — Linux ↔ Windows',
+      lines: [56, 66],
+      body: '<p><code>fwCodeLinuxBase</code>와 <code>fwCodeWindowsBase</code> 쌍 + <code>resultBasePath</code>와 <code>resultWindowsBasePath</code> 쌍. 둘은 같은 폴더를 가리키지만 <strong>OS마다 경로 문법이 다름</strong>(예: <code>/mnt/fw/...</code> vs <code>Z:\\fw\\...</code>). Step 3에서 이 둘을 변환해 Windows 명령에 끼워 넣음.</p>',
+    },
+    {
+      id: 'flags',
+      title: 'enabled + timestamps',
+      lines: [68, 86],
+      body: '<p>전체 killswitch + 생성·수정 시각 자동. 다른 엔티티와 동일 패턴.</p>',
+    },
+  ]}
+/>
+
+## 명령 템플릿의 토큰
+
+각 template에 **특정 토큰**이 있으면 실행 시점에 치환됩니다.
+
+| 토큰 | 치환 값 | 예시 |
+|---|---|---|
+| `{tentacle}` | tentacle 이름 | `T1` |
+| `{tentacle_num}` | tentacle 번호 | `1` |
+| `{slot}` | 슬롯 번호 | `0` |
+| `{result_path}` | **Windows** 결과 폴더 | `Z:\fw\...\result\` |
+| `{branch_path}` | **Windows** FW 브랜치 경로 | `Z:\fw\branches\main` |
+
+`{tentacle}` 계열은 영숫자·언더스코어·하이픈만 허용(명령어 인젝션 방지). `{result_path}`·`{branch_path}`는 공백이 있을 수 있어 dump 단계에서 **`"..."`로 감싼 뒤 치환**.
+
+## T32ConfigServer — M:N 매핑
+
+```java
+@Entity
+@Table(name = "portal_t32_config_servers",
+       uniqueConstraints = @UniqueConstraint(columnNames = {"t32ConfigId","serverId"}))
+public class T32ConfigServer {
+    @Id Long id;
+    Long t32ConfigId;
+    Long serverId;   // 적용 대상 PortalServer
+}
+```
+
+이 테이블의 존재로 **"이 서버 그룹에서는 T32 dump 가능"** vs **"불가능"** 을 쉽게 판정합니다. `T32DumpController.checkAvailability(serverId)`가 바로 이 테이블 조회로 버튼 노출 여부를 결정.
+
+## Admin UI의 모습 (요약)
+
+`AdminT32Tab.svelte`에서 관리자는:
+
+1. **서버 그룹 선택** → 해당 그룹의 기존 Config 조회/생성
+2. **JTAG 서버 + T32 PC 선택** — PortalServer 드롭다운
+3. **전용 계정 입력** (옵션)
+4. **명령 템플릿 textarea 4개** — 여러 줄 허용
+5. **경로 매핑 입력** — Linux·Windows 쌍
+6. **적용 대상 tentacle 체크** — T32ConfigServer 항목 수정
+
+다이얼로그 한 화면에 모든 필드가 노출되어 있어 한 번에 Config 한 개가 완성되는 구조.
+
+## 직접 해보기
+
+- [ ] Admin T32 탭에서 새 Config 생성 → DB `portal_t32_configs`에 행 확인
+- [ ] 같은 `serverGroupId`에 Config 두 개를 만들려 하면 막히는지 또는 허용되는지 확인 (현재 UK는 없지만 UI가 단일)
+- [ ] Linux 경로에 공백을 포함해 명령어가 어떻게 escape되는지 Step 3에서 확인
+
+다음: [2. 사용자 트리거 & Bitbucket](/learn/l2-t32/02-trigger/) →

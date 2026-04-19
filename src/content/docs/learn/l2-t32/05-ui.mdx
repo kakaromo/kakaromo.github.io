@@ -1,0 +1,238 @@
+---
+title: 5. Stepper UI + ZIP 다운로드
+description: 4단계 진행 상태 · 경과 시간 · 실패 힌트 · 결과 폴더 탐색 + ZIP
+sidebar:
+  order: 5
+---
+
+import ConceptPopover from '../../../../components/learn/ConceptPopover.svelte';
+import DataFlowPath from '../../../../components/learn/DataFlowPath.svelte';
+
+## 30초 요약
+
+`T32DumpDialog.svelte`는 **Stepper 4줄 + 실시간 로그 접기 + 완료 후 파일 탐색**이 한 다이얼로그에 들어 있습니다. SSE 이벤트를 받아 각 step의 상태(`pending/running/success/failed`)를 갱신하고, 완료 후에는 `/api/log-browser/files`로 폴더 내용을 조회해 **Canary 보고서 미리보기 + ZIP 다운로드** 링크를 제공합니다.
+
+## Stepper 상태 모델
+
+```ts
+interface StepState {
+  idx: number;                            // 1 ~ 4
+  name: string;                            // "JTAG 연결" 등
+  status: 'pending' | 'running' | 'success' | 'failed';
+  startTime?: number;                     // ms — step-start 시점
+  elapsed: number;                         // ms — 타이머로 증가
+  output: string[];                        // step-output 누적
+  failureHint?: string;                    // step-done의 output 또는 도메인 규칙
+}
+```
+
+4개의 StepState가 배열로 `$state`. 각 이벤트가 오면 해당 step의 필드를 업데이트.
+
+## 이벤트 → UI 상태 매핑
+
+<DataFlowPath
+  client:visible
+  caption="SSE 이벤트가 Stepper UI의 상태 필드를 어떻게 바꾸는가"
+  altText="step-start 이벤트가 오면 해당 step의 status를 running으로 바꾸고 startTime을 기록합니다. step-output 이벤트의 각 라인은 output 배열에 추가되고 접기 영역에 표시됩니다. step-done 이벤트가 success나 failed 상태를 설정하며, elapsed 시간을 계산합니다. done 이벤트는 최종 resultPath를 저장하고 파일 로드 함수를 호출합니다."
+  stages={[
+    {
+      id: 's1',
+      label: 'step-start',
+      layer: 'tx',
+      language: 'ts',
+      sample: "step.status = 'running';\nstep.startTime = Date.now();\nstep.output = [];",
+      note: '시작 표시 + 타이머 기준점',
+    },
+    {
+      id: 's2',
+      label: 'step-output (N회)',
+      layer: 'tx',
+      language: 'ts',
+      sample: "step.output = [\n  ...step.output,\n  data.line,\n];",
+      note: '로그 누적 (접기)',
+    },
+    {
+      id: 's3',
+      label: 'step-done',
+      layer: 'tx',
+      language: 'ts',
+      sample: "step.status = data.status;\nstep.elapsed = Date.now() - step.startTime;\nif (status === 'failed')\n  step.failureHint = hintFor(step.idx);",
+      note: '완료 + 힌트',
+    },
+    {
+      id: 's4',
+      label: 'done',
+      layer: 'fe',
+      language: 'ts',
+      sample: "resultPath = data.resultPath;\nresultWindowsPath =\n  data.resultWindowsPath;\nawait loadResultFiles();",
+      note: '전체 완료 + 파일 로드',
+    },
+  ]}
+  transforms={[
+    { label: 'enter' },
+    { label: 'append' },
+    { label: 'judge' },
+    { label: 'finalize' },
+  ]}
+/>
+
+## 컴포넌트 구조 (의사코드)
+
+```svelte
+<script lang="ts">
+  import { executeT32Dump } from '$lib/api/t32';
+  import { listFiles, downloadDir } from '$lib/api/logBrowser';
+  import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
+
+  let steps = $state<StepState[]>(initSteps());
+  let running = $state(false);
+  let resultPath = $state('');
+  let resultWindowsPath = $state('');
+  let resultFiles = $state<FileInfo[]>([]);
+  let cleanup: (() => void) | null = null;
+
+  // 경과 시간 타이머 — 현재 running인 step이 있으면 매초 update
+  $effect(() => {
+    if (!running) return;
+    const id = setInterval(() => {
+      const active = steps.find((s) => s.status === 'running');
+      if (active && active.startTime) {
+        active.elapsed = Date.now() - active.startTime;
+        steps = [...steps];   // 반응성 trigger
+      }
+    }, 1000);
+    return () => clearInterval(id);
+  });
+
+  async function handleRun() {
+    running = true;
+    cleanup = await executeT32Dump(dumpReq, onEvent);
+  }
+
+  function onEvent(name: string, data: any) {
+    switch (name) {
+      case 'step-start': {
+        const s = steps[data.step - 1];
+        s.status = 'running';
+        s.startTime = Date.now();
+        s.output = [];
+        break;
+      }
+      case 'step-output':
+        steps[data.step - 1].output.push(data.line);
+        break;
+      case 'step-done': {
+        const s = steps[data.step - 1];
+        s.status = data.status;
+        if (s.startTime) s.elapsed = Date.now() - s.startTime;
+        if (data.status === 'failed') s.failureHint = hintFor(data.step, data.output);
+        break;
+      }
+      case 'done':
+        running = false;
+        resultPath = data.resultPath ?? '';
+        resultWindowsPath = data.resultWindowsPath ?? '';
+        if (data.success) loadResultFiles();
+        break;
+      case 'error':
+        running = false;
+        // toast 에러
+        break;
+    }
+    steps = [...steps];   // 배열 교체로 반응성
+  }
+
+  async function loadResultFiles() {
+    if (!resultPath) return;
+    resultFiles = await listFiles(resultPath);
+  }
+
+  function handleDownloadZip() {
+    window.open(`/api/log-browser/download-dir?path=${encodeURIComponent(resultPath)}`);
+  }
+</script>
+
+<Stepper {steps} />
+{#if resultPath}
+  <div class="result-section">
+    <div class="path-display">
+      <code>{resultPath}</code>
+      <button onclick={() => copy(resultWindowsPath)}>Windows 경로 복사</button>
+    </div>
+    <FileTree files={resultFiles} />
+    <button onclick={handleDownloadZip}>전체 ZIP 다운로드</button>
+  </div>
+{/if}
+```
+
+## Step별 실패 힌트 테이블
+
+```ts
+function hintFor(step: number, output: string): string {
+  switch (step) {
+    case 1:
+      return output.includes('Permission denied')
+        ? 'SSH 계정 또는 비밀번호를 확인하세요'
+        : 'JTAG success pattern이 stdout에 없습니다';
+    case 2:
+      return output.includes('Down')
+        ? 'Debug Port Fail — JTAG 케이블 연결을 확인하세요'
+        : 'T32 PC 포트 체크 명령이 실패했습니다';
+    case 3:
+      return output.toLowerCase().includes('fail')
+        ? 'stdout에서 fail 키워드가 감지되었습니다'
+        : 'Dump 명령 exitCode가 0이 아닙니다';
+    default:
+      return '';
+  }
+}
+```
+
+**도메인 지식을 UI로 가져온 한 예**. 백엔드가 힌트 문자열을 직접 보낼 수도 있었지만:
+
+- 힌트 문구 변경에 배포가 필요 없음 (프론트만 수정)
+- 같은 output에서 다양한 힌트를 보이고 싶을 때 유연
+
+## 결과 폴더 탐색
+
+dump 완료 후 `/api/log-browser/files?path=${resultPath}`로 폴더 내용을 조회해 트리 UI에 표시:
+
+- **Canary 폴더** — 자동 감지해 강조
+- **`*_report.html`** — 클릭 시 새 탭에서 SSH 프록시로 미리보기
+- **전체 ZIP 다운로드** — `/api/log-browser/download-dir?path=...`로 폴더 통째
+
+**log-browser 모듈**(별도 L2 후보)이 이미 SSH/Local 모드로 파일 접근을 추상화해둔 덕에 T32는 **한 API만 호출**하면 됨. 재사용성의 좋은 예.
+
+## <ConceptPopover client:visible term="$effect" concept="svelte/effect"><p>Svelte 5의 부작용 rune. 반응형 의존성이 바뀔 때 실행되고 cleanup 함수로 이전 실행을 정리합니다.</p></ConceptPopover> 2종
+
+이 다이얼로그에는 두 개의 `$effect`가 있습니다.
+
+1. **경과 시간 타이머** — 위 코드의 `setInterval(1000)` + cleanup `clearInterval`
+2. **다이얼로그 언마운트 시 SSE 취소** — `onDestroy` 또는 별도 `$effect`로 `cleanup?.()` 호출
+
+두 effect의 cleanup이 **서로 다른 자원**을 해제합니다. 한 effect에 몰아넣지 않는 것이 Svelte 5 패턴의 일관성.
+
+## 다섯 L2의 실시간 패턴 최종 비교
+
+| L2 | 획득 리소스 | cleanup |
+|---|---|---|
+| 슬롯 | EventSource | `es.close()` |
+| 벤치마크 | EventSource(job당) | `es.close()` |
+| 원격 | `Guacamole.Client` + keyboard/mouse | `client.disconnect() + keyboard.reset()` |
+| Metadata | `setInterval(30s)` | `clearInterval()` |
+| **T32 Dump** | **fetch reader + setInterval** | **reader.cancel() + clearInterval()** |
+
+5개 모두 **`$effect` + 획득 + cleanup** 패턴. T32는 **두 리소스를 동시에 관리**하는 첫 케이스라 Svelte 5의 effect 분리 원칙이 진가를 발휘.
+
+## 직접 해보기
+
+- [ ] Step 1이 `running`인 동안 경과 시간이 1초씩 증가하는지 UI 확인
+- [ ] 일부러 Step 2를 실패시켜 ⚠ Debug Port Fail 힌트가 Step 2의 접기 영역에 나오는지
+- [ ] 완료 후 `전체 ZIP 다운로드` 버튼 → 브라우저가 .zip 받기 시작하는지
+- [ ] 다이얼로그를 dump 도중 닫아 → fetch reader가 cancel되고 서버 로그에 emitter.IOException이 나오는지
+
+---
+
+**L2 T32 Dump 튜토리얼 완료**. 돌아가기:
+
+- [L2 4종 비교](/learn/l2-compare/) · [슬롯 L2](/learn/l2-slots/) · [벤치마크 L2](/learn/l2-benchmark/) · [원격 L2](/learn/l2-remote/) · [Metadata L2](/learn/l2-metadata/)

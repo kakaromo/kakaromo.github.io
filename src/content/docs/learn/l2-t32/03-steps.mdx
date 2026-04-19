@@ -1,0 +1,227 @@
+---
+title: 3. Step 실행자 — SSH × 2 오케스트레이션
+description: Step 1 JTAG · Step 2 Attach · Step 3 Dump — JSch로 두 서버에 명령을 보내고 도메인 키워드로 판정
+sidebar:
+  order: 3
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import SequenceTimeline from '../../../../components/learn/SequenceTimeline.svelte';
+import step12Raw from '../../../../snippets/T32DumpService-step1-2.java?raw';
+import step3Raw from '../../../../snippets/T32DumpService-step3.java?raw';
+import sshRaw from '../../../../snippets/T32DumpService-ssh.java?raw';
+
+## 30초 요약
+
+`T32DumpService`가 **Step 1 → Step 2 → Step 3 → Step 4**를 순차로 돌립니다. 각 Step은 **하나의 SSH 명령**이고, 대상 서버는 Step마다 다릅니다.
+
+| Step | 대상 서버 | 판정 기준 | timeout |
+|---|---|---|---|
+| 1. JTAG | JTAG 서버 (Linux) | `jtagSuccessPattern` regex 매치 or exitCode=0 | 30초 |
+| 2. Attach | T32 PC (Windows) | exitCode=0 **+** stdout에 `"Down"` **없음** | 30초 |
+| 3. Dump | T32 PC (Windows) | exitCode=0 **+** stdout에 `"fail"` **없음** | 300초 |
+| 4. 완료 | T32 PC | Canary 폴더 있으면 PowerShell로 ZIP | 60초 |
+
+앞 단계가 실패하면 **뒤는 실행하지 않고 즉시 `done {success: false, failedStep: N}`** 을 전송.
+
+## Step 진행 시퀀스
+
+<SequenceTimeline
+  client:visible
+  height={380}
+  autoplay={true}
+  caption="성공 케이스 — JTAG → Attach → Dump → Canary ZIP → done"
+  altText="사용자가 POST /execute를 보내면 서비스는 T32Config를 조회하고 Step 1로 JTAG 서버에 SSH 명령을 보냅니다. 성공하면 Step 2에서 T32 PC로 port check 명령을 보내고, 성공하면 Step 3에서 dump 명령을 보냅니다. 각 단계마다 SseEmitter로 step-start/step-output/step-done 이벤트를 프론트에 전송합니다. Step 4에서 Canary 폴더가 있으면 PowerShell Compress-Archive로 ZIP을 생성하고 최종 done 이벤트를 보냅니다."
+  lanes={[
+    { id: 'fe',  label: 'Browser',     layer: 'fe',    sublabel: 'Stepper UI' },
+    { id: 'svc', label: 'T32DumpSvc',  layer: 'be',    sublabel: 'Spring' },
+    { id: 'jt',  label: 'JTAG Linux',  layer: 'hw',    sublabel: '라즈베리파이' },
+    { id: 'pc',  label: 'T32 PC',      layer: 'hw',    sublabel: 'Windows + TRACE32' },
+  ]}
+  messages={[
+    { from: 'fe',  to: 'svc', label: 'POST /execute',     t: 0,   kind: 'sync' },
+    { from: 'svc', to: 'fe',  label: 'step-start 1',      t: 5,   kind: 'async' },
+    { from: 'svc', to: 'jt',  label: 'SSH jtagCommand',   t: 8,   kind: 'async' },
+    { from: 'jt',  to: 'svc', label: 'stdout',            t: 15,  kind: 'async' },
+    { from: 'svc', to: 'fe',  label: 'step-done 1 ✓',     t: 18,  kind: 'async' },
+    { from: 'svc', to: 'fe',  label: 'step-start 2',      t: 20,  kind: 'async' },
+    { from: 'svc', to: 'pc',  label: 'SSH portCheck',     t: 22,  kind: 'async' },
+    { from: 'pc',  to: 'svc', label: 'stdout',            t: 28,  kind: 'async' },
+    { from: 'svc', to: 'fe',  label: 'step-done 2 ✓',     t: 30,  kind: 'async' },
+    { from: 'svc', to: 'fe',  label: 'step-start 3',      t: 32,  kind: 'async' },
+    { from: 'svc', to: 'pc',  label: 'SSH dumpCommand',   t: 34,  kind: 'async' },
+    { from: 'pc',  to: 'svc', label: 'stdout (live)',     t: 70,  kind: 'async' },
+    { from: 'svc', to: 'fe',  label: 'step-output lines', t: 72,  kind: 'async' },
+    { from: 'svc', to: 'fe',  label: 'step-done 3 ✓',     t: 110, kind: 'async' },
+    { from: 'svc', to: 'pc',  label: 'Canary ZIP',        t: 114, kind: 'async' },
+    { from: 'svc', to: 'fe',  label: 'done {success}',    t: 120, kind: 'async' },
+  ]}
+/>
+
+## Step 1 (JTAG) + Step 2 (Attach) — 코드 투어
+
+<CodeTour
+  client:visible
+  language="java"
+  source="T32DumpService (Step 1 + Step 2)"
+  height={560}
+  code={step12Raw}
+  steps={[
+    {
+      id: 'step1-template',
+      title: 'Step 1 — jtagCommand 템플릿 치환',
+      lines: [9, 14],
+      body: '<p><code>resolveTemplate</code>이 <code>{tentacle}</code>/<code>{slot}</code>을 실제 값으로 치환. 치환 전 <strong>영숫자·언더스코어·하이픈만 허용</strong>해 명령어 인젝션 방지. 명령이 비었으면 즉시 실패.</p>',
+    },
+    {
+      id: 'step1-exec',
+      title: 'Step 1 — SSH 실행',
+      lines: [15, 16],
+      body: '<p><code>executeSshCommand(jtagServer, command, 30초, emitter, step=1)</code>. 내부에서 실시간 stdout을 <code>step-output</code> 이벤트로 전송 (아래 SSH 헬퍼 투어).</p>',
+    },
+    {
+      id: 'step1-pattern',
+      title: 'Step 1 — success pattern regex',
+      lines: [17, 24],
+      body: '<p><code>jtagSuccessPattern</code>이 설정되어 있으면 <strong>stdout에서 regex 매치</strong>(CASE_INSENSITIVE). 없으면 exitCode==0 fallback. 도메인마다 "성공 메시지"가 달라 <strong>설정으로 판정 기준을 뺐다</strong>는 점이 이 L2의 특징.</p>',
+    },
+    {
+      id: 'step1-done',
+      title: 'Step 1 — step-done 이벤트',
+      lines: [26, 33],
+      body: '<p>성공/실패를 <code>step-done</code>에 실어 전송. 실패해도 output을 그대로 전달 — <strong>프론트가 "무엇이 잘못됐는지" 보여줄 수 있게</strong>.</p>',
+    },
+    {
+      id: 'step2-exec',
+      title: 'Step 2 — t32PortCheckCommand',
+      lines: [37, 47],
+      body: '<p>Step 1과 거의 같은 구조지만 대상이 <strong>T32 PC</strong>. 명령어 자체는 Config에 저장된 템플릿이 그대로 실행 (치환 없음 — 포트 체크는 슬롯 무관).</p>',
+    },
+    {
+      id: 'step2-down',
+      title: 'Step 2 — "Down" 키워드 감지',
+      lines: [48, 61],
+      body: '<p>exitCode=0이어도 stdout에 <code>"Down"</code>이 있으면 <strong>Debug Port Fail</strong>로 간주. output 끝에 <code>⚠ Debug Port Fail</code> 힌트를 붙여 프론트 UI에 표시. <strong>도메인 지식을 파서로 박은 패턴</strong>.</p>',
+    },
+  ]}
+/>
+
+## Step 3 (Dump) — 코드 투어
+
+<CodeTour
+  client:visible
+  language="java"
+  source="T32DumpService.executeStep3Dump"
+  height={460}
+  code={step3Raw}
+  steps={[
+    {
+      id: 'step3-template',
+      title: 'dumpCommand 템플릿 + {tentacle}/{slot} 치환',
+      lines: [9, 15],
+      body: '<p>앞 Step과 같은 <code>resolveTemplate</code>. 비었으면 실패.</p>',
+    },
+    {
+      id: 'step3-paths',
+      title: '{result_path} / {branch_path} 치환 — 따옴표로 감싸기',
+      lines: [16, 23],
+      body: '<p>Windows 경로에는 <strong>공백이 흔함</strong>(<code>Program Files</code> 등). <code>&quot;&quot;</code>로 감싸서 치환해 셸 파싱 문제 방지. 두 경로 모두 <strong>Windows 변환된 버전</strong>.</p>',
+    },
+    {
+      id: 'step3-exec',
+      title: 'executeSshCommandWithDumpProgress — 300초 timeout',
+      lines: [24, 25],
+      body: '<p>일반 SSH 헬퍼와 달리 <strong>Core 진행 패턴 파싱</strong>이 추가된 변형. H-Core / CM-Core / F-Core / N-Core / Canary가 각각 어느 phase(source/stack/register/dump/capture)에 있는지 정규식으로 추출해 <code>dump-progress</code> 이벤트로 전송.</p>',
+    },
+    {
+      id: 'step3-fail',
+      title: '"fail" 키워드 감지 — 대소문자 무시',
+      lines: [27, 29],
+      body: '<p>exitCode=0이어도 <code>output.toLowerCase().contains("fail")</code>이면 실패. <strong>T32 도구가 비정상 종료를 exitCode로 알려주지 않는</strong> 케이스를 방어.</p>',
+    },
+    {
+      id: 'step3-hint',
+      title: '힌트 첨부',
+      lines: [31, 35],
+      body: '<p>exitCode는 0인데 stdout에 fail이 있으면 output 끝에 힌트 한 줄 추가. 프론트가 별도 로직 없이 UI에 그대로 표시.</p>',
+    },
+    {
+      id: 'step3-path-extract',
+      title: 'stdout에서 결과 경로 추출',
+      lines: [36, 42],
+      body: '<p>성공했다면 stdout에서 실제로 생성된 경로를 파싱 (<code>extractResultPath</code>). T32 스크립트가 마지막 줄에 경로를 찍어주는 관례를 이용.</p>',
+    },
+  ]}
+/>
+
+## 공통 SSH 실행 헬퍼
+
+<CodeTour
+  client:visible
+  language="java"
+  source="T32DumpService.executeSshCommand (JSch)"
+  height={560}
+  code={sshRaw}
+  steps={[
+    {
+      id: 'jsch-session',
+      title: 'JSch Session — 10초 connect timeout',
+      lines: [1, 13],
+      body: '<p><code>jsch.getSession(username, ip, port)</code> + password + <code>StrictHostKeyChecking=no</code>(내부망 전제). 10초 내 연결 안 되면 예외 → 상위의 catch로 전파되어 step-done failed 전송.</p>',
+    },
+    {
+      id: 'exec-channel',
+      title: 'ChannelExec — 단발 명령',
+      lines: [14, 19],
+      body: '<p>SSH 세션에서 <code>exec</code> 채널. 셸 대신 명령 한 줄만 실행하고 종료. stdin은 닫아두고 stdout·stderr 스트림을 획득.</p>',
+    },
+    {
+      id: 'deadline',
+      title: 'deadline — 단위 타임아웃',
+      lines: [20, 22],
+      body: '<p>각 Step마다 다른 timeout (30/30/300초). <strong>무한 hang 방지</strong>. 읽기 loop 안에서 deadline 체크 → 초과 시 즉시 <code>disconnect + [TIMEOUT]</code> 표시로 반환.</p>',
+    },
+    {
+      id: 'read-stream',
+      title: 'stdout 실시간 stream — step-output',
+      lines: [23, 36],
+      body: '<p>라인 단위로 읽어 <strong>즉시 SseEmitter에 전송</strong>. Step 3의 경우 수백 라인이 나올 수 있는데 완료까지 기다리지 않고 실시간 스트리밍. <code>output</code> StringBuilder에도 누적해 최종 판정용.</p>',
+    },
+    {
+      id: 'read-stderr',
+      title: 'stderr도 동일 처리',
+      lines: [37, 45],
+      body: '<p>stdout과 같은 방식. 일부 T32 도구는 정상 로그를 stderr로 내기도 해 구분 없이 처리. <strong>도메인 관례에 맞춘 단순화</strong>.</p>',
+    },
+    {
+      id: 'exit-wait',
+      title: 'channel.isClosed() 대기',
+      lines: [46, 54],
+      body: '<p>스트림을 다 읽어도 프로세스는 살아있을 수 있어 <code>Thread.sleep(50)</code> 폴링으로 종료 대기. deadline 초과는 여기서도 체크.</p>',
+    },
+    {
+      id: 'exit-code',
+      title: 'getExitStatus + 세션 해제',
+      lines: [55, 60],
+      body: '<p>최종 exitCode 획득 후 channel·session 모두 해제. <code>finally</code>로 session.disconnect가 보장 — 누수 없음.</p>',
+    },
+  ]}
+/>
+
+## 왜 두 서버를 한 서비스가 직접 다루는가
+
+`T32DumpService` 하나가 JTAG 서버와 T32 PC를 모두 상대합니다. 더 추상화된 구조(예: `SshExecutor` 빈 하나가 서버 객체를 받아 실행)도 가능하지만 MOVE는 단순화를 택:
+
+- **dump 시나리오 하나에만 쓰이는 로직** — 다른 곳에서 재사용 의도 없음
+- **Step별 특수 로직이 많음** — Step 3의 Core 진행 파싱 같은 것을 공통 Executor에 넣으면 오히려 복잡해짐
+- **로그 추적이 쉬움** — 한 서비스 안에 Step들이 순서대로 나열됨
+
+**"미래를 위한 추상화보다 현재의 읽기 쉬움"** 을 우선했습니다.
+
+## 직접 해보기
+
+- [ ] MOVE 로그에서 Step별 SSH 연결 로그 순서(`JTAG Linux` → `T32 PC`)를 확인
+- [ ] 일부러 잘못된 `jtagSuccessPattern`을 설정 → Step 1이 실패하고 Step 2로 넘어가지 않는지 확인
+- [ ] Step 3 실행 중 stdout에 `"fail"`이 포함되면 exitCode 관계없이 실패 처리되는지 — 테스트용 스크립트로 검증
+
+다음: [4. SSE 이벤트 중계](/learn/l2-t32/04-sse/) →

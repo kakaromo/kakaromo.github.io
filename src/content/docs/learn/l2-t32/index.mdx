@@ -1,0 +1,84 @@
+---
+title: T32 Dump — 4 Step Stepper 여정
+description: JTAG 서버와 T32 PC를 SSH로 오케스트레이션해 dump를 수집하고 SSE로 진행을 중계
+sidebar:
+  order: 0
+---
+
+import ArchitectureDiagram from '../../../../components/learn/ArchitectureDiagram.svelte';
+
+## 이 모듈에서 배울 것
+
+"사용자가 **T32 Dump** 버튼을 누르면, 별도의 **JTAG 서버**와 **T32 PC**에 SSH로 명령을 차례로 보내 **4단계 Stepper**가 돌아가고, 실패 시 단계별 힌트와 함께 멈추며, 성공하면 결과 ZIP을 다운로드 받기까지 어떤 계층을 거치는가?"
+
+다섯 번째 L2입니다. [L2 4종 비교](/learn/l2-compare/)의 체크리스트를 따라 작성되었고, 이 모듈의 특이점은:
+
+- **외부 장비 두 대**를 SSH로 묶어서 오케스트레이션 (JTAG 라즈베리파이 + T32 PC 윈도우)
+- **Step 순서와 실패 판정**이 도메인 특화 — success regex / "Down" 키워드 / "fail" 키워드
+- **Linux ↔ Windows 경로 변환**이 설계에 박혀 있음 (두 OS가 같은 폴더를 보는 경로 차이)
+
+## 여정 한눈에
+
+<ArchitectureDiagram
+  client:visible
+  height={320}
+  caption="설정 DB → 사용자 트리거 → Stepper(SSH) → SSE 중계 → 프론트 Stepper UI + ZIP"
+  altText="T32Config DB 레코드가 사용자 트리거에서 조회되고, T32DumpService가 JTAG 서버와 T32 PC에 SSH 명령을 4단계로 보냅니다. 각 단계는 SseEmitter로 step-start/output/done 이벤트를 프론트로 전송하며, 프론트 Stepper UI가 실시간 갱신됩니다. Step 3 성공 시 Canary 폴더를 T32 PC에서 PowerShell로 ZIP 압축하고 결과 경로를 프론트에 돌려줍니다."
+  nodes={[
+    { id: 's1', label: '1. 설정·템플릿',  sublabel: 'T32Config DB',           layer: 'state', x: 0,   y: 80,  href: '/learn/l2-t32/01-config/' },
+    { id: 's2', label: '2. 사용자 트리거', sublabel: 'Bitbucket + Confirm',    layer: 'fe',    x: 200, y: 80,  href: '/learn/l2-t32/02-trigger/' },
+    { id: 's3', label: '3. Step 실행자',   sublabel: 'JSch SSH × 2 서버',      layer: 'tx',    x: 400, y: 0,   href: '/learn/l2-t32/03-steps/' },
+    { id: 's4', label: '4. SSE 중계',      sublabel: 'step-start/output/done', layer: 'be',    x: 400, y: 160, href: '/learn/l2-t32/04-sse/' },
+    { id: 's5', label: '5. Stepper UI',    sublabel: '경과·힌트·ZIP',          layer: 'fe',    x: 600, y: 80,  href: '/learn/l2-t32/05-ui/' },
+  ]}
+  edges={[
+    { from: 's1', to: 's2', label: 'read',   kind: 'sync' },
+    { from: 's2', to: 's3', label: 'POST',   kind: 'sync' },
+    { from: 's3', to: 's4', label: 'event',  kind: 'async' },
+    { from: 's4', to: 's5', label: 'SSE',    kind: 'async' },
+  ]}
+/>
+
+## 앞 네 L2와의 차이
+
+| 축 | 슬롯 | 벤치마크 | 원격 | Metadata | **T32 Dump** |
+|---|---|---|---|---|---|
+| 트리거 | Head | 사용자 Run | 세션 | 자동 | **사용자 Run (Confirm)** |
+| 외부 시스템 | Head TCP | Go Agent gRPC | guacd | adb shell | **SSH × 2 (JTAG + T32 PC)** |
+| 수명 | 페이지 | job | 세션 | 분 주기 | **단발 (수십 초)** |
+| 전송 | SSE | SSE | WebSocket | HTTP 폴링 | **SSE (Stepper)** |
+| 실패 판정 | 없음 | exitCode | 연결 실패 | non-JSON skip | **regex + 키워드 ("Down"/"fail")** |
+| 결과물 | 없음 | DB + MinIO | 없음 | SFTP JSON | **폴더 + ZIP** |
+
+가장 큰 특징은 "**단발 + 4단계 절차 + 단계별 실패 판정**". 성공이 아닌 **"어느 단계에서 실패했는가"가 핵심 출력**이 되는 워크플로우. 이전 L2들의 연속 스트림과 다르게 Stepper라는 UI 메타포가 자연스럽게 맞습니다.
+
+## 왜 JTAG 서버와 T32 PC를 분리하는가
+
+- **JTAG 서버** (Linux·라즈베리파이): JTAG 케이블을 꽂은 물리 장치. `Trace32` 세션 시작·디바이스 연결 담당.
+- **T32 PC** (Windows): Lauterbach TRACE32 소프트웨어가 설치된 PC. 실제 dump를 뜨는 주체.
+
+두 역할을 **물리적으로 분리**하는 이유:
+
+- JTAG 하드웨어와 T32 소프트웨어의 OS 요구가 다름 (리눅스·윈도우)
+- 여러 JTAG 서버가 같은 T32 PC를 공유하는 구성도 있음
+- 장애 격리: JTAG 쪽 문제와 T32 쪽 문제를 로그로 구분 가능
+
+MOVE는 두 서버를 `T32Config`의 `jtagServerId`·`t32PcId` 외래키로 연결해 관리합니다.
+
+## 학습 순서와 예상 시간
+
+| 단계 | 제목 | 성격 | 시간 |
+|---|---|---|---|
+| 1 | 엔티티 & 템플릿 | 읽기 | 8분 |
+| 2 | 사용자 트리거 & Bitbucket | 의사코드 + 읽기 | 8분 |
+| 3 | Step 실행자 (SSH × 2) | 코드 투어 | 15분 |
+| 4 | SSE 중계 (step-* 이벤트) | 코드 투어 | 10분 |
+| 5 | Stepper UI + ZIP 다운로드 | 의사코드 | 10분 |
+
+총 약 **50분**. 앞 L2를 거쳤다면 SSH/SSE 개념은 빠르게 넘겨도 무방합니다.
+
+## 새로 등장할 L3 개념
+
+**없음**. `@RestController`, `@Scheduled`, `SseEmitter`, `@Entity`, `$effect` 등 기존 사전만으로 설명됩니다. 새로 만나는 것은 **JSch 라이브러리**뿐인데 이건 도메인 도구라 인라인 소개만.
+
+다음: [1. 엔티티 & 템플릿 설정](/learn/l2-t32/01-config/) →
