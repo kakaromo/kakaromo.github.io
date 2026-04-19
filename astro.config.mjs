@@ -73,7 +73,7 @@ export default defineConfig({
               label: 'L2 — 기능 모듈',
               collapsed: true,
               items: [
-                { label: '🔎 L2 6종 비교', slug: 'learn/l2-compare' },
+                { label: '🔎 L2 7종 비교', slug: 'learn/l2-compare' },
                 {
                   label: '슬롯 모니터링 (Head TCP + SSE)',
                   autogenerate: { directory: 'learn/l2-slots' },
