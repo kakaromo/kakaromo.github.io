@@ -1,158 +1,107 @@
 ---
 title: 인증 및 권한
-description: ADFS SSO 인증, 로컬 로그인, 세션 관리, DB 기반 권한 시스템의 설계와 구현을 설명합니다.
+description: ADFS SSO 인증, 로컬 로그인, 세션 관리, DB 기반 권한 시스템, 접근 요청/승인 플로우, Head row별 접근 제한의 설계와 구현.
 ---
 
-## 전체 구조
+MOVE는 **세션 기반 인증** + **DB 기반 권한 관리**를 사용합니다. Spring Security의 OAuth2 Client는 사용하지 않고 ADFS와 직접 통신하는 **수동 Hybrid Flow**를 구현했습니다.
+
+이 문서는 다섯 개의 축으로 정리되어 있습니다.
+
+1. [인증 (로그인/세션)](#1-인증)
+2. [승인 게이트 — 신규 사용자 disabled + 접근 요청](#2-승인-게이트)
+3. [액션 권한 — URL 패턴 → 권한 키](#3-액션-권한)
+4. [Row별 접근 제한 — Head](#4-row별-접근-제한--head)
+5. [Admin 실시간 알림 (SSE)](#5-admin-실시간-알림)
+
+---
+
+## 전체 흐름
 
 ```
-브라우저 (SvelteKit SPA)
-    │   /api/auth/*, JSESSIONID 쿠키, XSRF-TOKEN
-    │
-Spring Security (CSRF만 활성)
-    │
-AuthController (세션 기반 인증)
-    │
-    ├── ADFS SSO (Hybrid Flow, form_post)
-    │       Samsung ADFS (stsds.secsso.net/adfs)
-    │
-    ├── 로컬 로그인 (username + BCrypt password)
-    │
-    ├── 권한 시스템 (DB 기반, 17개 권한 키)
-    │       ActionPermissionInterceptor (URL 패턴 매칭)
-    │
-    └── 세션 관리 (타임아웃 + 카운트다운 + 자동 로그아웃)
+  브라우저 (SvelteKit SPA)
+      │   JSESSIONID, XSRF-TOKEN 쿠키
+      ▼
+  Spring (CSRF on, permitAll)
+      │
+      ├── [1] ADFS Hybrid Flow / 로컬 로그인 → HttpSession 저장
+      │         신규 사용자 → enabled=false (승인 대기)
+      │
+      ├── [2] /api/auth/me
+      │         ├── enabled=true  → 권한 포함 사용자 정보 반환
+      │         └── enabled=false → {authenticated:true, disabled:true}
+      │
+      ├── [3] ActionPermissionInterceptor (/api/**)
+      │         ├── disabled 사용자     → 403 USER_DISABLED (접근 요청 API만 통과)
+      │         ├── URL 매핑 있음 + 권한 X → 403 + Admin SSE 알림
+      │         └── URL 매핑 없음       → 통과 (기본 허용)
+      │
+      └── [4] HeadSseController
+                UserHeadAccess 매핑 있으면 허용된 Head만 노출
 ```
 
-MOVE는 **세션 기반 인증**을 사용합니다. Spring Security의 OAuth2 모듈은 사용하지 않고, ADFS와 직접 통신하는 **수동 Hybrid Flow**를 구현했습니다.
+핵심 원칙:
+
+- **disabled는 게이트**, 메뉴/액션 권한은 **세부 권한** — 계층이 다름. disabled 사용자는 권한 체크 이전에 차단.
+- 신규 ADFS 사용자는 **기본 disabled** — 관리자가 "활성화"를 명시적으로 승인한 뒤에야 API 접근 가능.
+- 권한 매핑에 없는 URL은 **기본 허용** — 인터셉터는 allow-list가 아닌 deny-by-pattern.
 
 ---
 
-## 왜 수동 구현인가?
+## 1. 인증
 
-| 고려사항 | Spring OAuth2 Client | 수동 ADFS Hybrid Flow |
-|---------|---------------------|----------------------|
-| ADFS 호환성 | claim 매핑 복잡 | form_post로 직접 수신 |
-| JWT 서명 검증 | jwk-set-uri 필요 | 내부망 신뢰 (생략 가능) |
-| 사용자 자동 등록 | 별도 구현 필요 | callback에서 직접 처리 |
-| 유연성 | Spring 설정에 의존 | 완전한 제어 가능 |
+### 실행 모드
 
-내부망 환경에서 ADFS 서버를 신뢰할 수 있으므로, JWT 서명 검증을 생략하고 payload만 파싱하는 간결한 방식을 선택했습니다.
-
----
-
-## 구성 요소
-
-### 백엔드
-
-| 파일 | 역할 |
-|------|------|
-| `AuthController.java` | 로그인/로그아웃, ADFS 콜백, 세션, 비밀번호 |
-| `AdfsCallbackController.java` | ADFS 레거시 콜백 URL 포워딩 |
-| `AdfsProperties.java` | ADFS 설정값 (yaml에서 주입) |
-| `PortalUser.java` | 사용자 엔티티 |
-| `PortalUserService.java` | 사용자 CRUD, 인증, ADFS 연동 |
-| `UserPermission.java` | 사용자별 권한 엔티티 |
-| `UserPermissionService.java` | 권한 CRUD, 17개 키 관리 |
-| `ActionPermission.java` | URL → 권한 매핑 규칙 엔티티 |
-| `ActionPermissionInterceptor.java` | 요청 시 URL 패턴으로 권한 검사 |
-| `UserHeadAccess.java` | 사용자별 Head 탭 접근 제한 |
-| `SessionConfigService.java` | 세션 타임아웃 설정 (인메모리) |
-| `SecurityConfig.java` | CSRF 설정, 모든 요청 permitAll |
-| `TestInstanceAccessInterceptor.java` | 테스트 인스턴스 접근 제어 |
-
-### 프론트엔드
-
-| 파일 | 역할 |
-|------|------|
-| `auth.svelte.ts` | 인증 상태 스토어 (로그인/로그아웃/권한) |
-| `session.svelte.ts` | 세션 타이머 (카운트다운/경고/자동 로그아웃) |
-| `menu.svelte.ts` | 메뉴 가시성 (글로벌 + 권한 기반 필터링) |
-| `+layout.svelte` | 인증 게이트, 라우팅, 헤더 |
-| `+page.svelte` | 로그인 페이지 (ADFS + 로컬) |
-
----
-
-## 인증 모드
-
-`portal.auth.disabled` 설정으로 두 가지 모드를 지원합니다.
-
-### 개발 모드 (`portal.auth.disabled: true`)
+`portal.auth.disabled` 플래그로 세 모드가 분기됩니다.
 
 ```yaml
-# application.yaml
 portal:
   auth:
-    disabled: true  # 기본값
+    disabled: true   # 로컬 개발: 모든 /api 통과, 가상 Developer 사용자
+    # disabled: false + adfs.enabled: false  → 로컬 로그인만
+    # disabled: false + adfs.enabled: true   → 실 ADFS + 인터셉터 전면 가동
 ```
 
-- 모든 API에 인증 없이 접근 가능
-- `/api/auth/me` → 항상 `{authenticated: true, name: "Developer", role: "USER"}` 반환
-- 모든 권한 자동 부여
-- Admin 페이지는 별도 로그인으로 보호
+| 모드 | /api/auth/me | 권한 체크 |
+|------|--------------|----------|
+| `disabled: true` | 항상 `Developer` + 전체 권한 | 인터셉터 전체 통과 |
+| `disabled: false` + adfs off | 세션 없으면 `authenticated:false` | 인터셉터 가동 |
+| `disabled: false` + adfs on | 실 ADFS 플로우 | 인터셉터 가동 |
 
-### 운영 모드 (`portal.auth.disabled: false`)
+로컬 개발·CI·프로덕션이 **같은 코드로 세 모드**를 돈다.
 
-```yaml
-# application-dev.yaml 또는 application-prod.yaml
-portal:
-  auth:
-    disabled: false
-```
-
-- ADFS SSO 또는 로컬 로그인 필수
-- DB 기반 권한 관리 활성화
-- 세션 타임아웃 적용 (기본 120분)
-
----
-
-## ADFS SSO 로그인
-
-### 설정
-
-```yaml
-portal:
-  adfs:
-    enabled: true
-    client-id: YOUR_CLIENT_ID
-    authorize-url: https://stsds.secsso.net/adfsouth2/authorize
-    redirect-url: https://memo.samsungds.net/api/accounts/sso_callback
-    logout-url: https://stsds.secsso.net/adfs/ls/?wa=wsignoutcleanup1.0
-    scope: openid profile
-```
-
-### 로그인 플로우
+### ADFS Hybrid Flow
 
 ```mermaid
 sequenceDiagram
     participant U as 사용자
-    participant P as MOVE (Spring)
+    participant P as MOVE
     participant A as Samsung ADFS
 
-    U->>P: "AD Login (SSO)" 클릭
-    P->>P: nonce 생성 + 세션 저장
+    U->>P: GET /api/auth/adfs/login
+    P->>P: nonce 생성 → 세션에 저장
     P-->>U: 302 → ADFS authorize URL
 
     U->>A: AD 자격증명 입력
-    A-->>P: POST /api/accounts/sso_callback<br/>(form_post: id_token)
+    A-->>P: POST /api/auth/adfs/callback<br/>(form_post: id_token)
 
     P->>P: JWT payload 파싱 (서명 검증 생략)
-    P->>P: claims에서 사용자 정보 추출
-    P->>P: DB에 사용자 생성/업데이트
-    P->>P: 신규 사용자 → 모든 권한 부여
-    P->>P: 세션에 PortalUser 저장
-    P-->>U: HTML + JS: window.location.replace('/')
+    P->>P: claims 추출 (userid, loginid, username, mail)
+    P->>P: createOrUpdateFromAdfs()
+    Note over P: 신규 → enabled=false 로 생성
+    P->>P: session.setAttribute(SESSION_USER)
+    P-->>U: HTML + JS window.location.replace('/')
 
     U->>P: GET /api/auth/me
-    P-->>U: {authenticated:true, name, permissions...}
-    U->>U: Dashboard로 이동
+    alt enabled=true
+        P-->>U: { authenticated:true, permissions:{...} }
+    else enabled=false
+        P-->>U: { authenticated:true, disabled:true }
+    end
 ```
 
-### Claims 매핑
+#### Claims 매핑
 
-ADFS의 JWT payload에서 다음 claims를 추출합니다:
-
-| ADFS Claim | 대체 Claim | DB 컬럼 | 용도 |
+| ADFS claim | 대체 claim | DB 컬럼 | 용도 |
 |-----------|-----------|---------|------|
 | `userid` | `sub` | `adfs_user_id` | **불변 고유 키** (사용자 식별) |
 | `loginid` | `upn` | `username` | 로그인 ID (변경 가능) |
@@ -160,378 +109,424 @@ ADFS의 JWT payload에서 다음 claims를 추출합니다:
 | `mail` | `email` | `email` | 이메일 |
 
 :::note[왜 adfsUserId를 별도로 저장하나?]
-AD에서 사용자의 `loginid`(사번)가 변경될 수 있습니다. `userid`는 AD 내부 고유 ID로 절대 변경되지 않으므로 이를 기준으로 사용자를 식별합니다. `loginid`가 바뀌어도 같은 사용자로 인식합니다.
+AD에서 사용자의 `loginid`(사번)가 변경될 수 있습니다. `userid`는 AD 내부 고유 ID로 절대 변경되지 않으므로 이를 기준으로 사용자를 식별하고, `loginid` 변경을 허용해도 같은 사용자로 인식합니다.
 :::
-
-### JWT 파싱
-
-```java
-// id_token: header.payload.signature
-String[] parts = idToken.split("\\.");
-String payload = parts[1];  // Base64 URL-safe 디코딩
-Map<String, Object> claims = objectMapper.readValue(decoded, Map.class);
-
-String adfsUserId = getStringClaim(claims, "userid");   // 필수
-String loginId = getStringClaim(claims, "loginid");     // username
-String displayName = getStringClaim(claims, "username");
-String email = getStringClaim(claims, "mail");
-```
 
 :::caution[서명 검증 생략]
-내부망에서 ADFS 서버를 신뢰하므로 JWT 서명 검증을 생략합니다. 외부 인터넷에 노출되는 환경에서는 `jwk-set-uri`를 사용한 서명 검증이 필요합니다.
+내부망에서 ADFS 서버를 신뢰하므로 JWT 서명 검증을 생략합니다. 외부망에 노출되는 환경에서는 `jwk-set-uri`를 사용한 서명 검증이 필요합니다.
 :::
 
-### 사용자 자동 등록
+### 로컬 로그인
 
-ADFS 로그인 시 `adfsUserId`로 DB를 조회합니다:
+ADFS가 없는 폐쇄망을 위한 username/password 로그인. 내부적으로는 **ADFS에서 자동 생성된 사용자에게 관리자가 비밀번호를 부여**한 경우를 전제로 합니다(신규 생성 경로 없음).
 
-```java
-public PortalUser createOrUpdateFromAdfs(String adfsUserId, String loginId,
-                                          String displayName, String email) {
-    PortalUser existing = repository.findByAdfsUserId(adfsUserId).orElse(null);
-
-    if (existing != null) {
-        // 기존 사용자: loginId/displayName/email 변경 시 업데이트
-        existing.setUsername(loginId);
-        existing.setDisplayName(displayName);
-        existing.setEmail(email);
-        return repository.save(existing);
-    }
-
-    // 신규 사용자: 자동 생성 (password=null, role="USER")
-    return repository.save(PortalUser.builder()
-            .adfsUserId(adfsUserId)
-            .username(loginId)
-            .displayName(displayName)
-            .email(email)
-            .build());
-}
+```
+POST /api/auth/login  { username, password }  + X-XSRF-TOKEN
+  ↓
+PortalUserService.authenticate()
+  ├── user == null || !user.isEnabled() → null
+  ├── password == null/blank            → null  (비밀번호 미설정 계정)
+  └── BCrypt.matches(password, hash)    → user
+  ↓
+session.setAttribute(SESSION_USER, user)
+  ↓
+{ authenticated:true, name, role, permissions }
 ```
 
-- **신규 사용자**: `permissionService.grantAllPermissions()` → 17개 권한 모두 부여
-- **기존 사용자**: 권한 변경 없음 (관리자가 설정한 권한 유지)
-- **password**: null (ADFS 사용자는 로컬 로그인 불가, 폐쇄망용 비밀번호 별도 설정 가능)
-
----
-
-## 로컬 로그인
-
-ADFS를 사용할 수 없는 환경(폐쇄망 등)을 위한 로컬 로그인입니다.
-
-```mermaid
-sequenceDiagram
-    participant U as 사용자
-    participant P as MOVE (Spring)
-
-    U->>P: POST /api/auth/login<br/>{username, password}<br/>+ X-XSRF-TOKEN 헤더
-    P->>P: username으로 DB 조회
-    P->>P: BCrypt 비밀번호 검증
-    P->>P: enabled 확인
-    P->>P: 세션에 PortalUser 저장
-    P-->>U: {authenticated:true, name, role, permissions}
-    U->>U: Dashboard로 이동
-```
-
----
-
-## 로그아웃
-
-```mermaid
-sequenceDiagram
-    participant U as 사용자
-    participant P as MOVE (Spring)
-    participant A as Samsung ADFS
-
-    U->>P: POST /api/auth/logout<br/>+ X-XSRF-TOKEN
-    P->>P: 세션 무효화 (invalidate)
-    P-->>U: {loggedOut:true, adfsLogoutUrl:"..."}
-
-    alt ADFS 로그아웃 URL이 있으면
-        U->>A: ADFS 로그아웃 URL로 이동
-        A->>A: ADFS 세션 정리
-    else
-        U->>U: 로그인 페이지(/)로 이동
-    end
-```
-
-백엔드 세션을 먼저 무효화한 후 ADFS 로그아웃을 진행하므로, ADFS에서 돌아와도 자동 로그인이 되지 않습니다.
-
----
-
-## 세션 관리
-
-### 설정
+### 세션
 
 ```yaml
 portal:
   session:
-    timeout-minutes: 120      # 세션 타임아웃 (기본 120분)
-    warn-before-minutes: 5    # 만료 전 경고 (기본 5분)
+    timeout-minutes: 120      # 기본 120분
+    warn-before-minutes: 5    # 만료 5분 전부터 경고
 ```
 
-### 동작 방식
+- `HttpSession.setMaxInactiveInterval()`로 Servlet 표준 타임아웃 사용.
+- 프론트는 `GET /api/auth/session-info`로 `expiresAt`을 받아 1초마다 카운트다운.
+- 5분 이하 남으면 경고 배너 + 연장 버튼 → `POST /api/auth/session-extend`.
+- 0 도달 시 자동 로그아웃.
+
+:::note[Admin 변경의 휘발성]
+`SessionConfigService`는 **인메모리** 저장. Admin UI에서 바꾼 값은 서버 재시작 시 `application.yaml` 기본값으로 복원됩니다.
+:::
+
+### 로그아웃
 
 ```
-로그인 성공
-    ↓
-session.setMaxInactiveInterval(120 * 60)  // 7200초
-    ↓
-프론트엔드: GET /api/auth/session-info → expiresAt 수신
-    ↓
-1초마다 tick(): 남은 시간 계산
-    ↓
-┌─ 남은 시간 > 5분 → 헤더에 "MM:SS" 표시
-├─ 남은 시간 ≤ 5분 → 경고 배너 + 연장 버튼
-├─ 연장 클릭 → POST /api/auth/session-extend → 타이머 리셋
-└─ 남은 시간 = 0 → 자동 로그아웃
+POST /api/auth/logout  + X-XSRF-TOKEN
+  ↓
+session.invalidate()
+  ↓
+{ loggedOut:true, adfsLogoutUrl: "..." }    ← 설정되어 있으면
+  ↓
+프론트 → adfsLogoutUrl 로 이동 (ADFS 세션까지 정리)
 ```
 
-### 헤더 카운트다운
-
-로그인된 상태에서 헤더 우측에 세션 남은 시간이 표시됩니다:
-- 정상: `user01 | 119:42`
-- 5분 이하: amber 색상 경고 + 연장 버튼
-
-### Admin에서 설정 변경
-
-Admin → Session Config에서 타임아웃/경고 시간을 변경할 수 있습니다. 인메모리 설정으로, 서버 재시작 시 yaml 기본값으로 복원됩니다.
+백엔드 세션을 먼저 끊은 뒤 ADFS 로그아웃을 진행하므로 ADFS에서 돌아와도 자동 로그인이 되지 않습니다.
 
 ---
 
-## 권한 시스템
+## 2. 승인 게이트
 
-### 개요
+**신규 ADFS 사용자는 자동으로 `enabled=false`** 로 생성됩니다. 관리자가 승인할 때까지 모든 `/api/**` 호출이 차단됩니다.
 
-MOVE는 **DB 기반 권한 시스템**을 사용합니다. 코드 변경 없이 Admin UI에서 사용자별 권한을 관리할 수 있습니다.
+### 신규 사용자 생성 (PortalUserService.createOrUpdateFromAdfs)
 
-### 권한 키 목록 (17개)
+```java
+// 기존 사용자: loginId/displayName/email만 업데이트 (enabled 건드리지 않음)
+if (existing != null) {
+    // ...
+    return repository.save(existing);
+}
 
-#### 메뉴 권한 (8개)
+// 신규 사용자: 무조건 disabled
+return repository.save(PortalUser.builder()
+        .username(loginId)
+        .adfsUserId(adfsUserId)
+        .password(null)
+        .displayName(displayName)
+        .email(email)
+        .role("USER")
+        .enabled(false)      // ← 핵심
+        .build());
+```
 
-네비게이션 메뉴의 표시/숨김을 제어합니다.
+이전에는 신규 사용자에게 **모든 권한 자동 부여**했지만, 이 로직은 제거되었습니다(관리자 승인 플로우와 충돌). 관리자가 승인할 때만 권한이 부여됩니다.
 
-| 권한 키 | 메뉴 | 설명 |
-|--------|------|------|
-| `menu:dashboard` | Dashboard | 대시보드 |
-| `menu:compatibility` | Compatibility | 호환성 테스트 |
-| `menu:performance` | Performance | 성능 테스트 |
-| `menu:slots` | Slots | 슬롯 모니터링 |
-| `menu:remote` | Remote | 원격 접속 |
-| `menu:binMapper` | Bin Mapper | 바이너리 매퍼 |
-| `menu:storage` | Storage | 스토리지 관리 |
-| `menu:agent` | Agent | 디바이스 에이전트 |
+### /api/auth/me 응답 분기
 
-#### 액션 권한 (9개)
+| 세션 사용자 상태 | 응답 |
+|------------------|------|
+| 없음 | `{ authenticated: false }` |
+| DB에 없음 (삭제됨) | `{ authenticated: false }` + 세션 제거 |
+| `enabled=false` | `{ authenticated: true, disabled: true, permissions: {} }` |
+| `enabled=true` | `{ authenticated: true, name, role, permissions, ... }` |
 
-특정 기능의 실행 권한을 제어합니다.
+:::caution[disabled 사용자도 세션은 유지]
+과거에는 disabled 사용자의 세션을 제거해 `authenticated:false` 로 응답했으나, 이 경우 프론트가 로그인 페이지로 튕겨 **"접근 권한 없음" 화면이 보이지 않는** 버그가 있었습니다. 지금은 세션을 유지하고 `disabled:true` 플래그로 프론트에 전달해, 접근 요청 화면을 띄웁니다.
+:::
 
-| 권한 키 | 기능 | 설명 |
-|--------|------|------|
-| `action:performance:excel_export` | Excel 내보내기 | 성능 결과 엑셀 다운로드 |
-| `action:performance:compare` | 비교 | 성능 결과 비교 |
-| `action:remote:connect` | 원격 접속 | RDP/SSH 연결 |
-| `action:slots:initslot` | Slot 초기화 | 슬롯 initslot 명령 |
-| `action:slots:pre_command` | Pre-Command | 사전 명령어 설정 |
-| `action:agent:benchmark` | 벤치마크 | 벤치마크 실행 |
-| `action:agent:scenario` | 시나리오 | 시나리오 실행 |
-| `action:agent:trace` | Trace | I/O trace 수집 |
-| `action:storage:run` | Storage 실행 | Storage 작업 실행 |
+### ActionPermissionInterceptor의 전면 차단
 
-### ADMIN 역할의 특수 처리
+```java
+// disabled 사용자는 권한 룰 매칭 이전에 전면 차단
+HttpSession session = request.getSession(false);
+PortalUser sessionUser = (session != null)
+        ? (PortalUser) session.getAttribute("portalUser") : null;
+if (sessionUser != null && !sessionUser.isEnabled()) {
+    response.setStatus(403);
+    response.getWriter().write(
+        "{\"code\":\"USER_DISABLED\",\"error\":\"관리자 승인이 필요합니다\"}");
+    return false;
+}
+```
 
-ADMIN 역할은 **모든 권한이 자동으로 부여**됩니다. DB 조회 없이 코드에서 처리합니다:
+**중요**: interceptor는 `/api/auth/**` 를 `excludePathPatterns` 로 제외하므로, disabled 사용자도 `/api/auth/me`, `/api/auth/logout`, `/api/auth/my-access-request`, `/api/auth/request-access`는 호출 가능. 이게 접근 요청 화면이 동작하는 근거.
+
+### 프론트 라우팅
+
+```ts
+// +layout.svelte
+$effect(() => {
+    if (!auth.loading && auth.authenticated && auth.disabled) {
+        noPermission = true;
+        loadAccessRequestStatus();
+    }
+});
+```
+
+disabled인 경우 **경로와 무관하게** "접근 권한이 없습니다" 화면 + 접근 요청 UI로 고정.
+
+### 접근 요청 플로우
+
+```mermaid
+sequenceDiagram
+    participant U as 사용자 (disabled)
+    participant P as MOVE
+    participant A as Admin
+
+    U->>P: GET /api/auth/my-access-request
+    P-->>U: { status: "NONE" }
+
+    U->>U: "접근 요청" 버튼 + 사유 입력
+    U->>P: POST /api/auth/request-access { reason }
+    P->>P: PermissionRequest(status=PENDING) 저장
+    P-->>A: SSE event "permission-request"<br/>(Admin 페이지에서 실시간 수신)
+    P-->>U: { success: true }
+
+    A->>P: GET /api/admin/permission-requests
+    A->>P: PUT /api/admin/permission-requests/{id}/approve<br/>(또는 /reject { reviewComment })
+    alt 승인
+        P->>P: PortalUser.enabled = true
+        P->>P: 필요시 권한 부여
+    else 거부
+        P->>P: PermissionRequest.status = REJECTED
+    end
+    P-->>U: 다음 /me 호출 시 disabled=false (또는 REJECTED 상태 표시)
+```
+
+### 접근 요청 상태 (GET /api/auth/my-access-request)
+
+| 상태 | 응답 | 프론트 표시 |
+|------|------|-------------|
+| PENDING 요청 있음 | `{ status:"PENDING", reason, createdAt }` | "승인 대기 중" 화면 |
+| REJECTED 요청이 최근에 있음 | `{ status:"REJECTED", reviewComment, reviewedAt }` | "거부됨" + 재요청 버튼 |
+| 없음 | `{ status:"NONE" }` | "접근 요청" 버튼 |
+
+중복 PENDING 요청은 백엔드에서 막음 (`"이미 접근 요청이 대기 중입니다"`).
+
+---
+
+## 3. 액션 권한
+
+**메뉴 가시성**과 **액션 실행 권한**을 하나의 키 체계(`menu:*`, `action:*`)로 관리합니다.
+
+### 권한 키 카탈로그
+
+| 카테고리 | 대표 키 | 설명 |
+|---------|---------|------|
+| 메뉴 | `menu:dashboard`, `menu:compatibility`, `menu:performance`, `menu:slots`, `menu:remote`, `menu:binMapper`, `menu:storage`, `menu:agent` | 네비게이션 표시/숨김 |
+| 액션 | `action:performance:excel_export`, `action:performance:compare`, `action:remote:connect`, `action:slots:initslot`, `action:slots:pre_command`, `action:agent:benchmark`, `action:agent:scenario`, `action:agent:trace`, `action:storage:run` | 기능 실행 |
+| 글로벌 | `action:global:test-mode` | 테스트 인스턴스 접근 |
+
+전체 키는 `GET /api/admin/permissions/defaults` 로 조회 가능.
+
+### ADMIN의 특수 처리
+
+ADMIN 역할은 DB 조회 없이 **코드에서 무조건 통과**:
 
 ```java
 // AuthController.me()
-if ("ADMIN".equals(user.getRole())) {
-    return permissionService.getAllGranted();  // 모든 권한 true
-}
+if ("ADMIN".equals(user.getRole())) return permissionService.getAllGranted();
 
 // ActionPermissionInterceptor.preHandle()
-if ("ADMIN".equals(user.getRole())) return true;  // 무조건 통과
+if ("ADMIN".equals(user.getRole())) return true;
 ```
 
-### 권한 확인 흐름
+### ActionPermission: URL → 권한 키 매핑
 
-```
-HTTP 요청 (예: POST /api/agent/benchmark)
-    ↓
-TestInstanceAccessInterceptor
-    ├── testInstance=false → 통과
-    └── testInstance=true → "action:global:test-mode" 권한 확인
-    ↓
-ActionPermissionInterceptor
-    ├── auth.disabled=true → 통과
-    ├── DB에서 URL 패턴 매칭 규칙 검색
-    │     AntPathMatcher: /api/agent/** + POST
-    ├── 매칭 규칙 없음 → 통과 (기본 허용)
-    ├── 매칭 규칙 있음:
-    │     ├── 미로그인 → 403 "로그인이 필요합니다"
-    │     ├── ADMIN → 통과
-    │     ├── 권한 있음 → 통과
-    │     └── 권한 없음 → 403 "권한이 없습니다"
-    ↓
-Controller 메서드 실행
-```
-
----
-
-## 액션 권한 인터셉터
-
-컨트롤러 코드를 수정하지 않고 DB에서 URL 패턴 → 권한 매핑을 관리합니다.
-
-### DB 테이블
+컨트롤러 코드를 바꾸지 않고 **DB 테이블**로 URL별 필요 권한을 선언합니다.
 
 ```sql
--- portal_action_permissions
 CREATE TABLE portal_action_permissions (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    url_pattern VARCHAR(200) NOT NULL,      -- Ant 패턴 (/api/agent/**)
-    http_method VARCHAR(10) NOT NULL,       -- GET, POST, PUT, DELETE, *
-    permission_key VARCHAR(100) NOT NULL,   -- 필요 권한 키
+    url_pattern VARCHAR(200) NOT NULL,      -- Ant 패턴
+    http_method VARCHAR(10) NOT NULL,       -- GET/POST/PUT/DELETE/*
+    permission_key VARCHAR(100) NOT NULL,
     description VARCHAR(200),
     enabled BOOLEAN DEFAULT true
 );
 ```
 
-### URL 패턴 예시
+예시:
 
-| url_pattern | http_method | permission_key | 설명 |
-|------------|------------|----------------|------|
-| `/api/agent/benchmark` | `POST` | `action:agent:benchmark` | 벤치마크 실행 |
-| `/api/agent/scenario` | `POST` | `action:agent:scenario` | 시나리오 실행 |
-| `/api/performance-results/*/excel` | `GET` | `action:performance:excel_export` | Excel 다운로드 |
+| url_pattern | method | permission_key |
+|-------------|--------|----------------|
+| `/api/agent/benchmark` | POST | `action:agent:benchmark` |
+| `/api/agent/scenario` | POST | `action:agent:scenario` |
+| `/api/performance-results/*/excel` | GET | `action:performance:excel_export` |
+| `/api/remote/connect/**` | POST | `action:remote:connect` |
 
-### 규칙 로드
+### 체크 흐름
+
+```
+HTTP 요청
+  ↓
+TestInstanceAccessInterceptor (test-instance=true 일 때만)
+  └── action:global:test-mode 체크
+  ↓
+ActionPermissionInterceptor
+  ├── portal.auth.disabled=true      → 통과
+  ├── 세션 사용자 disabled          → 403 USER_DISABLED
+  ├── URL 패턴에 매칭되는 룰 없음   → 통과 (기본 허용)
+  ├── 미로그인 (세션 없음)           → 403 "로그인이 필요합니다"
+  ├── ADMIN                         → 통과
+  ├── 권한 있음                     → 통과
+  └── 권한 없음                     → 403 + notifyPermissionDenied() SSE
+```
+
+**기본 허용** 설계: 모든 URL을 테이블에 등록할 필요 없이, **제한이 필요한 것만** 등록. 점진적 권한 강화 가능.
+
+### 룰 로드
 
 ```java
 @PostConstruct
 public void loadRules() {
     rules.clear();
     rules.addAll(actionPermissionRepository.findByEnabledTrue());
-    // CopyOnWriteArrayList로 thread-safe
 }
 
-// Admin에서 규칙 변경 시
-public void reloadRules() {
-    loadRules();  // DB에서 다시 로드
+// Admin UI에서 룰 변경 시
+public void reloadRules() { loadRules(); }
+```
+
+`rules`는 `CopyOnWriteArrayList` — thread-safe 런타임 교체.
+
+### 프론트 권한 활용
+
+```ts
+// auth store
+auth.hasPermission('menu:slots')            // boolean
+auth.hasMenu('slots')                       // hasPermission('menu:slots')
+auth.hasAction('agent', 'benchmark')        // hasPermission('action:agent:benchmark')
+
+// ADMIN은 항상 true
+if (auth.role === 'ADMIN') return true;
+```
+
+메뉴 필터링 (`menuStore.isVisible`):
+
+```ts
+if (auth.isAdmin) return true;              // ADMIN 우선
+if (!items[menuId].visible) return false;   // 글로벌 숨김
+return auth.hasMenu(menuId);                // 사용자 권한
+```
+
+### 비밀번호 재설정 (needsPassword)
+
+ADFS 신규 사용자는 `password=null` 이라 로컬 로그인 불가. 폐쇄망용이 필요하면 `/me` 응답의 `needsPassword:true` 를 보고 프론트가 `PasswordChangeDialog` 배너를 띄우고 `PUT /api/auth/password` 호출.
+
+---
+
+## 4. Row별 접근 제한 — Head
+
+Head TCP 연결(`HeadConnection`)은 **사용자별로 개별 row 허용/차단**이 가능합니다. 권한 키(`menu:*`, `action:*`)와는 별개의 **화이트리스트** 축.
+
+### 테이블
+
+```sql
+CREATE TABLE portal_user_head_access (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    head_connection_id BIGINT NOT NULL,
+    UNIQUE (user_id, head_connection_id)
+);
+```
+
+### 판정 규칙
+
+| 매핑 상태 | 결과 |
+|----------|------|
+| 레코드 **없음** | **전체 허용** (기본) |
+| 레코드 **있음** | 등록된 Head만 노출 |
+| `ADMIN` | 항상 전체 허용 (매핑 무시) |
+
+```java
+// HeadSseController — /api/head/connections
+if (!admin) {
+    List<UserHeadAccess> accessList =
+        userHeadAccessRepository.findByUserId(user.getId());
+    if (accessList.isEmpty()) return;   // 매핑 없으면 전체 허용
+    Set<String> allowedNames = toHeadNames(accessList);
+    statuses.removeIf(s -> !allowedNames.contains(s.get("name")));
 }
 ```
 
----
+### Admin UI
 
-## Head 탭 접근 제한
+사용자 편집 다이얼로그에서:
 
-사용자별로 접근 가능한 Head(장비 연결)를 제한할 수 있습니다.
+- "전체 허용" 체크박스 — 체크 시 개별 Head 체크박스 비활성화 (표현: "제한 없음")
+- 해제하면 **각 Head 개별 체크박스** 활성화 — row별 선택
 
-### 동작 규칙
+저장 시 선택된 head_connection_id 배열이 `PUT /api/admin/users/{id}/head-access` 로 전송. **빈 배열 = 전체 허용**.
 
-| 상태 | 동작 |
-|------|------|
-| 매핑 없음 | 모든 Head 접근 가능 (기본) |
-| 매핑 있음 | 등록된 Head만 표시 |
-| ADMIN | 항상 모든 Head 접근 가능 |
-
-### API
-
-```
-GET  /api/admin/users/{id}/head-access     → [1, 3, 5] (허용된 Head ID 목록)
-PUT  /api/admin/users/{id}/head-access     ← [1, 3, 5] (업데이트)
+```ts
+// admin/+page.svelte
+let headAccessIds = $state<number[]>([]);
+let headAccessAll = $derived(headAccessIds.length === 0);
 ```
 
----
+### 접근 거부 알림
 
-## 비밀번호 설정
-
-### 첫 비밀번호 설정 (needsPassword)
-
-ADFS로 자동 생성된 사용자는 `password`가 null입니다. 폐쇄망에서 로컬 로그인이 필요한 경우 비밀번호를 설정해야 합니다.
-
-```
-fetchMe() 응답: {needsPassword: true}
-    ↓
-프론트엔드: PasswordChangeDialog 표시 (배너)
-    ↓
-사용자: 새 비밀번호 입력 (4자 이상)
-    ↓
-PUT /api/auth/password
-    {currentPassword: null, newPassword: "****"}
-    ↓
-BCrypt 암호화 후 DB 저장
-    ↓
-needsPassword: false → 배너 숨김
-```
-
-### 비밀번호 변경
-
-기존 비밀번호가 있는 경우 `currentPassword` 검증 후 변경합니다.
+disabled 권한 거부와 별개로, `/api/head/connections` 외의 직접 TCP/SSE 경로에서 접근 차단이 발생하면 Admin에게 `head-access-denied` SSE 이벤트가 전송됩니다(§5 참조).
 
 ---
 
-## 테스트 인스턴스
+## 5. Admin 실시간 알림
 
-테스트 DB를 사용하는 별도 인스턴스의 접근을 제한합니다.
+관리자 페이지는 `/api/admin/notifications/stream` SSE에 구독하여 인증/권한 이벤트를 실시간 수신합니다.
 
-### 설정
+### 이벤트 종류
 
-```yaml
-portal:
-  test-instance: true     # 테스트 인스턴스 활성화
-  auth:
-    disabled: false        # 인증 활성화 (필수)
+| 이벤트 | 발생 시점 | 페이로드 |
+|-------|----------|----------|
+| `init` | 연결 직후 | `{ pendingCount }` |
+| `permission-request` | 사용자가 접근 요청 제출 | `{ pendingCount, username, displayName, reason }` |
+| `permission-request-resolved` | Admin이 요청 승인/거부 | `{ pendingCount }` |
+| `permission-denied` | 권한 없는 URL 호출 시 | `{ username, displayName, permissionKey, uri, method }` |
+| `head-access-denied` | Head 접근 차단 시 | `{ username, displayName, headName }` |
+
+### 프론트 수신
+
+```ts
+// +layout.svelte (ADMIN만)
+const es = new EventSource('/api/admin/notifications/stream');
+es.addEventListener('permission-request', (e) => {
+    const data = JSON.parse(e.data);
+    pendingRequestCount = data.pendingCount;
+    toast.info(`접근 요청: ${data.displayName ?? data.username}`, {
+        description: data.reason ?? '사유 없음',
+        action: { label: '확인', onClick: () => goto('/admin?tab=permission-requests') }
+    });
+});
+
+es.onerror = () => {
+    es.close();
+    setTimeout(connectAdminNotifications, 5000);   // 자동 재연결
+};
 ```
 
-### 동작
-
-- `test-instance: true` + `auth.disabled: false`일 때만 동작
-- `action:global:test-mode` 권한이 있는 사용자만 접근 가능
-- ADMIN은 항상 접근 가능
-- UI에 주황색 "TEST MODE" 배너 표시
+네비게이션 헤더의 Admin 메뉴에 **PENDING 건수 배지**가 실시간 갱신됩니다.
 
 ---
 
-## CSRF 보호
+## CSRF
 
-SPA에서는 쿠키 기반 CSRF 보호 방식을 사용합니다.
-
-### 동작 방식
+쿠키 기반 CSRF:
 
 ```
-1. Spring → 브라우저: XSRF-TOKEN 쿠키 설정 (httpOnly: false)
-2. SPA: document.cookie에서 XSRF-TOKEN 값 읽기
-3. POST/PUT/DELETE 요청 시: X-XSRF-TOKEN 헤더에 토큰 포함
-4. Spring: 쿠키 값과 헤더 값 비교 → 일치하면 허용
+Spring → 브라우저: XSRF-TOKEN 쿠키 (httpOnly: false)
+SPA: document.cookie에서 값 읽기
+POST/PUT/DELETE: X-XSRF-TOKEN 헤더에 토큰 포함
+Spring: 쿠키 값 ↔ 헤더 값 일치 시 허용
 ```
 
-### CSRF 예외
-
-ADFS 콜백은 외부(ADFS 서버)에서 POST 요청이 오므로 CSRF 검사를 제외합니다:
+예외 경로(외부에서 POST가 들어오므로 검사 제외):
 
 ```java
 csrf.ignoringRequestMatchers(
     "/api/auth/adfs/callback",
     "/api/accounts/sso_callback"
-)
+);
 ```
 
-### 프론트엔드 적용
+프론트 유틸:
 
-```typescript
+```ts
 function getCsrfToken(): string {
     const match = document.cookie.match(/XSRF-TOKEN=([^;]+)/);
     return match ? decodeURIComponent(match[1]) : '';
 }
-
-// 모든 상태 변경 요청에 헤더 추가
-fetch('/api/auth/login', {
-    method: 'POST',
-    headers: {
-        'Content-Type': 'application/json',
-        'X-XSRF-TOKEN': getCsrfToken()
-    },
-    body: JSON.stringify({ username, password })
-});
 ```
+
+---
+
+## 테스트 인스턴스
+
+테스트 DB 인스턴스 접근을 추가로 제한하는 2차 게이트.
+
+```yaml
+portal:
+  test-instance: true
+  auth:
+    disabled: false
+```
+
+- `test-instance: true` + `auth.disabled: false` 조합에서만 동작.
+- `action:global:test-mode` 권한 보유자만 접근. ADMIN은 항상 통과.
+- UI에 주황색 "TEST MODE" 배너 표시.
 
 ---
 
@@ -544,82 +539,75 @@ fetch('/api/auth/login', {
 | `id` | BIGINT PK | |
 | `username` | VARCHAR(100) UNIQUE | 로그인 ID |
 | `adfs_user_id` | VARCHAR(100) UNIQUE | ADFS 고유 ID (불변) |
-| `password` | VARCHAR(255) NULL | BCrypt (null이면 로컬 로그인 불가) |
+| `password` | VARCHAR(255) NULL | BCrypt, null이면 로컬 로그인 불가 |
 | `display_name` | VARCHAR(100) | 화면 표시명 |
 | `email` | VARCHAR(200) | |
-| `role` | VARCHAR(20) | `USER` 또는 `ADMIN` |
-| `enabled` | BOOLEAN | 활성화 여부 |
-| `created_at` | TIMESTAMP | |
-| `updated_at` | TIMESTAMP | |
+| `role` | VARCHAR(20) | `USER` or `ADMIN` |
+| `enabled` | BOOLEAN | **신규 ADFS 사용자는 false로 생성** |
+| `created_at`, `updated_at` | TIMESTAMP | |
 
 ### portal_user_permissions
 
-| 컬럼 | 타입 | 설명 |
-|------|------|------|
-| `id` | BIGINT PK | |
-| `user_id` | BIGINT | → portal_users.id |
-| `permission_key` | VARCHAR(100) | 권한 키 |
-| `granted` | BOOLEAN | 허용 여부 |
-| `created_at` | TIMESTAMP | |
-| `updated_at` | TIMESTAMP | |
-| | **UNIQUE** | (user_id, permission_key) |
+(user_id, permission_key) UNIQUE. `granted` boolean.
 
 ### portal_action_permissions
 
-| 컬럼 | 타입 | 설명 |
-|------|------|------|
-| `id` | BIGINT PK | |
-| `url_pattern` | VARCHAR(200) | Ant 패턴 |
-| `http_method` | VARCHAR(10) | GET/POST/PUT/DELETE/* |
-| `permission_key` | VARCHAR(100) | 필요 권한 키 |
-| `description` | VARCHAR(200) | |
-| `enabled` | BOOLEAN | |
+url_pattern + http_method + permission_key.
 
 ### portal_user_head_access
 
-| 컬럼 | 타입 | 설명 |
-|------|------|------|
-| `id` | BIGINT PK | |
-| `user_id` | BIGINT | → portal_users.id |
-| `head_connection_id` | BIGINT | → HeadConnection.id |
-| | **UNIQUE** | (user_id, head_connection_id) |
+(user_id, head_connection_id) UNIQUE. row 존재가 곧 허용.
+
+### portal_permission_requests
+
+| 컬럼 | 설명 |
+|------|------|
+| `id` | |
+| `user_id` | 요청자 |
+| `reason` | 사유 (nullable) |
+| `status` | `PENDING` / `APPROVED` / `REJECTED` |
+| `review_comment` | 관리자 코멘트 |
+| `reviewed_at`, `reviewed_by` | 처리 메타 |
+| `created_at` | |
 
 ---
 
 ## API 레퍼런스
 
-### 인증
+### 사용자 자신
 
 | 메서드 | 경로 | 설명 |
 |--------|------|------|
-| `GET` | `/api/auth/me` | 현재 사용자 정보 + 권한 |
+| `GET` | `/api/auth/me` | 현재 사용자 + 권한 + `disabled` 플래그 |
 | `POST` | `/api/auth/login` | 로컬 로그인 |
-| `POST` | `/api/auth/logout` | 로그아웃 |
+| `POST` | `/api/auth/logout` | 로그아웃 (+ ADFS 로그아웃 URL 반환) |
 | `GET` | `/api/auth/adfs/login` | ADFS SSO 시작 |
 | `POST` | `/api/auth/adfs/callback` | ADFS 콜백 (form_post) |
 | `PUT` | `/api/auth/password` | 비밀번호 변경 |
-| `GET` | `/api/auth/session-info` | 세션 정보 (만료 시간) |
+| `GET` | `/api/auth/session-info` | 세션 만료 시각 |
 | `POST` | `/api/auth/session-extend` | 세션 연장 |
-| `GET` | `/api/auth/login-url` | ADFS 로그인 URL 조회 |
+| `GET` | `/api/auth/login-url` | ADFS 로그인 URL |
+| `GET` | `/api/auth/my-access-request` | 내 접근 요청 상태 (PENDING/REJECTED/NONE) |
+| `POST` | `/api/auth/request-access` | 접근 요청 제출 |
 
-### 권한 관리 (Admin)
+### Admin
 
 | 메서드 | 경로 | 설명 |
 |--------|------|------|
-| `GET` | `/api/admin/users` | 사용자 목록 |
-| `POST` | `/api/admin/users` | 사용자 생성 |
-| `PUT` | `/api/admin/users/{id}` | 사용자 수정 |
-| `DELETE` | `/api/admin/users/{id}` | 사용자 삭제 |
+| `GET/POST/PUT/DELETE` | `/api/admin/users/**` | 사용자 CRUD |
 | `PUT` | `/api/admin/users/{id}/password` | 비밀번호 설정 |
-| `GET` | `/api/admin/users/{id}/permissions` | 사용자 권한 조회 |
-| `PUT` | `/api/admin/users/{id}/permissions` | 사용자 권한 업데이트 |
-| `GET` | `/api/admin/users/{id}/head-access` | Head 접근 권한 조회 |
-| `PUT` | `/api/admin/users/{id}/head-access` | Head 접근 권한 업데이트 |
-| `GET` | `/api/admin/permissions/defaults` | 전체 권한 키 목록 |
-| `GET` | `/api/admin/session-config` | 세션 설정 조회 |
-| `PUT` | `/api/admin/session-config` | 세션 설정 변경 |
+| `GET/PUT` | `/api/admin/users/{id}/permissions` | 사용자 권한 |
+| `GET/PUT` | `/api/admin/users/{id}/head-access` | Head row별 접근 허용 |
+| `GET` | `/api/admin/permissions/defaults` | 전체 권한 키 카탈로그 |
+| `GET` | `/api/admin/permission-requests` | PENDING 접근 요청 목록 |
+| `PUT` | `/api/admin/permission-requests/{id}/approve` | 승인 (enabled=true) |
+| `PUT` | `/api/admin/permission-requests/{id}/reject` | 거부 (review_comment) |
+| `GET` | `/api/admin/notifications/stream` | Admin SSE (§5) |
+| `GET/PUT` | `/api/admin/session-config` | 세션 타임아웃 설정 (인메모리) |
 
-### /api/auth/me 응답 예시
+### /api/auth/me 응답 예
+
+**활성 사용자**
 
 ```json
 {
@@ -632,78 +620,97 @@ fetch('/api/auth/login', {
   "testInstance": false,
   "permissions": {
     "menu:dashboard": true,
-    "menu:compatibility": true,
     "menu:performance": true,
-    "menu:slots": false,
-    "menu:remote": true,
-    "menu:binMapper": false,
-    "menu:storage": true,
-    "menu:agent": true,
-    "action:performance:excel_export": true,
-    "action:performance:compare": true,
-    "action:remote:connect": true,
-    "action:slots:initslot": false,
-    "action:slots:pre_command": false,
-    "action:agent:benchmark": true,
-    "action:agent:scenario": true,
-    "action:agent:trace": true,
-    "action:storage:run": true
+    "action:agent:benchmark": true
   }
 }
 ```
 
----
+**Disabled 사용자 (신규 ADFS 사용자 기본 상태)**
 
-## 프론트엔드 인증 상태
-
-### auth store
-
-```typescript
-export const auth = {
-    // 상태
-    authenticated: boolean,    // 로그인 여부
-    name: string,              // 표시명
-    role: string,              // "USER" | "ADMIN"
-    username: string,          // 로그인 ID
-    loading: boolean,          // 초기 확인 중
-    needsPassword: boolean,    // 비밀번호 설정 필요
-    permissions: Record<string, boolean>,
-    isTestInstance: boolean,
-
-    // 권한 확인
-    hasPermission(key): boolean,  // ADMIN이면 항상 true
-    hasMenu(menuId): boolean,     // hasPermission('menu:' + menuId)
-    hasAction(menu, action): boolean,  // hasPermission('action:menu:action')
-
-    // 액션
-    fetchMe(),           // GET /api/auth/me
-    login(user, pass),   // POST /api/auth/login
-    logout(),            // POST /api/auth/logout + ADFS 로그아웃
-    redirectToLogin(),   // → /api/auth/adfs/login
-};
-```
-
-### 라우팅 로직 (+layout.svelte)
-
-```
-onMount → auth.fetchMe()
-    ↓
-├── loading 중: 빈 화면
-├── authenticated=false + pathname='/': 로그인 페이지
-├── authenticated=false + pathname!='/': → '/'로 redirect
-├── authenticated=true + pathname='/': → 첫 번째 visible 메뉴로 redirect
-└── authenticated=true: 메인 레이아웃
-    ├── visibleMenuItems = 권한 기반 필터링
-    ├── 현재 경로가 비활성 메뉴 → 첫 visible 메뉴로 redirect
-    └── visible 메뉴 없음 → "권한이 없습니다" 안내
-```
-
-### 메뉴 가시성 결정
-
-```typescript
-menuStore.isVisible(menuId) {
-    if (auth.isAdmin) return true;              // ADMIN 항상 표시
-    if (!items[menuId].visible) return false;    // 글로벌 숨김
-    return auth.hasMenu(menuId);                 // 사용자 권한
+```json
+{
+  "authenticated": true,
+  "disabled": true,
+  "name": "홍길동",
+  "email": "hong@samsung.com",
+  "role": "USER",
+  "username": "honggd",
+  "needsPassword": false,
+  "testInstance": false,
+  "permissions": {}
 }
 ```
+
+**미로그인**
+
+```json
+{ "authenticated": false, "testInstance": false }
+```
+
+---
+
+## 코드 매핑 요약
+
+### 백엔드
+
+| 역할 | 파일 |
+|------|------|
+| 인증 엔드포인트 | `com.samsung.move.auth.controller.AuthController` |
+| ADFS 레거시 URL | `AdfsCallbackController` |
+| ADFS 설정 | `AdfsProperties` (application.yaml `portal.adfs`) |
+| 사용자 엔티티/서비스 | `PortalUser`, `PortalUserService` |
+| 권한 엔티티/서비스 | `UserPermission`, `UserPermissionService` |
+| 액션 룰 | `ActionPermission`, `ActionPermissionInterceptor` |
+| Head row 접근 | `UserHeadAccess`, `UserHeadAccessRepository`, `HeadSseController` |
+| 접근 요청 | `PermissionRequest`, `PermissionRequestRepository` |
+| Admin SSE | `AdminNotificationService` |
+| 세션 | `SessionConfigService` |
+| 보안 설정 | `SecurityConfig` |
+| 테스트 인스턴스 | `TestInstanceAccessInterceptor` |
+
+### 프론트엔드
+
+| 역할 | 파일 |
+|------|------|
+| 인증 스토어 | `$lib/stores/auth.svelte.ts` |
+| 세션 타이머 | `$lib/stores/session.svelte.ts` |
+| 메뉴 가시성 | `$lib/stores/menu.svelte.ts` |
+| 레이아웃/게이트 | `src/routes/+layout.svelte` |
+| 로그인 페이지 | `src/routes/+page.svelte` |
+| Admin | `src/routes/admin/+page.svelte` |
+
+---
+
+## 부록: 상태 전이 다이어그램
+
+```
+┌─────────────┐   ADFS 첫 로그인   ┌────────────────┐
+│  (존재 X)   │ ──────────────────▶│ enabled=false  │
+└─────────────┘                    │ (승인 대기)     │
+                                   └───────┬────────┘
+                                           │
+                                           │ POST /request-access
+                                           ▼
+                                   ┌────────────────┐
+                                   │ PENDING 요청    │
+                                   └───────┬────────┘
+                                           │
+                     Admin approve         │         Admin reject
+                   ┌───────────────────────┴───────────────────────┐
+                   ▼                                               ▼
+          ┌────────────────┐                              ┌────────────────┐
+          │ enabled=true   │                              │ REJECTED       │
+          │ (권한 개별 부여)│                              │ (재요청 가능)   │
+          └────────────────┘                              └────────────────┘
+```
+
+**disabled 사용자의 허용 API 화이트리스트**:
+
+- `/api/auth/me`
+- `/api/auth/logout`
+- `/api/auth/my-access-request`
+- `/api/auth/request-access`
+- `/api/auth/session-info` (프론트 카운트다운용)
+
+이외의 모든 `/api/**` 는 403 `USER_DISABLED` 로 차단됩니다.
