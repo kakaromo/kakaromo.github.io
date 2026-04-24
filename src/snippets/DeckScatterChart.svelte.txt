@@ -1,0 +1,98 @@
+<!-- routes/trace/deckgl/DeckScatterChart.svelte — 단일 차트(canvas + Deck + SVG overlay).
+     OrthographicView 로 2D plotting, ScatterplotLayer binary attribute mode 로 1M 60fps. -->
+<script lang="ts">
+  import { onMount, onDestroy } from 'svelte';
+  import { Deck, OrthographicView } from '@deck.gl/core';
+  import { ScatterplotLayer } from '@deck.gl/layers';
+  import AxisOverlay from './AxisOverlay.svelte';
+  import LegendOverlay from './LegendOverlay.svelte';
+  import BrushOverlay from './BrushOverlay.svelte';
+  import { buildPointData } from './buildPointData.js';
+  import { makeScale } from './useScales.js';
+  import { domainToViewState, visibleXDomain } from './viewState.js';
+
+  let { series, chartKey, yKey, yLabel, activeActionTab, isUfsCustom,
+        xDomainShared = null, hiddenCmdsShared,
+        onZoomChange, onBrushSelected, onHiddenCmdsChange }: Props = $props();
+
+  let canvas = $state<HTMLCanvasElement | null>(null);
+  let container = $state<HTMLDivElement | null>(null);
+  let deck: any = null;
+
+  // (1) series → Float32Array (positions) + Uint8Array (colors) — binary attribute
+  const pointData = $derived(buildPointData(series, {
+    yKey, activeActionTab, isUfsCustom, cpuMode: 'cmd', hiddenCmds
+  }));
+
+  // (2) X domain: shared 가 있으면 차트 간 동기화, 없으면 데이터 도메인 사용
+  const xDomain = $derived<[number, number]>(xDomainShared ?? pointData.xDomain);
+  const yDomain = $derived<[number, number]>(pointData.yDomain);
+
+  // (3) OrthographicView target/zoom ↔ data domain 변환
+  const initialViewState = $derived(
+    domainToViewState(xDomain, yDomain, { width: plotWidth, height: plotHeight })
+  );
+  let viewState = $state(initialViewState);
+  let suppressViewStateReset = false;
+  $effect(() => {
+    if (suppressViewStateReset) return;
+    viewState = initialViewState;   // 외부 xDomain 변경 시 viewState 재계산
+  });
+
+  onMount(() => {
+    deck = new Deck({
+      canvas,
+      views: [new OrthographicView({
+        id: 'ortho',
+        controller: { dragPan: true, scrollZoom: true, doubleClickZoom: true }
+      })],
+      initialViewState: { ortho: initialViewState } as any,
+      onViewStateChange: ({ viewState: vs }: any) => {
+        const inner = vs.ortho ?? vs;
+        viewState = inner;
+        // 250ms debounce 로 서버 재요청 (onZoomChange → Arrow IPC 재요청)
+        emitZoom(inner.target, inner.zoom);
+      },
+      layers: []
+    });
+  });
+
+  // (4) 레이어: ScatterplotLayer binary attribute — GPU 에 0-copy 업로드.
+  //     data.length 와 attributes.value 만 던지면 Deck.gl 이 버퍼 생성·재사용.
+  $effect(() => {
+    if (!deck) return;
+    const layer = new ScatterplotLayer({
+      id: `scatter-${chartKey}`,
+      data: {
+        length: pointData.length,
+        attributes: {
+          getPosition: { value: pointData.positions, size: 2 },
+          getFillColor: { value: pointData.colors, size: 4, normalized: false }
+        }
+      },
+      getRadius: 1.5, radiusUnits: 'pixels',
+      radiusMinPixels: 1, radiusMaxPixels: 4,
+      stroked: false, filled: true, pickable: false,
+      parameters: { depthTest: false }
+    });
+    deck.setProps({
+      width: plotWidth, height: plotHeight,
+      viewState: { ortho: viewState } as any,
+      layers: [layer]
+    });
+  });
+</script>
+
+<div bind:this={container} class="relative w-full h-full" oncontextmenu={onContextMenu}>
+  <canvas bind:this={canvas}
+    style:position="absolute"
+    style:left="{PADDING.left}px" style:top="{PADDING.top}px"
+    style:width="{plotWidth}px" style:height="{plotHeight}px" />
+
+  <!-- Deck.gl 은 축/범례를 그리지 않는다 → SVG overlay 직접 구현 -->
+  <AxisOverlay width={cw} height={ch} {xScale} {yScale} padding={PADDING} />
+  <LegendOverlay entries={pointData.cmdLegend} {hiddenCmds} onToggle={toggleCmd} />
+  <BrushOverlay width={cw} height={ch} padding={PADDING}
+    {xScale} {yScale} active={brushActive}
+    onActiveChange={(a) => (brushActive = a)} onBrush={handleBrush} />
+</div>

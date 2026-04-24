@@ -1,0 +1,205 @@
+---
+title: 6. Async streaming parquet reader (footer 2-step + range-GET)
+description: AsyncFileReader trait 을 MinioParquetReader 로 구현해 head_object+get_object_range 만으로 parquet 을 /tmp 경유 없이 스트리밍 읽기
+sidebar:
+  order: 6
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import readerRaw from '../../../../snippets/parquet_async-MinioParquetReader.rs?raw';
+import metadataRaw from '../../../../snippets/parquet_async-get_metadata.rs?raw';
+import minioRaw from '../../../../snippets/minio_client-range.rs?raw';
+
+## 30초 요약
+
+기존 sync 경로: `MinIO GET 전체 (5GB) → /tmp 저장 → File::open → ParquetRecordBatchReaderBuilder`.
+
+문제:
+- `/tmp` 10 GB 왕복 I/O (쓰기 + 읽기)
+- 첫 바이트 도착이 **전체 다운로드 완료** 이후로 지연
+- 동시 요청 2개만 돼도 `/tmp` 용량 위험
+
+async 경로 (`TRACE_PARQUET_READER=async`):
+- `head_object` → 파일 크기 조회
+- `tail 64KB range-GET` → footer length 파싱
+- 필요 시 추가 range-GET 으로 footer 보강
+- `ParquetRecordBatchStream` 으로 row group 단위 async read
+- **`/tmp` 에 0 byte 안 씀**
+
+검증: async 모드 기동 후 `/tmp/chart_data_*.parquet` 생성 0건. 첫 바이트 도착 시간 수 배 단축.
+
+## 왜 `AsyncFileReader` trait 구현인가
+
+parquet crate 는 두 경로를 제공:
+- `ParquetRecordBatchReaderBuilder` (sync) — `File`·`&[u8]` 등 blocking 소스
+- `ParquetRecordBatchStreamBuilder` (async) — `AsyncFileReader` 를 요구
+
+`AsyncFileReader` 는 두 가지 메서드만 요구:
+- `get_bytes(range: Range<u64>) -> BoxFuture<Bytes>` — 임의 byte range 공급
+- `get_metadata(opts) -> BoxFuture<ParquetMetaData>` — footer 파싱
+
+즉 **임의 range 를 비동기로 가져올 수 있는 backend 라면 parquet crate 가 알아서 스트림으로 읽어줍니다**. S3-호환 MinIO 는 `get_object_range` 가 곧바로 쓰일 수 있어 궁합이 좋습니다.
+
+## 왜 footer 2-step fetch 인가
+
+parquet 파일의 레이아웃:
+
+```
+[data blocks...][metadata bytes][u32_le metadata_len][PAR1 magic (4B)]
+                                                     ^ file 끝
+```
+
+정확한 footer 크기를 알려면 **맨 마지막 8 바이트** 를 읽어 `metadata_len` 을 봐야 합니다. 그 다음 footer 전체를 한 번 더 읽으면 끝입니다. 단순 구현은:
+
+```
+1) range-GET (file_size-8, file_size)  → 8 byte
+2) range-GET (file_size-footer_total, file_size) → footer 전체
+```
+
+그런데 **보통 footer 는 수십 KB** 수준이라, tail 64KB 를 **먼저** 한 번에 가져오면 대부분 한 번으로 끝납니다. footer 가 64KB 를 넘어갈 때만 추가 range-GET. 실측치는 5GB parquet 도 1 호출로 끝나는 경우가 많습니다.
+
+## 코드 투어 — `MinioParquetReader`
+
+<CodeTour
+  client:visible
+  language="rust"
+  source="output/parquet_async.rs#MinioParquetReader"
+  height={680}
+  code={readerRaw}
+  steps={[
+    {
+      id: 'struct',
+      title: '필드 3개 — 경량',
+      lines: [15, 20],
+      body: '<p>client(Arc) + path + file_size 만. 실제 bytes 는 요청 시마다 range-GET 이라 구조체에 담지 않는다.</p>',
+    },
+    {
+      id: 'new',
+      title: 'new — head_object 로 크기 고정',
+      lines: [22, 34],
+      body: '<p>파일 크기를 먼저 확보해야 footer 위치(file_size - footer_total)를 계산할 수 있다. 이 1회 호출만 sync-like 하게 동기 대기.</p>',
+    },
+    {
+      id: 'get-bytes',
+      title: 'get_bytes — end inclusive 변환',
+      lines: [38, 52],
+      body: '<p>rust-s3 의 <code>get_object_range</code> 는 end inclusive 이지만 <code>Range&lt;u64&gt;.end</code> 는 exclusive. 어댑터에서 <strong>-1 보정</strong>. 잊으면 footer 파싱 시 1 바이트 어긋나 원인 찾기 힘든 버그.</p>',
+    },
+    {
+      id: 'boxed',
+      title: 'BoxFuture 리턴',
+      lines: [40, 49],
+      body: '<p>trait method 는 타입별 future 가 달라 <code>.boxed()</code> 로 heap allocate. 각 요청마다 client.clone() + path.clone() 이 필요한 이유는 future 가 self 를 벗어나서 실행되기 때문.</p>',
+    },
+    {
+      id: 'flag',
+      title: 'TRACE_PARQUET_READER env',
+      lines: [60, 64],
+      body: '<p>환경변수로만 활성화 → 운영 배포 시 기본 sync 유지, 문제 시 env 제거로 즉시 롤백. 코드 레벨 분기 없이 binary 같음.</p>',
+    },
+  ]}
+/>
+
+## 코드 투어 — `get_metadata`
+
+<CodeTour
+  client:visible
+  language="rust"
+  source="output/parquet_async.rs#get_metadata"
+  height={720}
+  code={metadataRaw}
+  steps={[
+    {
+      id: 'tail-fetch',
+      title: 'tail 64KB 를 일단 받는다',
+      lines: [13, 19],
+      body: '<p>file_size 가 64KB 보다 작은 경우도 고려해 min. 대부분 parquet 이 여기서 1 회로 끝나는 이유 — footer 가 수십 KB 수준이라 64KB 안에 다 들어온다.</p>',
+    },
+    {
+      id: 'parse-length',
+      title: '마지막 8 바이트에서 metadata_len',
+      lines: [22, 31],
+      body: '<p>포맷: [metadata_len(u32_le) | "PAR1"]. little-endian u32 decode 로 footer 실제 크기 확정.</p>',
+    },
+    {
+      id: 'branch',
+      title: 'need_extra 분기',
+      lines: [32, 46],
+      body: '<p>64KB 면 대부분 끝. 초과 시 앞쪽 범위만 추가로 받아 이미 받은 tail 과 합침. <strong>같은 byte 를 두 번 받지 않도록</strong> extra 범위는 <code>file_size - initial</code> 까지.</p>',
+    },
+    {
+      id: 'slice',
+      title: '한 번에 받은 경우 slice',
+      lines: [47, 49],
+      body: '<p>tail 안에서 footer 부분만 잘라냄. 새 buffer alloc 없음.</p>',
+    },
+    {
+      id: 'decode',
+      title: 'ParquetMetaDataReader 디코드',
+      lines: [51, 58],
+      body: '<p>옵션이 주어지면 page_index 포함 파싱. 이후 stream 은 이 메타를 보고 row group 위치를 알게 됨.</p>',
+    },
+  ]}
+/>
+
+## 코드 투어 — `MinioAsyncClient` range helpers
+
+<CodeTour
+  client:visible
+  language="rust"
+  source="storage/minio_client.rs"
+  height={460}
+  code={minioRaw}
+  steps={[
+    {
+      id: 'head',
+      title: 'head_object — Content-Length',
+      lines: [5, 15],
+      body: '<p>rust-s3 는 HEAD 응답에서 content_length 를 Option 으로 돌려줌. None 이면 명시적 에러 — 대부분의 S3 호환은 Content-Length 를 항상 내려주지만 방어적 체크.</p>',
+    },
+    {
+      id: 'range',
+      title: 'get_object_range — end inclusive',
+      lines: [17, 29],
+      body: '<p>AsyncFileReader 어댑터 쪽에서 <code>end = range.end - 1</code> 로 변환 후 호출. 여기선 그대로 S3 API 로 패스.</p>',
+    },
+  ]}
+/>
+
+## 분기 (sync/async) 배치
+
+`grpc/server.rs` 의 `get_chart_data` / `get_trace_stats` 핸들러 맨 앞에서:
+
+```rust
+if is_async_reader_enabled() {
+    return async_path(...).await;
+}
+sync_path(...)   // 기존
+```
+
+- 기본값 sync — 회귀 위험 0
+- async 경로는 `chart_rpc_async.rs` / `stats_rpc_async.rs` 에 별도 구현 (공유 helper 는 projection/filter 쪽)
+- `continuous` 컬럼이 없는 구버전 parquet 호환이 async 쪽에서 특히 중요 — 스키마 개선 시점이 겹쳤기 때문
+
+## 검증 체크리스트
+
+- [ ] `/tmp/chart_data_*.parquet` 생성 건수 — `ls /tmp/chart_data_* 2>/dev/null | wc -l` 로 확인
+- [ ] Rust 로그에 `[GetChartData] reader=async (range-GET)` / `[GetTraceStats] reader=async (range-GET)` 찍힘
+- [ ] 큰 parquet(예: 5GB) 차트 조회 시 **첫 바이트 도착 시간** 이 sync 대비 수 배 단축
+- [ ] MinIO 액세스 로그에서 range-GET 요청 빈도 확인
+
+## 제약 / 다음 단계
+
+- **concat_batches 여전히 동기 집약** — stream 에서 batch 를 받아 마지막에 concat 하므로 메모리 피크는 남아 있음. 필요 시 chart/stats 집계를 **batch 별 누적** 으로 바꿔 peak 를 낮출 수 있음
+- **footer 캐시** — 같은 parquet 에 대한 반복 요청이 많으면 `ParquetMetaData` 를 LRU 로 캐시할 수 있음 (현재는 매 RPC 마다 재파싱)
+- **cancel 전파** — 프론트 `AbortController` 로 요청을 끊어도 Rust tokio task 는 계속 돎. 크리티컬해지면 `CancellationToken` 연동 필요
+
+---
+
+## 여기까지 마친 당신
+
+- 업로드 → @Async orchestration → parquet 정규화 → Arrow IPC 차트 → 상세 통계 → WebGL 렌더 → async streaming reader 까지 **전체 여정** 을 훑었습니다
+- 이제 [Trace Analysis 아키텍처](/architecture/trace-analysis/) 문서의 세부 섹션을 깊게 파고 들 준비가 됐습니다
+- 실제 UI 사용법은 [Trace Analysis 사용 가이드](/guide/trace-analysis/) 에서 — 업로드·필터·브러시·트러블슈팅
+
+[← L2 비교로 돌아가기](/learn/l2-compare/)

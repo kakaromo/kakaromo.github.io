@@ -1,0 +1,192 @@
+---
+title: 4. 상세 통계 pipeline (단일 scan 다수 집계)
+description: 하나의 RecordBatch 를 한 번만 순회하며 Latency/CMD/Histogram/SizeCount 를 동시에 산출하고, trace_type 별로 request/complete action 리터럴을 결정한다
+sidebar:
+  order: 4
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import buildRaw from '../../../../snippets/stats_rpc-build_payload.rs?raw';
+import actionRaw from '../../../../snippets/stats_rpc-action_pair.rs?raw';
+
+## 30초 요약
+
+`POST /api/trace/stats` 는 **한 번의 RecordBatch scan 으로 5~6가지 통계를 동시에** 계산합니다.
+
+1. `col_f64("time")`, `col_str("action")`, … 으로 **컬럼을 미리 downcast** — 핫루프에서 `as_any` 반복 비용 회피
+2. `action_pair(trace_type, action)` — **실제 리터럴을 sniff** 해 request/complete action 결정 (UFS/Block ftrace/blktrace CSV 분기)
+3. 단일 `for i in 0..n` 루프에서 send_count / continuous / aligned / I/O bytes 를 **동시 누적**
+4. latency 4종(`dtoc/ctod/ctoc/qd`)은 정렬 기반 percentile 로 요약
+5. `cmd_stats` / `latency_histograms` / `cmd_size_counts` 도 동일 scan 결과를 써서 **O(n) 1회** 유지
+
+반환은 JSON — Arrow IPC 와 달리 수가 적고 (몇 KB), UI 가 바로 표로 그리는 값들.
+
+## 왜 한 번만 스캔하는가
+
+통계 종류별로 loop 를 돌리면 읽기 코드는 짧아지지만, parquet 을 메모리에 올린 뒤에도 `O(k · n)` 스캔이 됩니다. 1M row 쯤 되면 loop 수 = 속도 차이가 체감됩니다. MOVE 는:
+
+- 컬럼을 **루프 진입 전에 downcast** 해 포인터만 가진다
+- 루프 안에서 **모든 누적 배열/맵을 동시에** 채운다
+- percentile 만 정렬 기반 **별도 패스** (불가피)
+
+결과: `O(n) + O(n log n)` 수준. latency histograms/cmd stats 도 같은 scan 의 부산물.
+
+## 왜 `action_pair` 를 sniff 하는가
+
+Block 의 `action` 은 두 포맷이 공존:
+- **ftrace** 형식: `block_rq_issue` / `block_rq_complete`
+- **blktrace CSV** 형식: `Q` / `C`
+
+업로드 시 타입을 고정하려면 UI 에 분기가 필요하고, 재파싱 때 잘못 고르면 stats 가 모두 0. 대신 Rust 가 앞 1024 row 의 리터럴을 sniff 해 두 포맷 중 어느 쪽인지 판정. UFS/UFSCUSTOM 은 리터럴이 고정돼 있어 스캔 없이 바로 결정.
+
+UFSCUSTOM 의 `request_action = ""` 은 의도적: **send_count 가 0 으로 자연 유도**되고, continuous 계산은 complete 기준으로 폴백 경로를 탑니다.
+
+## 코드 투어 — `build_payload`
+
+<CodeTour
+  client:visible
+  language="rust"
+  source="output/stats_rpc.rs#build_payload"
+  height={720}
+  code={buildRaw}
+  steps={[
+    {
+      id: 'downcast',
+      title: '루프 바깥에서 컬럼 downcast',
+      lines: [12, 22],
+      body: '<p>핫루프 안에서 as_any().downcast_ref 를 매번 하면 오버헤드가 누적된다. 미리 한 번 꺼내 두고 <code>time.value(i)</code> 만 호출.</p>',
+    },
+    {
+      id: 'continuous-optional',
+      title: 'continuous 컬럼 Optional',
+      lines: [23, 26],
+      body: '<p>구버전 parquet 에 continuous 컬럼이 없을 수 있어 <code>index_of</code> 를 try 해서 Option 으로. 없으면 fallback 으로 "이전 end == 현재 lba" 계산.</p>',
+    },
+    {
+      id: 'action-pair',
+      title: 'action_pair 로 리터럴 결정',
+      lines: [28, 30],
+      body: '<p>trace_type + 실제 action 샘플을 보고 (send_req, complete_rsp) 처럼 한 쌍 결정. UFSCUSTOM 은 request 가 ""(빈 문자열).</p>',
+    },
+    {
+      id: 'duration',
+      title: 'time 기반 duration',
+      lines: [32, 39],
+      body: '<p>parquet 은 시간 정렬이지만 안전하게 min/max 재계산. <code>(tmax − tmin)/1000</code> 으로 초 단위.</p>',
+    },
+    {
+      id: 'single-loop',
+      title: '단일 loop 에서 send/continuous/aligned 동시',
+      lines: [40, 60],
+      body: '<p>모든 누적을 한 번에. continuous 는 parquet 컬럼 우선, 없으면 prev_end_by_cmd HashMap 으로 fallback. aligned 는 <code>lba%8==0 && size%8==0</code> (UFS 4KB 정렬).</p>',
+    },
+    {
+      id: 'percentiles',
+      title: 'detailed_latency_stats',
+      lines: [62, 66],
+      body: '<p>정렬 + linear interpolation 으로 min/max/avg/stddev/median/p99/p999/p9999/p99999/p999999. 별도 크레이트 없음 — p999999 까지 필요한 유스케이스가 많지 않아 직접 구현.</p>',
+    },
+    {
+      id: 'per-cmd',
+      title: 'cmd_stats / histograms / cmd_size',
+      lines: [68, 72],
+      body: '<p>같은 scan 의 부산물. cmd 별 count/send/totalSize/4 latency, cmd × latency_type 의 bucket count, cmd × size count.</p>',
+    },
+  ]}
+/>
+
+## 코드 투어 — `action_pair`
+
+<CodeTour
+  client:visible
+  language="rust"
+  source="output/stats_rpc.rs#action_pair"
+  height={460}
+  code={actionRaw}
+  steps={[
+    {
+      id: 'sniff',
+      title: '앞 1024 row 샘플',
+      lines: [6, 13],
+      body: '<p>전체 스캔은 낭비 — 앞부분 1024 줄이면 포맷을 확정하기에 충분. 실제로 Block ftrace 와 blktrace CSV 의 action 리터럴은 파일 내 일관적이다.</p>',
+    },
+    {
+      id: 'ufs-fast',
+      title: 'UFS 는 sniff 없이 고정',
+      lines: [15, 18],
+      body: '<p>타입이 확실하면 리터럴도 고정 — 루프를 돌릴 필요 없음. UFS 만 처리하는 경우 sniff 비용 0.</p>',
+    },
+    {
+      id: 'ufscustom-empty',
+      title: 'UFSCUSTOM request = ""',
+      lines: [19, 23],
+      body: '<p>빈 문자열로 두면 루프 안에서 "request 이벤트 없음" 이 자연스럽게 유도된다. send_count = 0, continuous/aligned 는 complete 기준으로 폴백.</p>',
+    },
+    {
+      id: 'block-branch',
+      title: 'Block: 리터럴로 분기',
+      lines: [24, 31],
+      body: '<p>ftrace 만 있으면 (block_rq_issue, block_rq_complete), blktrace CSV 만 있으면 (Q, C), 섞여 있으면(드묾) ftrace 우선 — 그 경우도 샘플 분포상 대부분 한 포맷.</p>',
+    },
+  ]}
+/>
+
+## percentile 계산
+
+정렬 기반 linear interpolation — `sort_unstable_by` + 인덱스 계산.
+
+```rust
+fn percentile(sorted: &[f64], p: f64) -> f64 {
+    if sorted.is_empty() { return 0.0; }
+    let pos = p * (sorted.len() - 1) as f64 / 100.0;
+    let lo = pos.floor() as usize;
+    let hi = pos.ceil() as usize;
+    let frac = pos - lo as f64;
+    sorted[lo] + (sorted[hi] - sorted[lo]) * frac
+}
+```
+
+p50 / p95 / p99 / p999 / p9999 / p99999 / p999999 — 6자리 9 까지 지원. parquet 이 1M 이면 정렬 비용은 수백 ms 수준. percentile 추정 알고리즘(t-digest 등) 도 후보지만 현재 규모에서는 정밀 정렬이 깔끔.
+
+## 반환 JSON 구조 (요약)
+
+```json
+{
+  "totalEvents": 1234567,
+  "sendCount": 617283,
+  "durationSeconds": 12.34,
+  "continuousCount": 440000,  "continuousRatio": 0.71,
+  "alignedCount":    610000,  "alignedRatio":    0.99,
+  "readTotalBytes": 2500000000, "writeTotalBytes": 1200000000, "discardTotalBytes": 0,
+  "dtoc": { "min": 0.012, "avg": 1.8, "median": 0.9, "p99": 15.2, ... },
+  "ctod": { ... }, "ctoc": { ... }, "qd": { ... },
+  "cmdStats": [
+    { "cmd": "0x28", "count": 300000, "send": 150000, "totalSize": 1.2e9,
+      "continuous": 220000, "dtoc": {...}, "ctoc": {...}, ... }
+  ],
+  "latencyHistograms": [
+    { "cmd": "0x28", "type": "dtoc",
+      "buckets": [0.1, 0.5, 1, 5, 10, 50, 100, 500, 1000],
+      "counts":  [10, 50, 200, 300, 100, 20, 5, 1, 0] }
+  ],
+  "cmdSizeCounts": [
+    { "cmd": "0x28", "sizes": [{"size": 4096, "count": 100000}, ...] }
+  ],
+  "schemaVersion": "ufs-v1"
+}
+```
+
+## 프론트 연동
+
+- Statistics 탭을 클릭하면 `$effect` 에서 자동 `loadStats()` — 별도 버튼 불필요
+- Brush/Filter 변경이 일어나면 **chart + stats 양쪽 재조회** (동일 필터 DTO 를 공유)
+- `cmdStats` 는 cmd 별 탭 (DtoC/CtoD/CtoC/QD 4탭), `latencyHistograms` 는 cmd 별 차트, `cmdSizeCounts` 는 cmd × size 막대 차트
+- 필드가 0 이면 UI 에서 해당 섹션 자동 숨김 (UFSCUSTOM 처럼 action 이 없는 경우)
+
+## 제약
+
+- **continuous fallback** — parquet 에 컬럼이 없으면 재계산. 결과는 같아야 하지만 HashMap 삽입 비용이 추가
+- **sort percentile** — 수천만 row 까지는 sort 비용 < 로그 로딩. 그 이상은 t-digest 고려
+- **`latency_ranges_ms` 는 요청 파라미터** — 기본 `[0.1, 0.5, 1, 5, 10, 50, 100, 500, 1000]` 이지만 workload 특성에 맞게 조정 가능
+
+다음: [5. WebGL 렌더러 (Deck.gl binary attribute + SVG overlay)](/learn/l2-trace/05-webgl-renderer/) →

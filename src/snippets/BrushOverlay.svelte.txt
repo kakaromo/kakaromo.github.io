@@ -1,0 +1,92 @@
+<!-- routes/trace/deckgl/BrushOverlay.svelte — 우클릭 활성 + 드래그로 X·Y 양축 브러시 선택.
+     pointer 이벤트로 pixel 좌표 수집 → xScale/yScale.invert 로 data 좌표 역변환 → onBrush 전달. -->
+<script lang="ts">
+  import type { AxisScale } from './useScales.js';
+
+  interface Props {
+    width: number; height: number;
+    padding: { left: number; right: number; top: number; bottom: number };
+    xScale: AxisScale; yScale: AxisScale;
+    /** 외부 제어: 우클릭 메뉴에서 "영역 선택" 클릭 시 true */
+    active: boolean;
+    onActiveChange: (a: boolean) => void;
+    onBrush: (range: { timeMin, timeMax, yMin, yMax }) => void;
+  }
+
+  let { width, height, padding, xScale, yScale,
+        active, onActiveChange, onBrush }: Props = $props();
+
+  let startPx = $state<{ x: number; y: number } | null>(null);
+  let endPx = $state<{ x: number; y: number } | null>(null);
+
+  const plotLeft = $derived(padding.left);
+  const plotTop = $derived(padding.top);
+  const plotWidth = $derived(Math.max(0, width - padding.left - padding.right));
+  const plotHeight = $derived(Math.max(0, height - padding.top - padding.bottom));
+
+  function onPointerDown(e: PointerEvent) {
+    if (!active) return;
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const x = e.clientX - rect.left; const y = e.clientY - rect.top;
+    // plot 영역 밖 클릭 무시 (축 overlay 영역 포함)
+    if (x < plotLeft || x > plotLeft + plotWidth) return;
+    if (y < plotTop  || y > plotTop  + plotHeight) return;
+    // pointer capture — drag 중 마우스가 밖으로 나가도 이벤트 놓치지 않음
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    startPx = { x, y }; endPx = { x, y };
+  }
+
+  function onPointerMove(e: PointerEvent) {
+    if (!startPx) return;
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    // plot 경계로 clamp — 시각적으로도 rectangle 이 밖으로 튀어나가지 않게
+    endPx = {
+      x: Math.min(Math.max(e.clientX - rect.left, plotLeft), plotLeft + plotWidth),
+      y: Math.min(Math.max(e.clientY - rect.top,  plotTop),  plotTop  + plotHeight)
+    };
+  }
+
+  function onPointerUp(e: PointerEvent) {
+    if (!startPx || !endPx) { reset(); return; }
+    (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+
+    // plot 영역 기준 상대 좌표 (left/top 빼서 0-origin)
+    const x1px = Math.min(startPx.x, endPx.x) - plotLeft;
+    const x2px = Math.max(startPx.x, endPx.x) - plotLeft;
+    const y1px = Math.min(startPx.y, endPx.y) - plotTop;
+    const y2px = Math.max(startPx.y, endPx.y) - plotTop;
+    // 3px 미만은 실수 클릭으로 간주 (브러시 취소)
+    if (Math.abs(x2px - x1px) < 3 || Math.abs(y2px - y1px) < 3) { reset(); return; }
+
+    // pixel → data: d3-scale invert.
+    // y 축은 "위가 값 큼" 이라 pixel 위아래가 뒤집혀 있음 → y2 → yMin, y1 → yMax
+    const tMin = xScale.scale.invert(x1px);
+    const tMax = xScale.scale.invert(x2px);
+    const yMinData = yScale.scale.invert(y2px);
+    const yMaxData = yScale.scale.invert(y1px);
+    onBrush({
+      timeMin: Math.min(tMin, tMax), timeMax: Math.max(tMin, tMax),
+      yMin: Math.min(yMinData, yMaxData), yMax: Math.max(yMinData, yMaxData)
+    });
+    reset();
+    onActiveChange(false);   // 1회성 — 다음 브러시는 다시 우클릭 필요
+  }
+
+  function reset() { startPx = null; endPx = null; }
+</script>
+
+<div class="absolute inset-0 {active ? 'cursor-crosshair' : 'pointer-events-none'}"
+     style={active ? 'pointer-events: auto' : ''}
+     onpointerdown={onPointerDown} onpointermove={onPointerMove} onpointerup={onPointerUp}>
+  {#if startPx && endPx && active}
+    {@const rx = Math.min(startPx.x, endPx.x)}
+    {@const ry = Math.min(startPx.y, endPx.y)}
+    {@const rw = Math.abs(endPx.x - startPx.x)}
+    {@const rh = Math.abs(endPx.y - startPx.y)}
+    <div class="absolute pointer-events-none"
+         style:left="{rx}px" style:top="{ry}px"
+         style:width="{rw}px" style:height="{rh}px"
+         style:background="rgba(59, 130, 246, 0.15)"
+         style:border="1px solid #3b82f6"></div>
+  {/if}
+</div>

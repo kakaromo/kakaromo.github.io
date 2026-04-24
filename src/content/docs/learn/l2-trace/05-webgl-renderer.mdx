@@ -1,0 +1,219 @@
+---
+title: 5. WebGL 렌더러 (Deck.gl binary attribute + SVG overlay)
+description: ScatterplotLayer binary attribute 로 1M 포인트 60fps, 축·범례는 SVG overlay 로 직접 그리고, 브러시는 pointer event 로 pixel→data 역변환
+sidebar:
+  order: 5
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import chartRaw from '../../../../snippets/DeckScatterChart.svelte.txt?raw';
+import buildRaw from '../../../../snippets/buildPointData.ts?raw';
+import brushRaw from '../../../../snippets/BrushOverlay.svelte.txt?raw';
+
+## 30초 요약
+
+ECharts 는 50k~200k 포인트까지는 부드럽지만 500k 이상은 렌더 2~5 초 + 인터랙션이 끊깁니다. Deck.gl 경로는:
+
+1. **ScatterplotLayer binary attribute mode** — `Float32Array` (positions) + `Uint8Array` (RGBA colors) 를 그대로 GPU 버퍼로 업로드, 1M 60fps
+2. **축/범례/브러시는 SVG overlay** — Deck.gl 은 GPU 에 데이터만 올리고, UI 요소는 DOM 에서 따로 그림
+3. **OrthographicView** 로 2D scatter — `target` + `zoom` 만 갱신하면 pan/zoom
+4. **Feature flag** (`VITE_TRACE_RENDERER=deckgl`) + **dynamic import** — flag off 사용자는 deck.gl 번들 미다운로드
+
+props 는 ECharts 경로와 **완전 동일** — 교체가 자유로움.
+
+## 왜 binary attribute 인가
+
+일반적 Deck.gl 사용법은 `{ data: [...rows], getPosition: d => [d.x, d.y] }` 입니다. 각 row 마다 함수 호출 + 새 배열 생성 — 1M 포인트에서 시작 지연이 큽니다.
+
+**binary attribute mode** 는:
+
+```ts
+data: {
+  length: N,
+  attributes: {
+    getPosition: { value: float32Positions, size: 2 },
+    getFillColor: { value: uint8Colors, size: 4, normalized: false }
+  }
+}
+```
+
+`TypedArray` 를 그대로 GPU 버퍼로 복사 — **0-copy 업로드**. 반복적 re-render(zoom/pan)에서도 버퍼 재사용이라 매 프레임 재계산이 없습니다.
+
+## 왜 SVG overlay 인가
+
+Deck.gl 은 **GPU 에 데이터만** 올립니다. 축·틱·라벨·범례·브러시 사각형 같은 2D UI 를 WebGL 로 그리면 번거롭고 느립니다. 대신:
+
+- **축 overlay**: SVG `<line>` + `<text>` 로 눈금·라벨
+- **범례 overlay**: DOM `<button>` 리스트, cmd 별 on/off 토글
+- **브러시 overlay**: pointer event 로 pixel 좌표 수집 → `xScale.invert` / `yScale.invert` 로 data 좌표 역변환
+
+Deck canvas 와 SVG/DOM 이 같은 `container` 에 absolutely position 되어 **좌표만 맞으면** 자연스럽게 합쳐 보입니다.
+
+## 코드 투어 — `DeckScatterChart`
+
+<CodeTour
+  client:visible
+  language="html"
+  source="routes/trace/deckgl/DeckScatterChart.svelte"
+  height={760}
+  code={chartRaw}
+  steps={[
+    {
+      id: 'point-data',
+      title: 'buildPointData — series → TypedArray',
+      lines: [21, 25],
+      body: '<p>ECharts buildSeries 와 동일 필터 로직을 Float32Array/Uint8Array 로 포팅. hiddenCmds 변경 시 <code>$derived</code> 가 재계산.</p>',
+    },
+    {
+      id: 'x-domain',
+      title: 'xDomain sync',
+      lines: [27, 30],
+      body: '<p>shared 있으면 모든 차트가 같은 x 범위 — 6개 차트 zoom 동기화의 핵심. 없으면 자기 데이터 domain.</p>',
+    },
+    {
+      id: 'view-state',
+      title: 'OrthographicView viewState',
+      lines: [32, 42],
+      body: '<p>xDomain/yDomain + plot 크기 → target/zoom 역산. 사용자가 zoom 중이면 <code>suppressViewStateReset</code> 이 true 라 외부 갱신을 덮어쓰지 않는다 (race 방지).</p>',
+    },
+    {
+      id: 'deck-init',
+      title: 'Deck 인스턴스 + OrthographicView',
+      lines: [44, 60],
+      body: '<p>onViewStateChange 에서 inner view(ortho) 만 꺼내 emitZoom — 250ms debounce 후 서버에 재요청.</p>',
+    },
+    {
+      id: 'layer',
+      title: 'ScatterplotLayer binary',
+      lines: [62, 83],
+      body: '<p>data.length + attributes.value 만 넘기면 GPU 0-copy 업로드. depthTest off 로 대량 겹침 상황에서 조용히 렌더. radius min/max 로 줌인/아웃 시 점 크기 일정.</p>',
+    },
+    {
+      id: 'overlays',
+      title: 'SVG/DOM overlay 합성',
+      lines: [89, 98],
+      body: '<p>canvas 와 AxisOverlay/LegendOverlay/BrushOverlay 가 같은 container 에 절대 위치. 좌표계(padding)만 맞추면 자연스럽게 붙는다.</p>',
+    },
+  ]}
+/>
+
+## 코드 투어 — `buildPointData`
+
+<CodeTour
+  client:visible
+  language="typescript"
+  source="routes/trace/deckgl/buildPointData.ts"
+  height={680}
+  code={buildRaw}
+  steps={[
+    {
+      id: 'opts',
+      title: '옵션 해체 + latency 0 제외',
+      lines: [6, 12],
+      body: '<p>latency key(dtoc/ctoc/ctod)는 0 값이 "latency 없음" 의미라 scatter 에서 제외. cpu-lba 모드는 y=lba, 색상=cpu 번호.</p>',
+    },
+    {
+      id: 'pass1',
+      title: '1st pass: 유효 포인트 index',
+      lines: [18, 32],
+      body: '<p>실제로 그릴 포인트가 몇 개인지 먼저 세어야 TypedArray 를 딱 맞게 할당할 수 있다. hiddenCmds 체크도 여기서.</p>',
+    },
+    {
+      id: 'alloc',
+      title: 'TypedArray 할당',
+      lines: [34, 38],
+      body: '<p>정확한 kn 크기로 Float32Array(kn*2) + Uint8Array(kn*4). over-allocation 없음.</p>',
+    },
+    {
+      id: 'pass2',
+      title: '2nd pass: 값·색상 쓰기',
+      lines: [40, 65],
+      body: '<p>cmd 별 legend map 누적. 색상은 cmdColors 공용 매핑기(SCSI opcode → 색상) 사용 — 세션 전역 공유로 같은 cmd 가 같은 색.</p>',
+    },
+    {
+      id: 'legend',
+      title: 'legend 배열 정렬',
+      lines: [67, 72],
+      body: '<p>알파벳 정렬 후 반환. LegendOverlay 가 그대로 버튼 리스트로 렌더.</p>',
+    },
+  ]}
+/>
+
+## 코드 투어 — `BrushOverlay`
+
+<CodeTour
+  client:visible
+  language="html"
+  source="routes/trace/deckgl/BrushOverlay.svelte"
+  height={720}
+  code={brushRaw}
+  steps={[
+    {
+      id: 'props',
+      title: 'props — xScale/yScale 주입',
+      lines: [4, 19],
+      body: '<p>스케일을 외부 주입해 DeckScatterChart 와 동일한 축 계산을 공유한다. active 는 우클릭 메뉴에서 토글.</p>',
+    },
+    {
+      id: 'down',
+      title: 'onPointerDown — 경계 체크',
+      lines: [27, 37],
+      body: '<p>plot 영역 밖이면 무시. pointer capture 로 마우스가 밖으로 나가도 이벤트 유지 — native drag 의 흔한 함정 회피.</p>',
+    },
+    {
+      id: 'move',
+      title: 'onPointerMove — clamp',
+      lines: [39, 46],
+      body: '<p>plot 경계로 clamp. 시각적으로 rectangle 이 튀어나가지 않게.</p>',
+    },
+    {
+      id: 'up',
+      title: 'onPointerUp — pixel→data 역변환',
+      lines: [48, 69],
+      body: '<p>y 축은 "위가 값 큼" 이라 <strong>pixel 위아래 뒤집혀 있음</strong> → y2 → yMin, y1 → yMax. d3-scale invert 로 데이터 좌표 복원. 3px 미만 드래그는 실수 클릭으로 간주.</p>',
+    },
+    {
+      id: 'render',
+      title: '사각형 overlay 렌더',
+      lines: [77, 96],
+      body: '<p>startPx/endPx 가 있을 때만 반투명 사각형 렌더. active off 면 <code>pointer-events: none</code> 라 차트 조작이 그대로 통과.</p>',
+    },
+  ]}
+/>
+
+## 차트 간 동기화
+
+6개 차트(LBA/QD/CPU/DtoC/CtoD/CtoC) 는 `chartSync.svelte.ts` store 를 공유:
+
+- `xDomain` — 시간 범위. 하나에서 zoom 하면 모두 같은 x 로
+- `hiddenCmds` — 범례에서 cmd off 하면 모두에 반영
+- `cpuMode` — CPU 차트만 쓰는 'cmd' / 'lba' 토글
+
+**무한 반복 방지**: 자신이 방금 zoom 한 차트는 `suppressViewStateReset = true` 플래그로 다음 초기화를 건너뜀. 서버 재요청이 돌아와 `xDomainShared` 가 갱신된 뒤(400ms) 다시 허용.
+
+## Feature flag + dynamic import
+
+```ts
+// routes/trace/+page.svelte (요약)
+const useDeckgl = import.meta.env.VITE_TRACE_RENDERER === 'deckgl';
+
+{#if useDeckgl}
+  {#await import('./deckgl/TraceChartViewDeck.svelte') then M}
+    <M.default {...props} />
+  {/await}
+{:else}
+  <TraceChartView {...props} />
+{/if}
+```
+
+- flag off 면 `deckgl/*` 번들이 아예 다운로드되지 않음 (build-time code split)
+- ECharts 가 기본 — 50k 포인트에서 충분히 부드럽고, 축/범례/브러시가 기본 제공
+- Deck.gl 은 opt-in — **500k 이상 시계열 밀도를 정확히 보고 싶을 때만** 의미가 있음
+
+## 제약
+
+- **축/범례/브러시 전부 직접 구현** — ECharts 기능을 그대로 복제해야 했기에 코드 양이 증가 (OrthographicView + SVG overlay 합계)
+- **tooltip 미구현** — 1M 포인트에서 hover pick 은 느림. 필요하면 `pickable: true` + quadtree 스크리닝
+- **GPU 메모리 한계** — 1M 60fps 는 안정적이지만 10M 은 장비 의존 (데스크톱 GPU 환경 필요)
+
+다음: [6. async streaming reader (footer 2-step + range-GET)](/learn/l2-trace/06-async-reader/) →

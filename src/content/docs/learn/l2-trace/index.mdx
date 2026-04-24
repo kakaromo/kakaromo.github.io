@@ -5,6 +5,8 @@ sidebar:
   order: 0
 ---
 
+import ArchitectureDiagram from '../../../../components/learn/ArchitectureDiagram.svelte';
+
 ## 이 모듈에서 배울 것
 
 "사용자가 **5GB 짜리 UFS trace 로그**를 업로드하면, Java 서버는 거의 건드리지 않고 **Rust 전담 서비스**가 받아 parquet으로 변환하고, 브라우저는 JSON이 아닌 **Arrow IPC 바이너리**로 수백만 포인트의 scatter 차트를 받아 **WebGL로 1M 포인트를 60fps**로 그리며, 서버는 `/tmp` 한 번 쓰지 않고 **MinIO range-GET** 으로 필요한 row group 만 스트리밍해서 읽는다."
@@ -18,19 +20,28 @@ sidebar:
 
 ## 여정 한눈에
 
-```
-1. 업로드 파이프라인    → @Async + Rust ProcessLogs (streaming progress)
-         ↓
-2. parquet 스키마        → 3 종(UFS/Block/UFSCUSTOM) 공용 10컬럼 정규화
-         ↓
-3. Arrow IPC 차트        → projection + row-filter + time-bucket decimate
-         ↓
-4. 상세 통계              → 단일 RecordBatch scan (Latency/CMD/Histogram/SizeCount)
-         ↓
-5. WebGL 렌더러           → Deck.gl ScatterplotLayer binary attribute (1M 60fps)
-         ↓
-6. Async streaming reader → MinIO range-GET + ParquetRecordBatchStream
-```
+<ArchitectureDiagram
+  client:visible
+  height={360}
+  caption="업로드·파싱(@Async) → parquet 정규화 → Arrow IPC 차트 + JSON 통계 → Deck.gl WebGL 렌더 → MinIO range-GET async reader"
+  altText="업로드된 로그는 @Async triggerParse 로 Rust ProcessLogs 스트림을 통해 parquet 으로 변환되고, 프론트는 Arrow IPC 로 차트 데이터와 JSON 통계를 받아 ECharts 또는 Deck.gl WebGL 로 렌더합니다. 대용량 parquet 은 MinIO range-GET 기반 async streaming reader 로 /tmp 경유 없이 읽습니다."
+  nodes={[
+    { id: 's1', label: '1. 업로드·@Async',    sublabel: 'ProcessLogs stream',  layer: 'be',    x: 0,   y: 0,   href: '/learn/l2-trace/01-upload-parse/' },
+    { id: 's2', label: '2. Parquet 스키마',    sublabel: 'UFS/Block/UFSCUSTOM', layer: 'state', x: 200, y: 0,   href: '/learn/l2-trace/02-parquet-schema/' },
+    { id: 's3', label: '3. Arrow IPC 차트',    sublabel: 'projection+decimate', layer: 'tx',    x: 400, y: 0,   href: '/learn/l2-trace/03-chart-arrow-ipc/' },
+    { id: 's4', label: '4. 상세 통계',          sublabel: '단일 scan 다수 집계',  layer: 'tx',    x: 400, y: 160, href: '/learn/l2-trace/04-stats-pipeline/' },
+    { id: 's5', label: '5. WebGL 렌더',        sublabel: 'Deck.gl binary attr', layer: 'fe',    x: 600, y: 0,   href: '/learn/l2-trace/05-webgl-renderer/' },
+    { id: 's6', label: '6. Async reader',      sublabel: 'range-GET stream',    layer: 'be',    x: 200, y: 160, href: '/learn/l2-trace/06-async-reader/' },
+  ]}
+  edges={[
+    { from: 's1', to: 's2', label: 'parquet PUT', kind: 'sync' },
+    { from: 's2', to: 's3', label: 'read',         kind: 'sync' },
+    { from: 's2', to: 's4', label: 'read',         kind: 'sync' },
+    { from: 's3', to: 's5', label: 'IPC bytes',    kind: 'async' },
+    { from: 's6', to: 's3', label: 'range',        kind: 'async' },
+    { from: 's6', to: 's4', label: 'range',        kind: 'async' },
+  ]}
+/>
 
 ## 앞 L2와의 차이
 
@@ -135,6 +146,4 @@ async 경로 (`TRACE_PARQUET_READER=async`):
 
 ---
 
-:::note[서브페이지 계획]
-이 L2 는 **index 스냅샷** 단계입니다. 서브페이지 1~6 은 단계적으로 추가 예정이며, 그 전까지는 위의 [아키텍처 문서](/architecture/trace-analysis/) 가 상세 설계의 정본입니다.
-:::
+다음: [1. 업로드 + @Async 파싱 orchestration](/learn/l2-trace/01-upload-parse/) →
