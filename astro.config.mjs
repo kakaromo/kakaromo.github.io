@@ -115,6 +115,10 @@ export default defineConfig({
                   autogenerate: { directory: 'learn/l2-minio' },
                 },
                 {
+                  label: '📈 Trace Analysis (Rust gRPC + Arrow IPC + WebGL)',
+                  autogenerate: { directory: 'learn/l2-trace' },
+                },
+                {
                   label: '🔐 인증·권한 (ADFS + 17 권한 인터셉터)',
                   autogenerate: { directory: 'learn/l2-auth' },
                 },

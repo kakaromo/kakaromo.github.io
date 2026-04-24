@@ -1,0 +1,140 @@
+---
+title: Trace Analysis — 대용량 I/O 로그 분석 파이프라인
+description: ftrace/blktrace/UFSCUSTOM 수 GB 로그를 Rust로 parquet 변환하고 Arrow IPC로 차트·통계를 내려 받아 WebGL로 렌더하는 전 여정
+sidebar:
+  order: 0
+---
+
+## 이 모듈에서 배울 것
+
+"사용자가 **5GB 짜리 UFS trace 로그**를 업로드하면, Java 서버는 거의 건드리지 않고 **Rust 전담 서비스**가 받아 parquet으로 변환하고, 브라우저는 JSON이 아닌 **Arrow IPC 바이너리**로 수백만 포인트의 scatter 차트를 받아 **WebGL로 1M 포인트를 60fps**로 그리며, 서버는 `/tmp` 한 번 쓰지 않고 **MinIO range-GET** 으로 필요한 row group 만 스트리밍해서 읽는다."
+
+열아홉 번째 L2입니다. [L2 18종 비교](/learn/l2-compare/)의 체크리스트를 따라 작성됐고, 이 모듈의 특이점은:
+
+- **Java 는 얇은 프록시** — 파싱·분석은 전부 Rust gRPC 서비스가 담당 (Excel export·Agent와 닮은 축이지만 **응답 포맷이 JSON이 아니라 Arrow IPC 바이너리**)
+- **컬럼 지향 파이프라인** — parquet → ProjectionMask → Arrow RecordBatch → IPC stream. 기존 L2의 "row JSON" 과는 데이터 모델 자체가 다름
+- **렌더러 feature flag** — 동일 props 인터페이스로 ECharts (기본) / Deck.gl WebGL (opt-in) 교체 가능
+- **MinIO range-GET 스트리밍 리더** — 5GB+ parquet 을 `/tmp` 경유 없이 footer 2-step fetch + row group 단위 async read
+
+## 여정 한눈에
+
+```
+1. 업로드 파이프라인    → @Async + Rust ProcessLogs (streaming progress)
+         ↓
+2. parquet 스키마        → 3 종(UFS/Block/UFSCUSTOM) 공용 10컬럼 정규화
+         ↓
+3. Arrow IPC 차트        → projection + row-filter + time-bucket decimate
+         ↓
+4. 상세 통계              → 단일 RecordBatch scan (Latency/CMD/Histogram/SizeCount)
+         ↓
+5. WebGL 렌더러           → Deck.gl ScatterplotLayer binary attribute (1M 60fps)
+         ↓
+6. Async streaming reader → MinIO range-GET + ParquetRecordBatchStream
+```
+
+## 앞 L2와의 차이
+
+| 축 | Excel Export | Agent 벤치마크 | **Trace Analysis** |
+|---|---|---|---|
+| 트리거 | 사용자 Export | Run 버튼 | **업로드 (파일) → @Async 파싱** |
+| 외부 서비스 | Go gRPC (excelize) | Go Agent gRPC | **Rust gRPC (parquet + arrow)** |
+| 응답 포맷 | xlsx byte[] | SSE JSON | **Arrow IPC binary + JSON stats** |
+| 데이터 규모 | 수 만 행 | 수 천 이벤트 | **수백만~수천만 이벤트** |
+| 프론트 렌더 | 파일 저장 | ECharts cycle | **ECharts / Deck.gl (feature flag)** |
+| 영속 | DB rows | DB jobs | **DB + MinIO parquet objects** |
+| 스트리밍 특성 | unary byte[] | SSE 메시지 | **streaming progress + unary Arrow** |
+
+가장 큰 특징은 "**데이터 볼륨이 한 단계 위**". 이전 L2들이 JSON 직렬화로도 무난했다면, Trace는 **컬럼 지향 + 바이너리 IPC** 없이는 실용 불가. 그래서 Arrow·parquet·ProjectionMask·range-GET 같은 개념이 핵심에 등장합니다.
+
+## 왜 Rust 인가
+
+Java 서버 안에서도 parquet + arrow 라이브러리로 파싱은 가능합니다. 그럼에도 Rust 로 분리한 이유:
+
+- **파싱이 CPU 바운드** — ftrace/blktrace 수 GB 라인을 정규식 + 직렬 처리. Rust `rayon` 병렬화가 JVM 대비 체감 수 배 빠름
+- **memmap2 + 병렬 chunk** — 파일을 mmap 해 chunk 경계만 찾고 각 chunk 를 스레드가 독립 처리 (`log_high_perf.rs`)
+- **Java 서버 응답성 보호** — 수 GB 로그 파싱 중 JVM GC 튐·heap 압박을 피하기 위해 별도 프로세스/머신으로 격리
+- **Excel Export 패턴 재사용** — 이미 Go gRPC(excelize)로 외부화 하는 설계가 자리 잡았으니 같은 패턴으로 Rust 확장
+
+결국 "**데이터 규모가 커질수록 Java 는 얇은 프록시**"라는 축. Agent (Go gRPC) 와 Excel (Go gRPC) 의 확장판.
+
+## 왜 Arrow IPC 인가
+
+JSON 으로 수십만 포인트 scatter 를 보내면:
+
+- 페이로드 20~30 MB (gzip 해도 10 MB 수준)
+- 브라우저 `JSON.parse` 수백 ms
+- 모든 숫자가 double → 메모리 낭비
+
+Arrow IPC 로 바꾸면:
+
+- Schema + columnar TypedArrays (Float64Array, UInt32Array, …)
+- 페이로드 5~10 MB (50~70% 감소)
+- `tableFromIPC` 파싱 수십 ms
+- 디코드 후 바로 WebGL buffer 로 0-copy 전달 가능
+
+그래서 "**차트 데이터는 row JSON 이 아니라 컬럼 IPC**" 라는 결정. 응답 Content-Type 이 `application/vnd.apache.arrow.stream` 이고 메타는 HTTP 헤더 (`X-Trace-Total-Events`, `X-Trace-Sampled-Events`, `X-Trace-Schema-Version`, `X-Trace-Stats`).
+
+## 왜 Deck.gl (선택) 인가
+
+ECharts 로도 scatter 는 그려집니다. 그러나:
+
+- ECharts Canvas: 50k~200k 에서 부드러움, 500k 이상은 렌더 2~5 초 + 인터랙션 끊김
+- Deck.gl WebGL: ScatterplotLayer binary attribute mode 로 **1M 60fps**, 10M 까지 확장 가능
+
+대신 **축·범례가 없음** (데이터만 GPU 에 올림) — SVG overlay 로 d3-scale + 직접 구현. 5GB+ 파일에서 1M 포인트를 한 화면에 밀도 있게 보고 싶을 때만 의미가 있어서, **feature flag (`VITE_TRACE_RENDERER=deckgl`) 로 opt-in**, dynamic import 로 flag off 사용자는 번들도 받지 않음.
+
+## 왜 `async` parquet reader 인가
+
+기존 sync 경로는 `MinIO GET (5GB 전체) → /tmp 저장 → File::open → ParquetRecordBatchReaderBuilder` 였습니다. 이 경로의 문제:
+
+- `/tmp` 10 GB 왕복 I/O (쓰기 + 읽기)
+- 첫 바이트 도착이 **전체 다운로드 완료** 이후로 지연
+- 동시 요청이 2개만 돼도 `/tmp` 용량 위험
+
+async 경로 (`TRACE_PARQUET_READER=async`):
+
+- `head_object` → 파일 크기 획득
+- `tail 64KB range-GET` → footer length 파싱
+- 필요 시 추가 range-GET 으로 footer 보강
+- `ParquetRecordBatchStream` 으로 row group 단위 async read
+- **`/tmp` 에 아무것도 쓰지 않음**
+
+검증: async 모드에서 `/tmp/chart_data_*.parquet` 생성 0건 확인. sync 대비 첫 바이트 도착 수 배 빨라짐.
+
+## 학습 순서와 예상 시간
+
+| 단계 | 제목 | 성격 | 시간 |
+|---|---|---|---|
+| 1 | 업로드 + @Async 파싱 orchestration | 코드 투어 | 10 분 |
+| 2 | parquet 스키마 3 종 + 공용 10컬럼 정규화 | 읽기 | 10 분 |
+| 3 | Arrow IPC chart RPC (projection + decimate) | 코드 투어 | 15 분 |
+| 4 | 상세 통계 pipeline (단일 scan 다수 집계) | 코드 투어 | 12 분 |
+| 5 | WebGL 렌더러 (Deck.gl binary attribute + SVG overlay) | 코드 투어 | 15 분 |
+| 6 | async streaming reader (footer 2-step + range-GET) | 코드 투어 | 12 분 |
+
+총 약 **74 분**. Agent 벤치마크 · Excel Export L2 를 먼저 읽었으면 gRPC · @Async 개념은 빠르게 넘겨도 됩니다.
+
+## 새로 등장할 L3 개념
+
+- **Apache Arrow & IPC** — columnar + TypedArray 기반 교차 언어 데이터 포맷
+- **Parquet `ProjectionMask` + `RowFilter`** — 읽을 컬럼/행을 사전에 제한
+- **`AsyncFileReader` trait (Rust)** — 임의 바이트 범위를 async 로 공급하는 어댑터
+- **Deck.gl OrthographicView + binary attribute** — WebGL 2D scatter 성능 경로
+
+기존 L2 에서 이미 보았을 것:
+
+- `@Async` + `SseEmitter` / `ProcessLogsProgress` gRPC 스트림 (Agent L2)
+- Go gRPC 프로토콜 양쪽 미러 (Excel L2)
+- feature flag dynamic import (크로스-컷)
+
+## 관련 문서
+
+- [Trace Analysis 아키텍처](/architecture/trace-analysis/) — 시스템 상세 설계 (엔드포인트·스키마·파이프라인·렌더러·async reader)
+- [Trace Analysis 사용 가이드](/guide/trace-analysis/) — UI 사용법 (업로드·차트·통계·Brush·트러블슈팅)
+- [L2 18종 비교](/learn/l2-compare/) — 이 모듈이 기존 축들과 어떻게 다른지
+
+---
+
+:::note[서브페이지 계획]
+이 L2 는 **index 스냅샷** 단계입니다. 서브페이지 1~6 은 단계적으로 추가 예정이며, 그 전까지는 위의 [아키텍처 문서](/architecture/trace-analysis/) 가 상세 설계의 정본입니다.
+:::
