@@ -713,4 +713,13 @@ url_pattern + http_method + permission_key.
 - `/api/auth/request-access`
 - `/api/auth/session-info` (프론트 카운트다운용)
 
+---
+
+## 관련 문서
+
+- [L2 19종 비교 — 🔐 인증·권한 (크로스-컷)](/learn/l2-compare/) — 이 모듈이 "요청 축 크로스-컷" 으로 분류되는 이유
+- [L2 인증·권한](/learn/l2-auth/) — 여정형 학습 문서
+- [관리자 대시보드 가이드](/guide/admin/) — Admin UI 조작법
+- [변경 이력](/reference/changelog/) — 2026-04-13 AD(ADFS) 도입 / 2026-04-14~16 권한 요청 플로우 / 2026-04-22 신규유저 disabled 게이트 등 관련 날짜 블록
+
 이외의 모든 `/api/**` 는 403 `USER_DISABLED` 로 차단됩니다.
