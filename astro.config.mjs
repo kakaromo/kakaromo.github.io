@@ -164,6 +164,18 @@ export default defineConfig({
                   label: 'Svelte 5',
                   autogenerate: { directory: 'learn/l3-concepts/svelte' },
                 },
+                {
+                  label: 'Columnar Data (Arrow · Parquet)',
+                  autogenerate: { directory: 'learn/l3-concepts/data' },
+                },
+                {
+                  label: 'Rust (async · trait 어댑터)',
+                  autogenerate: { directory: 'learn/l3-concepts/rust' },
+                },
+                {
+                  label: 'WebGL (Deck.gl 2D)',
+                  autogenerate: { directory: 'learn/l3-concepts/webgl' },
+                },
               ],
             },
           ],

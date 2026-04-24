@@ -1,0 +1,160 @@
+---
+title: Deck.gl OrthographicView + binary attribute
+description: 2D scatter 를 WebGL 로 — ScatterplotLayer 에 TypedArray 를 0-copy 업로드해 1M 포인트 60fps
+sidebar:
+  order: 1
+---
+
+## 이 프로젝트에서의 용례
+
+- **Trace 차트 (Deck.gl 경로)** — `routes/trace/deckgl/DeckScatterChart.svelte` 가 Deck + `OrthographicView` + `ScatterplotLayer` 조합. feature flag `VITE_TRACE_RENDERER=deckgl` 로 opt-in
+- ECharts 는 50k~200k 에서 부드럽지만 500k+ 는 렌더 2~5 초. Deck.gl binary attribute 로 **1M 60fps**, 10M 까지 확장 가능
+
+## Deck.gl 이 겨냥하는 것
+
+원래는 Uber 의 지도 시각화 라이브러리 (WebGL 기반 대용량 geospatial). 지도 이외에도 쓸 수 있도록:
+
+- **View 추상** — 지도(MapView), 2D 평면(OrthographicView), 1인칭(FirstPersonView), 궤도(OrbitView)
+- **Layer 시스템** — 데이터 + 시각화 설정을 묶은 단위. `ScatterplotLayer`, `LineLayer`, `ArcLayer`, `GridLayer`, …
+- **binary attribute** — JavaScript 객체 대신 TypedArray 를 GPU 로 0-copy
+
+2D scatter 차트를 만들려면 **OrthographicView + ScatterplotLayer** 조합이 정석.
+
+## OrthographicView — 왜 필요한가
+
+기본 MapView 는 경위도 좌표계. 스캐터 차트에 쓰면 좌표·축 단위가 어색합니다. `OrthographicView` 는:
+
+- **2D 투영** — Z 축 무시
+- **target / zoom** 으로 `viewState` 제어
+  - `target: [x, y, 0]` — 중심 좌표
+  - `zoom: k` — 2^k 배 확대
+- 직교 projection → 원근 왜곡 없음 (차트는 이 편이 자연스러움)
+
+```ts
+import { Deck, OrthographicView } from '@deck.gl/core';
+
+const deck = new Deck({
+  canvas, width, height,
+  views: [new OrthographicView({
+    id: 'ortho',
+    controller: {
+      dragPan: true, scrollZoom: true,
+      dragRotate: false, doubleClickZoom: true
+    }
+  })],
+  initialViewState: { ortho: { target: [cx, cy, 0], zoom: 0 } },
+  layers: []
+});
+```
+
+## viewState ↔ data domain 변환
+
+xDomain/yDomain (데이터 좌표) ↔ target/zoom (view 상태) 사이 변환이 필요합니다. 기본 수식:
+
+```ts
+function domainToViewState(xDomain, yDomain, viewport) {
+  const [x0, x1] = xDomain;
+  const [y0, y1] = yDomain;
+  const dx = x1 - x0;
+  const dy = y1 - y0;
+  const cx = (x0 + x1) / 2;
+  const cy = (y0 + y1) / 2;
+  // zoom 은 viewport 크기를 기준으로 log2 계산
+  const zoomX = Math.log2(viewport.width  / dx);
+  const zoomY = Math.log2(viewport.height / dy);
+  return { target: [cx, cy, 0], zoom: Math.min(zoomX, zoomY) };
+}
+```
+
+pan/zoom 이 일어나면 역방향 (`target + zoom` → 현재 보이는 domain) 계산으로 **서버에 시간 범위를 전달** — MOVE 는 이걸 250ms debounce 해서 Arrow IPC 재요청.
+
+## binary attribute mode — 핵심
+
+일반적 Deck.gl 사용:
+
+```ts
+new ScatterplotLayer({
+  data: [{x:1, y:2, c:'R'}, ...],
+  getPosition: d => [d.x, d.y],
+  getFillColor: d => COLOR_MAP[d.c]
+});
+```
+
+각 row 마다 함수 호출 + 새 배열 생성. 1M 포인트에서는 시작이 2~5초 걸립니다.
+
+**binary attribute** 는 TypedArray 를 그대로 GPU 버퍼로:
+
+```ts
+new ScatterplotLayer({
+  data: {
+    length: N,
+    attributes: {
+      getPosition:  { value: float32Positions, size: 2 },
+      getFillColor: { value: uint8Colors,      size: 4, normalized: false }
+    }
+  }
+});
+```
+
+- `value` — `Float32Array` / `Uint8Array` 등 내장 타입
+- `size` — 포인트 당 원소 수 (position=2, rgba=4)
+- `normalized` — `Uint8Array` 색상을 0-1 로 정규화할지 여부 (false 면 0-255 그대로)
+
+Deck.gl 은 이 TypedArray 를 그대로 WebGL `bufferData` 로 업로드 — JS 재순회 없음. 리렌더도 같은 버퍼를 재사용.
+
+## 데이터 빌더 패턴
+
+브라우저에서 series → TypedArray 변환은 **2-pass** 가 안전:
+
+```ts
+// 1st pass: 유효 포인트 개수 확정
+let kn = 0;
+const keep = new Int32Array(n);
+for (let i = 0; i < n; i++) {
+  if (!visible(i)) continue;
+  keep[kn++] = i;
+}
+
+// 2nd pass: 정확한 크기로 alloc + 값 쓰기
+const positions = new Float32Array(kn * 2);
+const colors = new Uint8Array(kn * 4);
+for (let k = 0; k < kn; k++) {
+  const i = keep[k];
+  positions[k * 2]     = time[i];
+  positions[k * 2 + 1] = value[i];
+  const [r, g, b, a] = rgba(cmd[i]);
+  colors[k * 4]     = r; colors[k * 4 + 1] = g;
+  colors[k * 4 + 2] = b; colors[k * 4 + 3] = a;
+}
+```
+
+over-allocation 없이 정확한 크기 — 1M 포인트에서 메모리 절감이 유의미합니다.
+
+## 한계와 트레이드오프
+
+WebGL 에 올린 건 **이미지일 뿐** — 축·라벨·범례·브러시 같은 UI 가 없습니다. Deck.gl 의 커뮤니티 레이어도 지도 맥락이라 2D 차트용은 부족. MOVE 는:
+
+- **축·범례·브러시 overlay** 를 **SVG/DOM 으로 직접** 구현 (동일 container 에 absolute position)
+- 좌표계 align 을 위해 `xScale`/`yScale` (d3-scale) 을 공유
+- 브러시 = pointer event → `xScale.invert` / `yScale.invert`
+
+즉 "**렌더는 WebGL, UX 는 DOM**" 혼합.
+
+## 픽 (hover/click)
+
+`ScatterplotLayer` 의 `pickable: true` 는 100k 포인트 수준까지는 부드럽습니다. 1M 은 pick 이 느림 — quadtree/grid 스크리닝이 필요. MOVE 는 **현재 tooltip 미구현** (차트 목적이 "분포를 보는 것" 이라 개별 값 hover 의 필요도가 낮음).
+
+## 주의할 점
+
+- **Float64 좌표 은 부정확** — WebGL 은 Float32. 시간이 ms 단위 timestamp (1e12 수준) 면 정밀도 손실. MOVE 는 **상대 시간 (ms-from-start)** 으로 정규화해 사용
+- **canvas 는 반드시 별도 위치** — `position: absolute` + plot 영역 크기 맞춤. SVG overlay 가 covering 하려면 좌표계 공유 필수
+- **Deck 인스턴스 cleanup** — `onDestroy` 에서 `deck.finalize()` 호출하지 않으면 WebGL 컨텍스트 누수
+- **ResizeObserver** — container 크기 변경 시 `deck.setProps({ width, height })` 갱신. 안 하면 픽셀 격자가 왜곡
+- **depthTest off 권장** — 2D scatter 는 Z 가 없으므로 `parameters: { depthTest: false }` 로 zfight 회피
+
+## 공식 문서
+
+- [Deck.gl — Developer Guide](https://deck.gl/docs)
+- [`OrthographicView`](https://deck.gl/docs/api-reference/core/orthographic-view)
+- [`ScatterplotLayer`](https://deck.gl/docs/api-reference/layers/scatterplot-layer)
+- [Binary data guide](https://deck.gl/docs/developer-guide/performance#use-binary-data)

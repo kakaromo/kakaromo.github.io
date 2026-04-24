@@ -1,0 +1,138 @@
+---
+title: Parquet ProjectionMask & RowFilter
+description: 컬럼 선택 + 조건 pruning — 5GB parquet 을 통째로 읽지 않고 필요한 컬럼·row group 만 디코딩
+sidebar:
+  order: 2
+---
+
+## 이 프로젝트에서의 용례
+
+- **Rust trace 서비스** — `output/chart_rpc.rs::read_projected_parquet_with_time_col` 이 10컬럼 projection + time range row-filter 로 5GB parquet 에서 필요한 부분만 디코딩
+- **Rust stats 서비스** — 같은 조합으로 통계용 컬럼만 읽음
+
+"전체 parquet 을 메모리에 올린다" 는 생각 자체를 피하는 것이 Trace 모듈의 성능 기반.
+
+## Parquet 파일 구조 요약
+
+parquet 은 **컬럼 지향 + 계층 구조**:
+
+```
+File
+├─ Row Group 1
+│   ├─ Column Chunk A (Page 1, Page 2, ...)
+│   ├─ Column Chunk B
+│   └─ ...
+├─ Row Group 2
+│   └─ ...
+├─ Footer (metadata — schema, row group 위치·통계)
+└─ PAR1 magic (4 bytes)
+```
+
+핵심:
+- **Column Chunk 는 독립 디코딩** — 한 컬럼만 필요하면 다른 컬럼의 page 는 **건드리지도 않음**
+- **Row Group 마다 통계** (min/max/null_count) — predicate pushdown 에 활용
+- **Footer 에 모든 위치 정보** — seek 으로 원하는 chunk 로 점프
+
+## ProjectionMask — 어떤 컬럼을 읽을까
+
+`ProjectionMask::leaves(parquet_schema, column_indices)` — leaf 컬럼 인덱스 집합만 디코딩 대상으로 지정.
+
+```rust
+use parquet::arrow::ProjectionMask;
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+let parquet_schema = builder.parquet_schema();
+
+// "time", "lba", "size" 3개 컬럼만
+let wanted = ["time", "lba", "size"];
+let indices: Vec<usize> = wanted.iter().filter_map(|name| {
+    (0..parquet_schema.num_columns()).find(|&i| {
+        parquet_schema.column(i).path().parts().last()
+            .map(|p| p == *name).unwrap_or(false)
+    })
+}).collect();
+
+let projection = ProjectionMask::leaves(parquet_schema, indices);
+let reader = builder.with_projection(projection).build()?;
+```
+
+효과:
+- **I/O 절감** — 읽지 않은 컬럼은 디스크에서 가져오지도 않음
+- **디코딩 절감** — 압축 해제/타입 변환도 선택 컬럼만
+- **메모리 절감** — 결과 RecordBatch 의 컬럼 수가 적음
+
+leaf 컬럼이라는 표현은 **중첩 구조** (struct/list) 를 고려한 것. 평면 스키마에서는 top-level 컬럼과 동일.
+
+## RowFilter — 어떤 row 를 읽을까
+
+```rust
+use parquet::arrow::arrow_reader::{ArrowPredicateFn, RowFilter};
+
+let time_proj = ProjectionMask::leaves(parquet_schema, [time_col_idx]);
+
+let predicate = ArrowPredicateFn::new(time_proj, move |batch: RecordBatch| {
+    let col = batch.column(0).as_any()
+        .downcast_ref::<Float64Array>().unwrap();
+    let lower = cmp::gt_eq(col, &Float64Array::new_scalar(start_ms))?;
+    let upper = cmp::lt_eq(col, &Float64Array::new_scalar(end_ms))?;
+    Ok(arrow::compute::and(&lower, &upper)?)
+});
+
+let reader = builder
+    .with_projection(full_projection)
+    .with_row_filter(RowFilter::new(vec![Box::new(predicate)]))
+    .build()?;
+```
+
+동작:
+1. **predicate column 만 먼저 디코딩** — projection 과 별도
+2. `BooleanArray` mask 계산
+3. mask 가 모두 false 인 row group / page 는 **다른 컬럼을 읽지 않음**
+4. 살아남은 범위에서만 나머지 컬럼 디코딩
+
+여러 predicate 를 `vec![pred1, pred2, ...]` 로 조합하면 순차 평가 — cheap 한 조건을 먼저 두면 뒤의 predicate 가 볼 row 가 줄어 더 빠름.
+
+## Predicate pushdown 과 row group 통계
+
+parquet writer 가 row group 마다 min/max 를 저장해 두면, reader 가 predicate 를 **디코딩 전에** row group 단위로 잘라낼 수 있습니다. 예: `time >= 1000` 인데 어떤 row group 의 time max 가 800 이라면 **그 row group 의 모든 컬럼을 건너뜀**.
+
+- 실제 구현: `parquet` crate 의 `statistics` 기반 pruning (자동)
+- time 처럼 정렬돼 있는 컬럼에서 특히 효과적 — 한쪽 끝 row group 들을 싹 자름
+- 정렬되지 않은 컬럼은 min/max 가 전체 범위여서 도움이 덜 됨
+
+## 언제 이득이 큰가
+
+| 상황 | ProjectionMask | RowFilter |
+|---|---|---|
+| 컬럼이 많고 일부만 씀 | ✅ | - |
+| 시간 범위로 자르기 | - | ✅ (time 정렬 시 극대화) |
+| 파일이 작음(~MB) | 미미 | 미미 |
+| 파일이 큼(수 GB) | 크게 이득 | 매우 큰 이득 |
+| 모든 컬럼·row 가 필요 | 이득 없음 | 이득 없음 |
+
+MOVE trace 는 두 조건을 모두 만족하는 케이스 — 10컬럼만 쓰고, 시간 범위가 전형적이며, 파일이 GB 단위.
+
+## Batch size
+
+```rust
+builder.with_projection(projection).with_batch_size(65_536)
+```
+
+- **너무 작으면** — loop overhead 가 상대적으로 커짐
+- **너무 크면** — RAM 피크 + 첫 batch 도착 지연
+- 65_536 은 Arrow 에서 흔한 기본값. 컬럼 당 bytes = `batch_size × sizeof(type)` 을 대략 점검
+
+## 주의할 점
+
+- **컬럼명 resolve** — `path().parts().last()` 가 평면 스키마용. 중첩 구조면 전체 path 로 매칭해야 함
+- **RowFilter predicate 는 columnar** — per-row 루프는 느림. Arrow compute (`cmp::gt_eq`, `and`) 를 써야 SIMD 이득
+- **Type mismatch** — predicate 안에서 downcast 실패는 런타임 에러. 스키마 버전 관리 필수
+- **메모리 피크** — `concat_batches` 로 합치면 projection 효과가 사라짐. 스트리밍 처리가 가능하면 batch 단위로 집계
+
+## 공식 문서
+
+- [Apache Parquet — File Format](https://parquet.apache.org/docs/file-format/)
+- [`parquet` (Rust crate)](https://docs.rs/parquet/latest/parquet/)
+- [`ProjectionMask`](https://docs.rs/parquet/latest/parquet/arrow/struct.ProjectionMask.html)
+- [`RowFilter` / `ArrowPredicateFn`](https://docs.rs/parquet/latest/parquet/arrow/arrow_reader/struct.RowFilter.html)

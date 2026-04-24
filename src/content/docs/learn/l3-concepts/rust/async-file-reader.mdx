@@ -1,0 +1,145 @@
+---
+title: AsyncFileReader trait (Rust)
+description: 임의 byte range 를 async 로 공급하는 어댑터 trait — 로컬 파일이 아닌 MinIO range-GET 을 parquet 스트림 소스로 사용
+sidebar:
+  order: 1
+---
+
+## 이 프로젝트에서의 용례
+
+- **Rust trace 서비스** — `output/parquet_async.rs::MinioParquetReader` 가 `AsyncFileReader` 를 구현해 MinIO S3-range-GET 을 parquet 소스로 씀
+- 기존 sync 경로가 **5GB parquet 전체를 `/tmp` 로 다운로드** 하던 문제를 제거 — footer 2-step fetch + row group 단위 async read
+
+환경변수 `TRACE_PARQUET_READER=async` 로만 활성화하는 opt-in. 운영 롤백 간편.
+
+## trait 시그니처
+
+`parquet` crate 의 `arrow::async_reader::AsyncFileReader`:
+
+```rust
+pub trait AsyncFileReader: Send {
+    fn get_bytes(&mut self, range: Range<u64>)
+        -> BoxFuture<'_, Result<Bytes, ParquetError>>;
+
+    fn get_metadata<'a>(
+        &'a mut self,
+        options: Option<&'a ArrowReaderOptions>,
+    ) -> BoxFuture<'a, Result<Arc<ParquetMetaData>, ParquetError>>;
+}
+```
+
+두 메서드만 구현하면, parquet crate 의 **`ParquetRecordBatchStreamBuilder`** 가 알아서 row group 단위 async 스트리밍을 만들어 줍니다.
+
+`BoxFuture` 는 `Pin<Box<dyn Future<Output = ...>>>` — trait method 는 반환 타입이 static 해야 하므로 동적 dispatch 로 heap 에 future 를 박는다.
+
+## 왜 trait 인가
+
+parquet 은 "로컬 파일" 을 전제로 설계되지 않았습니다. 본질은 **"임의 byte range 를 읽을 수 있는 뭔가"** 에서 schema/row group 을 해석하는 엔진.
+
+- 로컬 파일: `tokio::fs::File` 을 감싸는 기본 impl 이 제공됨
+- S3/MinIO: range-GET 헬퍼를 만들어 trait 구현
+- HTTP 서버 / gRPC stream / DB BLOB: 뭐든 range 를 공급하면 됨
+
+**"공급자 구현만 바꾸면 같은 parquet reader 로직이 돈다"** — trait 의 전형적 이득.
+
+## MinIO 어댑터 구조
+
+```rust
+pub struct MinioParquetReader {
+    client: Arc<MinioAsyncClient>,
+    path: String,
+    file_size: u64,   // head_object 로 미리 조회
+}
+
+impl AsyncFileReader for MinioParquetReader {
+    fn get_bytes(&mut self, range: Range<u64>)
+        -> BoxFuture<'_, ParquetResult<Bytes>>
+    {
+        let client = Arc::clone(&self.client);
+        let path = self.path.clone();
+        async move {
+            let start = range.start;
+            // rust-s3 get_object_range 는 end inclusive, Range<u64>.end 는 exclusive
+            let end = range.end.saturating_sub(1);
+            let bytes = client.get_object_range(&path, start, end).await?;
+            Ok(Bytes::from(bytes))
+        }.boxed()
+    }
+
+    fn get_metadata<'a>(&'a mut self, _: Option<&'a _>)
+        -> BoxFuture<'a, ParquetResult<Arc<ParquetMetaData>>>
+    {
+        async move {
+            // 1) tail 64KB range-GET
+            // 2) 마지막 4 bytes 에서 metadata_len 파싱
+            // 3) 필요 시 추가 range-GET 으로 footer 확보
+            // 4) ParquetMetaDataReader 로 decode
+            ...
+        }.boxed()
+    }
+}
+```
+
+필드가 `path` 와 `file_size` 만 있는 것이 중요 — **bytes 는 안 들고** 매 호출마다 range-GET. 메모리는 요청 중인 range 분량만.
+
+## Footer 파싱의 트릭
+
+parquet 파일 끝:
+
+```
+... | metadata bytes | u32_le metadata_len | PAR1 (4B) |
+                                             ^ 파일 끝
+```
+
+naïve 구현: 8 바이트 → length → 앞쪽 footer 전체. **두 번의 range-GET** 이 필요.
+
+개선: tail **64KB 를 한 번에** 받는다. 대부분 footer 는 수십 KB 라 여기서 끝. footer 가 64KB 를 넘어갈 때만 앞쪽 추가 fetch + concat. 실측으로 5GB parquet 도 1 호출로 끝나는 경우가 많음.
+
+## BoxFuture / `.boxed()` 패턴
+
+trait method 가 `impl Future` 를 반환하지 못합니다 (RFC 2394 전 / async fn in trait 제한). 대신 `Pin<Box<dyn Future>>` 로 동적 박싱:
+
+```rust
+use futures::future::BoxFuture;
+use futures::FutureExt;
+
+fn get_bytes(&mut self, range: Range<u64>)
+    -> BoxFuture<'_, ParquetResult<Bytes>>
+{
+    async move {
+        // 실제 async 작업
+        ...
+    }.boxed()
+}
+```
+
+- `.boxed()` 는 `FutureExt` 에서 제공
+- lifetime `'_` 는 &mut self 와 연결 — 반환된 future 가 self 를 빌려감
+- 성능 비용은 heap alloc 1회 — trait-object dispatch 의 일반적 비용
+
+## 언제 sync vs async
+
+| 조건 | sync 추천 | async 추천 |
+|---|---|---|
+| 파일이 ~MB | ✅ | - |
+| 파일이 GB 단위 | - | ✅ |
+| `/tmp` 여유 있음 | 무관 | 무관 |
+| `/tmp` 여유 없거나 공유 | - | ✅ |
+| 응답 latency 중요 | - | ✅ (첫 batch 빠름) |
+| 여러 요청 동시 | - | ✅ (disk I/O 경합 회피) |
+
+MOVE trace 는 모든 축이 async 유리 — 다만 회귀 위험을 막기 위해 env flag 로만 활성화.
+
+## 주의할 점
+
+- **end inclusive vs exclusive** — S3 API 는 `Range: bytes=start-end` 가 inclusive. Rust `Range<u64>.end` 는 exclusive. 어댑터에서 **-1 보정** 필수. 잊으면 footer 파싱이 1 바이트 어긋나 원인 찾기 힘든 버그
+- **Arc / Clone** — future 가 &mut self 를 벗어나 실행되므로 client / path 를 clone 해서 move. `Arc<Client>` 가 흔한 해법
+- **Retry** — range-GET 실패 시 backoff + retry. 단일 실패로 전체 요청이 무너지지 않게
+- **footer 캐시** — 같은 parquet 에 반복 요청이 많으면 `ParquetMetaData` 를 LRU 로 캐시 (현재 MOVE 는 매 RPC 재파싱)
+
+## 공식 문서
+
+- [`parquet::arrow::async_reader::AsyncFileReader`](https://docs.rs/parquet/latest/parquet/arrow/async_reader/trait.AsyncFileReader.html)
+- [`ParquetRecordBatchStreamBuilder`](https://docs.rs/parquet/latest/parquet/arrow/async_reader/struct.ParquetRecordBatchStreamBuilder.html)
+- [`bytes::Bytes`](https://docs.rs/bytes/latest/bytes/struct.Bytes.html)
+- [Rust async in traits — futures::BoxFuture](https://docs.rs/futures/latest/futures/future/type.BoxFuture.html)

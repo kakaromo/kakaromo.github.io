@@ -1,0 +1,122 @@
+---
+title: Apache Arrow & IPC
+description: columnar 메모리 포맷 + 언어 간 공유 — Rust 가 만든 TypedArray 를 브라우저가 0-copy 로 읽는다
+sidebar:
+  order: 1
+---
+
+## 이 프로젝트에서의 용례
+
+- **Trace 차트 RPC** — `POST /api/trace/chart` 가 JSON 대신 **Arrow IPC stream bytes** 를 반환 (`application/vnd.apache.arrow.stream`)
+- **Rust 서비스** — `arrow`, `parquet` 크레이트로 RecordBatch 생성 → `IpcStreamWriter` 직렬화
+- **브라우저** — `apache-arrow` 패키지 `tableFromIPC(bytes)` 로 디코드 → `Float64Array`/`UInt32Array` 등을 바로 WebGL 또는 ECharts 로 전달
+
+수 MB 페이로드에 수십만 포인트가 실리는 경우, JSON 대비 **50~70% 크기 감소 + 파싱 수 ms** 수준이라 큰 차이가 남.
+
+## Row 지향 vs Column 지향
+
+JSON/MessagePack/Protobuf 는 보통 **row 지향** — 한 row 의 모든 필드가 붙어 있음.
+
+```json
+[{"time": 1.0, "lba": 42, "cmd": "R"}, {"time": 2.0, "lba": 43, "cmd": "W"}, ...]
+```
+
+Arrow 는 **column 지향** — 같은 컬럼이 한 블록:
+
+```
+time : [1.0, 2.0, 3.0, ...]     // Float64Array
+lba  : [42, 43, 44, ...]        // UInt64Array
+cmd  : ["R", "W", "R", ...]     // StringArray (offsets + bytes)
+```
+
+장점:
+- **TypedArray 로 매핑** — `Float64Array` 는 JS/Rust/C++ 어디서든 **byte 레이아웃이 동일**
+- **압축 친화** — 같은 타입이 모여 있어 LZ4/ZSTD 효과 큼
+- **벡터 연산** — SIMD 와 궁합
+
+단점:
+- **단일 row 전체를 보기 어려움** — 여러 TypedArray 를 인덱스로 교차 조회
+- **가변 스키마가 불편** — 스키마는 사전에 정의돼야 함
+
+## RecordBatch 와 Schema
+
+Arrow 의 기본 단위는 **RecordBatch** — "Schema + 같은 길이의 Array 리스트" 한 덩어리.
+
+```rust
+use arrow::array::{Float64Array, UInt64Array};
+use arrow::datatypes::{DataType, Field, Schema};
+use arrow::record_batch::RecordBatch;
+use std::sync::Arc;
+
+let schema = Arc::new(Schema::new(vec![
+    Field::new("time", DataType::Float64, false),
+    Field::new("lba",  DataType::UInt64,  false),
+]));
+
+let batch = RecordBatch::try_new(schema, vec![
+    Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0])),
+    Arc::new(UInt64Array::from(vec![42, 43, 44])),
+])?;
+```
+
+모든 컬럼 길이가 같아야 하고, 스키마의 타입과 실제 Array 타입이 일치해야 합니다.
+
+## IPC stream format
+
+RecordBatch 를 **바이트 시퀀스로 직렬화** 하는 표준이 IPC. 두 변종이 있습니다:
+
+- **IPC Stream** — 여러 RecordBatch 를 순차적으로 스트리밍. 길이 제한 없음, 시작부터 읽을 수 있음
+- **IPC File** — stream + footer + magic. 임의 접근 가능하지만 전체 읽고 나야 footer 에 접근
+
+MOVE 는 **stream** 을 씁니다 — HTTP 응답 본문이 stream 성격이고, 프론트는 한 번에 다 받아 디코드.
+
+```rust
+use arrow::ipc::writer::StreamWriter;
+use std::io::Cursor;
+
+let mut buf = Cursor::new(Vec::new());
+{
+    let mut writer = StreamWriter::try_new(&mut buf, &schema)?;
+    writer.write(&batch)?;
+    writer.finish()?;
+}
+let bytes: Vec<u8> = buf.into_inner();   // 이 바이트를 HTTP body 로 내려줌
+```
+
+## 브라우저 디코딩
+
+```typescript
+import { tableFromIPC } from 'apache-arrow';
+
+const res = await fetch('/api/trace/chart', { method: 'POST', ... });
+const buf = await res.arrayBuffer();
+
+const table = tableFromIPC(new Uint8Array(buf));
+const timeCol = table.getChild('time');   // Float64Vector
+
+// TypedArray 추출 (디코드 후 0-copy 에 가까움)
+const timeArr: Float64Array = timeCol.toArray();
+```
+
+- **`Float64Array` 는 브라우저 내장 타입** — 추가 복사 없이 WebGL buffer / chart 라이브러리에 바로 전달 가능
+- **UInt64 는 주의** — JS 에 native u64 가 없어 `BigInt64Array` 또는 잘라서 `Number` 로 다운캐스트해야 함. Trace 에서는 LBA 에 한해 `columnAsNumbers` 헬퍼로 처리
+
+## Schema 진화와 버전
+
+Arrow 자체는 "같은 스키마의 batch 연속" 을 가정. 스키마가 바뀌면 **IPC stream 을 새로 시작** 해야 합니다.
+
+MOVE 는 응답 헤더 `X-Trace-Schema-Version: ufs-v1` 로 decoder 가 호환성을 확인합니다. Arrow 표준의 일부가 아니라 **애플리케이션 레벨 버전** — 스키마 필드 순서/이름/타입이 변경되면 새 버전을 찍어 프론트가 fail-fast 하도록.
+
+## 주의할 점
+
+- **스트림 1개당 스키마 1개** — chart RPC 는 단일 batch 만 보내므로 문제 없지만, 멀티 batch 를 보내려면 모두 같은 스키마여야 함
+- **StringArray 는 offsets + bytes** — 큰 문자열이 많으면 효율 저하. dictionary encoding 고려
+- **UInt64/Int64 ↔ JS BigInt** — 화면 표시용이면 `Number()` 로 다운캐스트 (LBA 정도는 2^53 안쪽이라 안전하지만, timestamp nanosecond 는 오버플로 가능)
+- **IPC File 착각** — `StreamReader` 로 File 포맷을 읽으면 magic 이 있어 실패. 반대 조합도. 생성/디코딩 양쪽을 같은 변종으로.
+
+## 공식 문서
+
+- [Apache Arrow — Columnar Format](https://arrow.apache.org/docs/format/Columnar.html)
+- [IPC format](https://arrow.apache.org/docs/format/Columnar.html#serialization-and-interprocess-communication-ipc)
+- [`arrow` (Rust crate)](https://docs.rs/arrow/latest/arrow/)
+- [`apache-arrow` (JS/TS)](https://arrow.apache.org/docs/js/)
