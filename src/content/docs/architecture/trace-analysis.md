@@ -5,56 +5,35 @@ description: UFS/Block/UFSCUSTOM I/O trace 파싱 · Arrow IPC 차트 · 상세 
 
 ## 1. 시스템 개요
 
-**Trace Analysis** 는 Android/서버에서 수집한 **대용량 I/O trace 로그(ftrace UFS/block, blktrace CSV, UFSCUSTOM)** 를 업로드하여 parquet 으로 변환하고, 차트 시각화 + 상세 통계로 분석하는 모듈이다. 1M~수천만 이벤트 규모를 대상으로 설계됐다.
+**Trace Analysis** 는 Android/서버에서 수집한 **대용량 I/O trace 로그 (ftrace UFS/block, blktrace CSV, UFSCUSTOM)** 를 업로드하여 parquet 으로 변환하고, 차트 시각화 + 상세 통계로 분석하는 모듈이다. 1M~수천만 이벤트 규모를 대상으로 설계됐다.
 
-```mermaid
-flowchart TD
-    subgraph Browser["Browser (SvelteKit + Svelte 5)"]
-        UI["/trace 페이지\n3-pane: Jobs | Chart/Stats"]
-        ECharts["ECharts scatter 렌더러\n(기본)"]
-        Deck["Deck.gl WebGL 렌더러\n(feature flag, 1M+ 포인트)"]
-        Arrow["apache-arrow\n(Arrow IPC 디코더)"]
-    end
+### 컴포넌트 구조
 
-    subgraph Portal["Portal (Spring Boot)"]
-        Ctrl["TraceController\nTraceJobController"]
-        Svc["TraceJobService\n@Async 파싱 orchestration"]
-        DB[("binmapper DB\nportal_trace_jobs\nportal_trace_parquets")]
-    end
-
-    subgraph Rust["Rust trace 서비스 (:50053)"]
-        GRPC["gRPC server\nProcessLogs\nGetChartData\nGetTraceStats"]
-        Parser["log parser\n(ftrace / blktrace CSV / UFSCUSTOM)"]
-        Proc["processors\nlatency/continuous/aligned 계산"]
-        PqSync["parquet sync reader\n(/tmp download)"]
-        PqAsync["parquet async reader\n(MinIO range-GET)"]
-    end
-
-    subgraph MinIO["MinIO (:9000)"]
-        Uploads["trace-uploads/\n원본 로그"]
-        Parquet["trace-parquet/\n생성된 parquet\n{userId}/{jobId}/{ufs,block,ufscustom}.parquet"]
-    end
-
-    UI -->|"REST /api/trace/*"| Ctrl
-    Ctrl --> Svc
-    Svc -->|JPA| DB
-    Svc -->|"gRPC ProcessLogs (streaming progress)"| GRPC
-    Svc -->|"gRPC GetChartData (unary, Arrow IPC)"| GRPC
-    Svc -->|"gRPC GetTraceStats (unary, JSON)"| GRPC
-
-    Svc -->|"MinIO PUT (원본)"| Uploads
-    GRPC -->|"MinIO GET (원본)"| Uploads
-    GRPC -->|"MinIO PUT (parquet)"| Parquet
-    PqSync -->|"전체 다운로드 → /tmp"| Parquet
-    PqAsync -->|"footer + row group range-GET"| Parquet
-    Parser --> Proc --> PqSync
-    Proc --> PqAsync
-
-    UI --> ECharts
-    UI --> Deck
-    Ctrl -->|"Arrow IPC binary"| Arrow
-    Arrow --> ECharts
-    Arrow --> Deck
+```
+┌─ Browser (SvelteKit + Svelte 5) ───────────────────────────┐
+│  /trace 페이지 (3-pane: Jobs | Chart/Stats)                 │
+│  ├─ ECharts scatter 렌더러 (기본)                             │
+│  ├─ Deck.gl WebGL 렌더러 (feature flag, 1M+ 포인트)           │
+│  └─ apache-arrow (Arrow IPC 디코더)                         │
+└────────────────────────┬───────────────────────────────────┘
+                         │ REST /api/trace/*
+┌────────────────────────▼───────────────────────────────────┐
+│  Portal (Spring Boot)                                      │
+│  ├─ TraceController, TraceJobController                    │
+│  ├─ TraceJobService (@Async 파싱 orchestration)              │
+│  └─ binmapper DB (portal_trace_jobs, portal_trace_parquets)│
+└───────┬──────────────────────────────────────────┬─────────┘
+        │ gRPC :50053                              │ MinIO :9000
+        │  ProcessLogs (stream)                    │  trace-uploads/ (원본)
+        │  GetChartData (Arrow IPC)                │  trace-parquet/ (parquet)
+        │  GetTraceStats (JSON)                    │
+┌───────▼───────────────────────────────┐          │
+│  Rust trace 서비스                      │          │
+│  ├─ log parser (ftrace / CSV / UFSCUSTOM)│          │
+│  ├─ processors (latency/continuous/aligned)│       │
+│  ├─ parquet sync reader (/tmp 전체 다운로드)◄──────┤
+│  └─ parquet async reader (MinIO range-GET)◄────────┘
+└─────────────────────────────────────────┘
 ```
 
 ### 핵심 설계 결정
@@ -73,13 +52,13 @@ flowchart TD
 
 | Method | Path | 용도 | 응답 |
 |---|---|---|---|
-| `POST` | `/api/trace/upload` | 로그 파일 업로드 + 파싱 트리거 | `{ success, jobId, status }` |
+| `POST` | `/api/trace/upload` | 로그 파일 업로드 + 파싱 트리거 | JSON `{ success, jobId, status }` |
 | `GET` | `/api/trace/jobs` | 현재 사용자 Job 목록 | `TraceJob[]` |
 | `GET` | `/api/trace/jobs/{id}` | Job 상세 (parquets 포함) | `TraceJob` |
 | `DELETE` | `/api/trace/jobs/{id}` | Job + MinIO 파일 + parquet row 삭제 | `{ success }` |
-| `POST` | `/api/trace/jobs/{id}/reparse` | 기존 원본으로 재파싱 (파서 로직 갱신 시) | `{ success, jobId, status }` |
+| `POST` | `/api/trace/jobs/{id}/reparse` | 기존 원본으로 재파싱 | `{ success, jobId, status }` |
 | `POST` | `/api/trace/chart` | Arrow IPC 차트 데이터 | `application/vnd.apache.arrow.stream` 바이트 + `X-Trace-*` 헤더 |
-| `POST` | `/api/trace/stats` | 상세 통계 (Latency/CMD/Histogram/SizeCount) | `JSON` |
+| `POST` | `/api/trace/stats` | 상세 통계 (Latency/CMD/Histogram/SizeCount) | JSON |
 
 ---
 
@@ -97,9 +76,9 @@ CREATE TABLE portal_trace_jobs (
     parquetBucket VARCHAR(64) NOT NULL,
     parquetPrefix VARCHAR(512) NOT NULL,
     sizeBytes BIGINT,
-    status VARCHAR(16) NOT NULL,             -- UPLOADED/PARSING/PARSED/FAILED
+    status VARCHAR(16) NOT NULL,            -- UPLOADED / PARSING / PARSED / FAILED
     progressPercent INT,
-    currentStage VARCHAR(32),                -- DOWNLOADING/PARSING/CONVERTING/UPLOADING/COMPLETED/FAILED
+    currentStage VARCHAR(32),               -- DOWNLOADING / PARSING / CONVERTING / UPLOADING / COMPLETED / FAILED
     errorMessage TEXT,
     createdAt DATETIME,
     parsedAt DATETIME,
@@ -109,7 +88,7 @@ CREATE TABLE portal_trace_jobs (
 CREATE TABLE portal_trace_parquets (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     jobId BIGINT NOT NULL,
-    traceType VARCHAR(16) NOT NULL,          -- ufs | block | ufscustom
+    traceType VARCHAR(16) NOT NULL,         -- ufs | block | ufscustom
     parquetPath VARCHAR(1024) NOT NULL,
     totalEvents BIGINT,
     schemaVersion VARCHAR(32),
@@ -122,7 +101,7 @@ CREATE TABLE portal_trace_parquets (
 
 ### 3.2 Parquet 스키마
 
-#### UFS (ufs-v1)
+**UFS (ufs-v1)**:
 
 | 컬럼 | 타입 | 설명 |
 |---|---|---|
@@ -131,7 +110,7 @@ CREATE TABLE portal_trace_parquets (
 | `cpu` | UInt32 | CPU 코어 번호 |
 | `action` | Utf8 | `send_req` / `complete_rsp` |
 | `tag` | UInt32 | UFS command tag |
-| `opcode` | Utf8 | SCSI opcode (`0x28`=READ_10, `0x2a`=WRITE_10, …) — 차트에서 `cmd` 로 매핑 |
+| `opcode` | Utf8 | SCSI opcode (0x28=READ_10, 0x2a=WRITE_10, …) — 차트에서 `cmd` 로 매핑 |
 | `lba` | UInt64 | Logical Block Address |
 | `size` | UInt32 | I/O 크기 (바이트) |
 | `groupid` | UInt32 | CP group id |
@@ -140,15 +119,16 @@ CREATE TABLE portal_trace_parquets (
 | `dtoc` | Float64 | Dispatch→Complete latency (ms, complete 이벤트) |
 | `ctoc` | Float64 | Complete→Complete latency (ms) |
 | `ctod` | Float64 | Complete→Dispatch latency (ms, send 이벤트) |
-| `continuous` | Bool | 이전 complete 의 `lba+size == lba` |
-| `aligned` | Bool | `lba%8==0 && size%8==0` (UFS 4KB 정렬) |
+| `continuous` | Bool | 이전 complete 의 (lba + size) == 현재 lba |
+| `aligned` | Bool | lba % 8 == 0 && size % 8 == 0 (UFS 4KB 정렬) |
 
-#### Block (block-v1)
+**Block (block-v1)**:
 
-- UFS 와 구조 동일, 단 `lba` → `sector` 로 naming. `opcode` → `io_type` (RA/R/W/FF/D 등). `chart_rpc::build_chart_batch_block` 에서 `sector→lba`, `io_type→cmd` 로 **공용 스키마로 리네임**.
-- Flush/size=0/sector=u64::MAX 케이스는 **파싱 단계에서 `sector=0` 정규화** (커밋 `4046671`, `log_common::normalize_sector`).
+- UFS 와 구조 동일, 단 `lba` → `sector` naming. `opcode` → `io_type` (RA/R/W/FF/D 등).
+- `chart_rpc::build_chart_batch_block` 에서 **공용 스키마로 리네임** (sector→lba, io_type→cmd).
+- Flush/size=0/sector=u64::MAX 케이스는 **파싱 단계에서 sector=0 정규화** (`log_common::normalize_sector`).
 
-#### UFSCUSTOM (ufscustom-v1)
+**UFSCUSTOM (ufscustom-v1)**:
 
 | 컬럼 | 타입 | 비고 |
 |---|---|---|
@@ -171,43 +151,33 @@ CREATE TABLE portal_trace_parquets (
 
 ## 4. 업로드 · 파싱 플로우
 
-```mermaid
-sequenceDiagram
-    participant B as Browser
-    participant P as TraceJobController
-    participant S as TraceJobService
-    participant DB as binmapper DB
-    participant MIO as MinIO
-    participant R as Rust trace (:50053)
+```
+1. Browser → POST /api/trace/upload (multipart)
+2. TraceJobController.upload → TraceJobService.uploadAndParse(user, file)
+3. Service → DB INSERT (status=UPLOADED, progress=0) → jobId 획득
+4. Service → MinIO PUT trace-uploads/{user}/{date}/{jobId}/{file}
+5. Service → Browser 응답 { jobId, status: "UPLOADED" }
 
-    B->>P: POST /api/trace/upload (multipart)
-    P->>S: uploadAndParse(user, file)
-    S->>DB: INSERT (status=UPLOADED, progress=0)
-    DB-->>S: jobId
-    S->>MIO: PUT trace-uploads/{user}/{date}/{jobId}/{file}
-    S->>P: TraceJob
-    P-->>B: { jobId, status=UPLOADED }
+   ── 여기부터 @Async triggerParse(jobId) ──
 
-    Note over S: @Async triggerParse(jobId)
-    S->>DB: status=PARSING
-    S->>R: ProcessLogs (streaming gRPC)
-    R->>MIO: GET trace-uploads/...
-    R->>R: parse + processors(latency/qd/continuous)
-    R->>MIO: PUT trace-parquet/{user}/{jobId}/{ufs,block,ufscustom}.parquet
-    R-->>S: ProcessLogsProgress (stage/progress/…)
-    S->>DB: currentStage, progressPercent 갱신
-    R-->>S: 완료 (output_files[])
-    S->>DB: INSERT portal_trace_parquets rows
-    S->>DB: status=PARSED, parsedAt=now
+6. Service → DB status=PARSING
+7. Service → Rust ProcessLogs (gRPC streaming)
+8. Rust → MinIO GET trace-uploads/...
+9. Rust → parse + processors (latency/qd/continuous/aligned)
+10. Rust → MinIO PUT trace-parquet/{user}/{jobId}/{ufs,block,ufscustom}.parquet
+11. Rust → Service: ProcessLogsProgress (stage, progress_percent, …) 반복
+12. Service → DB currentStage, progressPercent 갱신 (매 메시지)
+13. Rust → Service: 완료 (output_files[])
+14. Service → DB INSERT portal_trace_parquets rows
+15. Service → DB status=PARSED, parsedAt=now
 
-    B->>P: GET /api/trace/jobs/{id} (polling 2s)
-    P-->>B: status=PARSED + parquets
+   ── Browser 는 GET /api/trace/jobs/{id} 를 2초 간격으로 polling ──
 ```
 
 ### 주요 포인트
 
 - **선 INSERT 후 업로드**: jobId 를 먼저 발급받아 MinIO 경로에 포함 → id 기반 고유성 보장
-- **@Async 파싱**: upload 요청은 즉시 응답 반환, 파싱은 백그라운드 스레드 (Portal 재시작 시 PARSING 중이던 job 은 그대로 FAILED 로 가지 않고 다음 폴링 시점까지 마지막 상태 유지 — 복구는 `POST /reparse` 로 수동)
+- **@Async 파싱**: upload 요청은 즉시 응답 반환, 파싱은 백그라운드 스레드. Portal 재시작 시 PARSING 중이던 job 은 그대로 남아있으며, 복구는 수동 `POST /reparse` 로
 - **Rust ProcessLogs 스트리밍**: `stage` 값 (`DOWNLOADING` → `PARSING` → `CONVERTING` → `UPLOADING` → `COMPLETED`) 과 `progress_percent` (0~100) 를 DB 에 실시간 반영 → 프론트 2초 polling 으로 진행 단계 표시
 - **Reparse**: 기존 원본은 `trace-uploads` 에 남아있으므로 파서 로직 변경 시 재파싱만으로 새 parquet 생성. `status=UPLOADED` 로 되돌리고 `triggerParse` 재호출
 
@@ -219,23 +189,28 @@ sequenceDiagram
 
 `POST /api/trace/chart` 요청 흐름:
 
-```mermaid
-flowchart LR
-    A[요청: parquetId<br/>+ filter<br/>+ timeRange<br/>+ targetPoints] --> B[Portal<br/>TraceController]
-    B -->|"gRPC GetChartData"| C[Rust<br/>chart_rpc]
-    C --> D["parquet projection<br/>+ row-filter (time)"]
-    D --> E["apply_filters<br/>(action/lba/qd/dtoc/ctoc/ctod)"]
-    E --> F[build_chart_batch_<br/>ufs/block/ufscustom]
-    F --> G[time_bucket_decimate]
-    G --> H[compute_stats]
-    F --> H
-    G --> I[Arrow IPC<br/>StreamWriter]
-    H --> J[ChartLatencyStats<br/>proto]
-    I --> K[bytes arrow_ipc]
-    J --> L[headers<br/>X-Trace-Stats JSON]
-    K --> M[Portal 응답]
-    L --> M
-    M -->|"application/vnd.apache.arrow.stream"| N[Browser<br/>tableFromIPC]
+```
+요청(parquetId + filter + timeRange + targetPoints)
+    ↓
+Portal TraceController
+    ↓ gRPC GetChartData
+Rust chart_rpc
+    ↓
+parquet projection + row-filter (time)
+    ↓
+apply_filters (action / lba / qd / dtoc / ctoc / ctod)
+    ↓
+build_chart_batch_(ufs|block|ufscustom)   ← 공용 10컬럼 스키마
+    ↓
+time_bucket_decimate               ← target_points 만큼 샘플링
+    ↓
+compute_stats (dtoc, ctod, ctoc, qd × min/max/avg/p50/p95/p99)
+    ↓
+Arrow IPC StreamWriter (bytes)
+    ↓
+Portal 응답: application/vnd.apache.arrow.stream + X-Trace-* 헤더
+    ↓
+Browser: tableFromIPC (apache-arrow)
 ```
 
 **응답 구조**:
@@ -286,25 +261,21 @@ flowchart LR
 
 ### 6.1 계산 항목
 
-```mermaid
-flowchart TD
-    A[parquet] --> B[apply_filters]
-    B --> C[chart batch<br/>공용 10컬럼]
-    C --> D1[total / send_count / duration]
-    C --> D2[continuous / aligned ratio]
-    C --> D3[read/write/discard total bytes]
-    C --> D4[Latency 4종<br/>dtoc/ctod/ctoc/qd<br/>min/max/avg/stddev/median<br/>p99/p999/p9999/p99999/p999999]
-    C --> D5[CMD 별 stats<br/>count/send/ratio/totalSize<br/>+ 4 latency]
-    C --> D6[Latency Histogram<br/>cmd × lt 별 버킷 카운트]
-    C --> D7[CMD + Size count]
-    D1 & D2 & D3 & D4 & D5 & D6 & D7 --> E[JSON 응답]
-```
+`output/stats_rpc.rs::build_payload` 가 하나의 `RecordBatch` 스캔으로 다음을 동시에 산출:
 
-### 6.2 핵심 구현
+- **Overview**: total / send_count / duration (초)
+- **Ratio**: continuous / aligned (%)
+- **I/O Amount**: read / write / discard total bytes
+- **Latency 4종** (dtoc / ctod / ctoc / qd): min/max/avg/stddev/median/p99/p999/p9999/p99999/p999999
+- **CMD 별 stats**: count / send / ratio / totalSize / continuous / 4 latency
+- **Latency Histogram**: cmd × latency_type 별 버킷 카운트
+- **CMD + Size count**: cmd × size 별 건수
 
-`output/stats_rpc.rs::build_payload` — 단일 `RecordBatch` 스캔으로 모든 집계 동시 수행. 정렬 기반 percentile (sort + linear interpolation). 별도 라이브러리 없음.
+정렬 기반 percentile (sort + linear interpolation). 별도 라이브러리 없음.
 
-**action_pair** — trace_type / 실제 리터럴 스캔으로 request/complete action 문자열 결정:
+### 6.2 action_pair 결정
+
+trace_type + 실제 리터럴 스캔으로 request/complete action 결정:
 
 | trace_type | request | complete |
 |---|---|---|
@@ -313,11 +284,13 @@ flowchart TD
 | `block` (blktrace CSV) | `Q` | `C` |
 | `ufscustom` | (없음, 빈 문자열) | `complete` 고정 |
 
-**continuous 정의**: 이전 complete 이벤트의 `lba + size == 현재 이벤트 lba` (cmd 그룹 내). Parser/processor 단계에서 이미 계산된 `continuous` 컬럼이 있으면 그대로 사용, 없으면 stats 계산 시 fallback 재계산.
+### 6.3 연산 정의
 
-**sector_bytes**: `ufs`/`ufscustom`=4096, `block`=512 (read/write/discard total 바이트 환산).
+- **continuous**: 이전 complete 이벤트의 `lba + size == 현재 이벤트 lba` (cmd 그룹 내). Parser/processor 단계에서 이미 계산된 `continuous` 컬럼이 있으면 재사용, 없으면 stats 계산 시 fallback
+- **aligned**: `lba % 8 == 0 && size % 8 == 0` (UFS 4KB 정렬 기준)
+- **sector_bytes**: UFS/UFSCUSTOM=4096, Block=512 (read/write/discard total 바이트 환산)
 
-### 6.3 Latency Histogram
+### 6.4 Latency Histogram
 
 `latency_ranges_ms` 파라미터로 버킷 경계 지정 (기본 `[0.1, 0.5, 1, 5, 10, 50, 100, 500, 1000]`). cmd × latency_type (`dtoc`/`ctoc`/`ctod`) 별로 각 버킷 count. 0 값은 제외.
 
@@ -330,8 +303,9 @@ flowchart TD
 기존 sync 경로 (`chart_rpc.rs`):
 
 ```
-MinIO GET (전체 파일) → /tmp/chart_data_{uuid}.parquet →
-File::open → ParquetRecordBatchReaderBuilder (sync) → concat_batches
+MinIO GET (전체 파일) → /tmp/chart_data_{uuid}.parquet
+  → File::open → ParquetRecordBatchReaderBuilder (sync)
+  → concat_batches
 ```
 
 5GB 파일에서:
@@ -341,25 +315,31 @@ File::open → ParquetRecordBatchReaderBuilder (sync) → concat_batches
 
 ### 7.2 설계
 
-```mermaid
-flowchart LR
-    A[Portal gRPC 요청] --> B{TRACE_PARQUET_READER}
-    B -->|"unset (기본)"| C[sync 경로]
-    B -->|"async"| D[async 경로]
+**환경변수 `TRACE_PARQUET_READER`** 로 분기:
 
-    C --> C1[download_file<br/>전체 /tmp]
-    C1 --> C2[sync<br/>ParquetRecordBatchReaderBuilder]
-    C2 --> C3[concat → ChartPayload]
+- `unset` 또는 `sync` (기본): 기존 sync 경로 유지 (회귀 0)
+- `async`: MinIO range-GET 기반 streaming read (5GB+ parquet 최적)
 
-    D --> D1[head_object<br/>파일 크기 조회]
-    D1 --> D2[tail 64KB range-GET]
-    D2 --> D3[footer length 파싱]
-    D3 --> D4[necessary? 추가 range-GET]
-    D4 --> D5[ParquetMetaData]
-    D5 --> D6["ParquetRecordBatchStream<br/>(row group 단위 async)"]
-    D6 --> D7[projection + row-filter<br/>→ chunk 별 range-GET]
-    D7 --> D8[stream.next().await → batch]
-    D8 --> D9[concat → ChartPayload]
+**async 경로 흐름**:
+
+```
+head_object → 파일 크기 조회
+    ↓
+tail 64KB range-GET
+    ↓
+footer length 파싱 (마지막 4바이트 u32)
+    ↓
+필요 시 추가 range-GET (footer 가 64KB 초과)
+    ↓
+ParquetMetaData 로드 (S3 요청 1~2회)
+    ↓
+ParquetRecordBatchStream (row group 단위 async)
+    ↓
+projection + row-filter → chunk 별 range-GET
+    ↓
+stream.next().await → batch 하나씩 수신
+    ↓
+concat → ChartPayload
 ```
 
 ### 7.3 구현 모듈
@@ -368,38 +348,23 @@ flowchart LR
 |---|---|
 | `storage/minio_client.rs` | `head_object(path) → content_length`, `get_object_range(path, start, end) → bytes` 추가 |
 | `output/parquet_async.rs` | `MinioParquetReader` — `AsyncFileReader` trait 구현. `get_bytes(range)` 위임, `get_metadata()` 는 2-step fetch |
-| `output/chart_rpc_async.rs` | UFS/Block/UFSCUSTOM chart payload async builder. `ParquetRecordBatchStreamBuilder` + projection + time row-filter |
+| `output/chart_rpc_async.rs` | UFS/Block/UFSCUSTOM chart payload async builder |
 | `output/stats_rpc_async.rs` | Stats async builder. `continuous` 컬럼 optional 처리 (구 parquet 호환) |
-| `grpc/server.rs` | `get_chart_data`/`get_trace_stats` 핸들러 양쪽에 sync/async 분기. env `TRACE_PARQUET_READER=async` 옵트인 |
+| `grpc/server.rs` | `get_chart_data`/`get_trace_stats` 핸들러 양쪽에 sync/async 분기 |
 
-### 7.4 Footer 2-step fetch
+### 7.4 검증
 
-Parquet 파일 구조:
-```
-[magic 'PAR1'][data row groups...][metadata][4-byte footer length][magic 'PAR1']
-```
-
-`MinioParquetReader::get_metadata`:
-
-1. Tail 64KB 를 먼저 range-GET
-2. 마지막 8바이트에서 `u32 footer_length` 파싱
-3. `footer_length + 8 ≤ 64KB` 이면 tail 에서 추출
-4. 넘으면 추가 range-GET 으로 앞부분 보강
-
-→ S3 요청 **1~2회**로 metadata 완성. 전체 파일 다운로드 X.
-
-### 7.5 검증 결과
-
-- `/tmp/chart_data_*.parquet` 생성 0건 확인
+- async 모드 기동 후 `/tmp/chart_data_*.parquet` 생성 0건 확인
 - 로그: `[GetChartData] reader=async (range-GET)` / `[GetTraceStats] reader=async (range-GET)`
 - 체감 응답 시간 감소 (sync 대비 첫 바이트 도착 빨라짐)
 
-### 7.6 활성화
+### 7.5 활성화
 
 `run_grpc.sh` 에서 환경변수로 제어:
+
 ```bash
 export TRACE_PARQUET_READER=async   # 활성
-# export TRACE_PARQUET_READER=      # 미설정 시 기본 sync
+# export TRACE_PARQUET_READER=       # 미설정 시 기본 sync
 ```
 
 **회귀 방지**: 기본값은 sync. 운영 배포 시점에는 async 로 전환하되 문제 시 env 제거로 즉시 롤백 가능.
@@ -411,6 +376,7 @@ export TRACE_PARQUET_READER=async   # 활성
 ### 8.1 Feature Flag
 
 `import.meta.env.VITE_TRACE_RENDERER` 값에 따라 분기:
+
 - `echarts` (기본, unset 포함) — 기존 ECharts 경로, `TraceChartView.svelte`
 - `deckgl` (opt-in) — Deck.gl WebGL 경로, `TraceChartViewDeck.svelte` **dynamic import** (flag off 사용자는 deck.gl 번들 미다운로드)
 
@@ -420,40 +386,44 @@ export TRACE_PARQUET_READER=async   # 활성
 
 ```typescript
 interface Props {
-	series: { time, lba, qd, cpu, dtoc, ctoc, ctod, action, cmd: string[] };
-	meta: ChartMeta | null;
-	traceType: 'ufs' | 'block' | 'ufscustom';
-	zoomed: boolean;
-	onZoomChange: (startMs, endMs) => void;
-	onResetZoom: () => void;
-	onBrushSelected?: (range) => void;
+    series: { time, lba, qd, cpu, dtoc, ctoc, ctod, action, cmd };
+    meta: ChartMeta | null;
+    traceType: 'ufs' | 'block' | 'ufscustom';
+    zoomed: boolean;
+    onZoomChange: (startMs, endMs) => void;
+    onResetZoom: () => void;
+    onBrushSelected?: (range) => void;
 }
 ```
 
 ### 8.3 ECharts 경로 (`TraceChartView.svelte`)
 
 - 6 scatter (LBA / Queue Depth / CPU / DtoC / CtoD / CtoC)
-- 사이드바: Action 탭 (send/complete/all) + 차트 visible 토글
-- cmd 색상: `cmdColors.ts::createCmdColorAssigner` — SCSI opcode + 문자열 매칭 → Read(파랑)/Write(주황)/Flush(초록)/Discard(보라)/Other(회색) 팔레트
-- Legend (우측 세로) 토글 → 모든 차트 동기화 (`setOption({legend:{selected}})` 브로드캐스트)
-- Brush 드래그 (우클릭 → 영역선택 메뉴 → pointer drag → pixel→data 역변환) → `onBrushSelected` → 상위에서 filter 반영
+- 사이드바: Action 탭 (send / complete / all) + 차트 visible 토글
+- cmd 색상: `cmdColors.ts::createCmdColorAssigner` — SCSI opcode + 문자열 매칭
+  - Read (0x28/RA/R/…) → 파랑
+  - Write (0x2a/WA/W/…) → 주황·빨강
+  - Flush (0x35/FF/…) → 초록
+  - Discard (0x42/D/…) → 보라
+  - Other → 회색
+- Legend (우측 세로) 토글 → 모든 차트 동기화
+- Brush 드래그 (우클릭 → 영역선택 메뉴 → pointer drag → pixel→data 역변환) → `onBrushSelected` 상위 전파
 - CPU 차트 2모드: `CMD`(Y=CPU 0~8 고정, 색상=cmd) / `LBA`(Y=LBA, 색상=CPU 0~7 고정 팔레트)
 - 차트 높이 리사이즈 (`resize: vertical` + ResizeObserver, 모든 차트 동기화)
 
 ### 8.4 Deck.gl 경로 (`deckgl/`)
 
-```
-deckgl/
-├── DeckScatterChart.svelte      # 단일 차트 (canvas + Deck 인스턴스 + SVG overlay)
-├── TraceChartViewDeck.svelte    # 6차트 wrapper (ECharts 경로와 동일 구조)
-├── buildPointData.ts            # series → Float32Array/Uint8Array (binary attribute)
-├── useScales.ts                 # d3-scale 기반 tick 생성
-├── viewState.ts                 # OrthographicView target/zoom ↔ data domain
-├── chartSync.svelte.ts          # 차트 간 xDomain/legend/cpuMode 공유 store
-├── AxisOverlay.svelte           # SVG x/y 축
-├── LegendOverlay.svelte         # 우측 세로 cmd 토글
-└── BrushOverlay.svelte          # 우클릭 활성 → 사각형 drag
-```
+구성 파일:
+
+- `DeckScatterChart.svelte` — 단일 차트 (canvas + Deck 인스턴스 + SVG overlay)
+- `TraceChartViewDeck.svelte` — 6차트 wrapper (ECharts 경로와 동일 구조)
+- `buildPointData.ts` — series → Float32Array / Uint8Array (binary attribute)
+- `useScales.ts` — d3-scale 기반 tick 생성
+- `viewState.ts` — OrthographicView target/zoom ↔ data domain
+- `chartSync.svelte.ts` — 차트 간 xDomain / legend / cpuMode 공유 store
+- `AxisOverlay.svelte` — SVG x/y 축
+- `LegendOverlay.svelte` — 우측 세로 cmd 토글
+- `BrushOverlay.svelte` — 우클릭 활성 → 사각형 drag
 
 **성능**: `ScatterplotLayer` binary attribute mode — 1M 포인트 60fps, 10M 까지 확장 가능 (GPU 메모리 한계).
 
@@ -462,6 +432,7 @@ deckgl/
 ### 8.5 Arrow IPC 디코딩
 
 `lib/utils/arrow-decoder.ts`:
+
 - `tableFromIPC(bytes)` — 응답 파싱
 - `columnAsNumbers(table, name)` — BigInt(UInt64) → Number 다운캐스트
 - `columnAsStrings(table, name)` — Utf8 → string[]
@@ -498,7 +469,7 @@ record TraceFilterDto(
 | `ctoc` | `minCtoc` / `maxCtoc` |
 | `cpu` | Y 스킵 (CPU 필터 필드 없음, X 만) |
 
-X 범위는 모든 차트 동일 — `timeStartMs` / `timeEndMs` 에 저장. Filter bar 자동 펼침 + Chart + Stats 자동 재조회.
+X 범위는 모든 차트 공통 — `timeStartMs` / `timeEndMs` 저장. Filter bar 자동 펼침 + Chart + Stats 자동 재조회.
 
 ### 9.3 Proto 매핑
 
@@ -508,9 +479,10 @@ Portal `buildFilterOptions(TraceFilterDto)` 가 `FilterOptions` proto 로 변환
 
 ## 10. UI/UX 패턴
 
-### 10.1 레이아웃 (`paneforge`)
+### 10.1 레이아웃 (paneforge)
 
 3-pane:
+
 1. 좌측 Jobs 리스트 (기본 20%, 14~40% resize, collapse/완전숨김 3단계)
 2. 메인: 툴바 + Filter bar + Raw Chart / Statistics 탭
 3. localStorage 에 크기 자동 저장 (`autoSaveId="trace-layout"`)
@@ -537,7 +509,9 @@ Job 리스트 하단에 `다운로드 45%` / `파싱 80%` 형태로 현재 `curr
 
 ---
 
-## 11. 업로드 / 파싱 성능 팁
+## 11. 성능 가이드
+
+### 11.1 파일 크기별 권장 설정
 
 | 파일 크기 | 권장 설정 | 메모 |
 |---|---|---|
@@ -546,7 +520,8 @@ Job 리스트 하단에 `다운로드 45%` / `파싱 80%` 형태로 현재 `curr
 | 2GB~5GB | async 권장 | /tmp 여유 부족 가능 |
 | 5GB+ | **async 필수** | sync 경로는 실용 불가 |
 
-프론트 `targetPoints`:
+### 11.2 Samples 선택
+
 - 50k (ECharts 기본) — 10M 이벤트에서 시각 품질 OK
 - 500k~1M (Deck.gl) — 시계열 밀도 표현 정확
 
@@ -564,8 +539,9 @@ Job 리스트 하단에 `다운로드 45%` / `파싱 80%` 형태로 현재 `curr
 ## 13. Critical Files
 
 ### Portal (Spring Boot)
-- `com.samsung.move.trace.controller.TraceController` — Chart/Stats REST
-- `com.samsung.move.trace.controller.TraceJobController` — Upload/List/Reparse
+
+- `com.samsung.move.trace.controller.TraceController` — Chart / Stats REST
+- `com.samsung.move.trace.controller.TraceJobController` — Upload / List / Reparse
 - `com.samsung.move.trace.service.TraceJobService` — 파싱 오케스트레이션
 - `com.samsung.move.trace.TraceGrpcClient` — Rust 래퍼
 - `com.samsung.move.trace.entity.{TraceJob, TraceParquet}` — JPA
@@ -574,6 +550,7 @@ Job 리스트 하단에 `다운로드 45%` / `파싱 80%` 형태로 현재 `curr
 - `sql/add-trace-jobs.sql` — DDL
 
 ### Frontend (SvelteKit)
+
 - `routes/trace/+page.svelte` — 페이지 전체
 - `routes/trace/TraceChartView.svelte` — ECharts 렌더러
 - `routes/trace/TraceStatsView.svelte` — 통계 탭
@@ -584,12 +561,13 @@ Job 리스트 하단에 `다운로드 45%` / `파싱 80%` 형태로 현재 `curr
 - `lib/utils/arrow-decoder.ts` — Arrow IPC 디코더
 
 ### Rust trace 서비스
+
 - `proto/log_processor.proto` — gRPC 스키마
 - `src/grpc/server.rs` — gRPC 핸들러 (ProcessLogs / GetChartData / GetTraceStats)
 - `src/output/chart_rpc.rs` / `chart_rpc_async.rs` — 차트 payload builder
 - `src/output/stats_rpc.rs` / `stats_rpc_async.rs` — 통계 payload builder
 - `src/output/parquet_async.rs` — MinIO range-GET AsyncFileReader
 - `src/utils/downsample.rs` — time-bucket decimation
-- `src/parsers/log_common.rs` — ftrace/blktrace CSV 파서 (`normalize_sector` 포함)
-- `src/processors/{ufs, block, ufscustom}.rs` — latency/continuous/aligned 계산
+- `src/parsers/log_common.rs` — ftrace / blktrace CSV 파서 (`normalize_sector` 포함)
+- `src/processors/{ufs, block, ufscustom}.rs` — latency / continuous / aligned 계산
 - `src/storage/minio_client.rs` — `head_object`, `get_object_range`
