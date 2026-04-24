@@ -1,0 +1,193 @@
+---
+title: "5. REST API & {userdata} placeholder"
+description: MetadataController 의 15개 endpoint + Admin CRUD + readlink 로 userdata block 이름 1회 조회 후 commandTemplate 치환
+sidebar:
+  order: 5
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import controllerRaw from '../../../../snippets/MetadataController.java?raw';
+import userdataRaw from '../../../../snippets/MetadataCommandExecutor-userdata.java?raw';
+
+## 30초 요약
+
+REST 계층은 두 컨트롤러로:
+
+1. **`MetadataController` (`/api/metadata/*`)** — 사용자용 15 endpoint: 타입 조회, 슬롯 상태, in-memory 시계열, 파일 다운로드, 토글/제외/주기 설정
+2. **`MetadataAdminController` (`/api/admin/metadata/*`)** — Admin CRUD: Type/Command/ProductMapping 관리 + 중복 검증
+
+`{userdata}` placeholder 치환:
+
+- **1회 조회**: `readlink -f /dev/block/by-name/userdata` → `/dev/block/sda10` → basename `sda10`
+- **저장**: `SlotMonitorContext.placeholders.put("userdata", "sda10")` — startMonitoring 시 1회만
+- **치환**: `resolvePlaceholders(template, ctx)` 가 매 monitorOnce 때 `{userdata}` 를 실제 값으로
+
+f2fs 경로는 디바이스마다 다른데(`sda10`, `sdc77`, `mmcblk0p13` 등) commandTemplate 에 하드코딩하면 제품별 매핑이 폭발적으로 증가 → placeholder 로 흡수.
+
+## 코드 투어 — `MetadataController` 주요 endpoint
+
+<CodeTour
+  client:visible
+  language="java"
+  source="MetadataController.java"
+  height={780}
+  code={controllerRaw}
+  steps={[
+    {
+      id: 'types',
+      title: '타입 조회 3종',
+      lines: [14, 29],
+      body: '<p>/types 전체, /types/for-product 필터(controller/nandType/cellType), /types/for-tr TR 기반. TR 기반은 headType(0=compat,1=perf) 으로 TR 테이블 분기 → 제품 정보 → mapping → 타입들.</p>',
+    },
+    {
+      id: 'status',
+      title: 'slot 상태 — monitoring/elapsed/types',
+      lines: [33, 47],
+      body: '<p>activeMonitors 에서 context 찾아 상태 snapshot. monitoring=false 면 간단 응답. 프론트가 1초 polling 으로 elapsedSeconds 를 "경과 시간" 으로 표시.</p>',
+    },
+    {
+      id: 'typekey',
+      title: 'typeKey 별 시계열 (핵심 polling 대상)',
+      lines: [49, 54],
+      body: '<p>/slot/{tent}/{slot}/{typeKey} — monitoredData[typeKey] 전체 반환. CoW 라 읽는 동안 write 와 무관, 안전. 배열 전체를 매 초 받지만 크기가 수 KB~수십 KB 수준이라 부담 없음.</p>',
+    },
+    {
+      id: 'file',
+      title: 'VM 파일 직접 읽기',
+      lines: [56, 61],
+      body: '<p>TC 가 끝난 뒤에도 VM 에 저장된 debug_*.json 을 조회. tentacleIp 옵션은 HEAD 경유 없이 IP 직접 — 다른 세트 이전된 TC history 도 조회 가능.</p>',
+    },
+    {
+      id: 'toggle',
+      title: '활성화 토글',
+      lines: [63, 72],
+      body: '<p>enabled=true → enableSlot (셋에 추가), false → disableSlot (셋에서 제거 + 진행 중이면 cancel). 멀티슬롯 일괄 적용은 프론트가 각 슬롯에 순차 호출.</p>',
+    },
+    {
+      id: 'excluded',
+      title: '제외 타입 설정',
+      lines: [74, 82],
+      body: '<p>Set<String> — typeKey 집합. 예: bitmap 류는 용량 커서 제외하고 싶을 때. 수집 중에도 다음 tick 부터 반영 (already-fetched 데이터는 유지).</p>',
+    },
+    {
+      id: 'interval',
+      title: '슬롯별 주기 설정 (초)',
+      lines: [84, 93],
+      body: '<p>최소 10초 clamp — 네트워크/디바이스 보호. 기존 future 는 재생성하지 않고 map 만 갱신 — 다음 startMonitoring 때 반영. 즉시 적용하려면 toggle off→on.</p>',
+    },
+  ]}
+/>
+
+## Admin API — `MetadataAdminController`
+
+사용자용과 분리된 `/api/admin/metadata/*` 14 endpoint:
+
+| 리소스 | CRUD | 특이점 |
+|---|---|---|
+| `/types` | GET/POST/PUT/DELETE | DELETE 시 연관 command/mapping 자동 정리 |
+| `/commands` | GET/POST/PUT/DELETE + `/by-type/{typeId}` | **`commandType` 런타임 변경 가능** — 같은 명령을 sysfs→keyvalue 로 바꿔 실험 |
+| `/product-mappings` | GET/POST/PUT/DELETE + `/by-type/{typeId}` | **UNIQUE `(controller, cell, nand, oem)`** — 중복 등록 시 409 Conflict |
+
+중복 체크는 서비스 레이어:
+
+```java
+// MetadataTypeService.createProductMapping
+// 정규화 — null/blank → ""
+String c = nz(controller); String ct = nz(cellType);
+String nt = nz(nandType);  String o = nz(oem);
+
+// 이미 있는지 체크
+if (productMetadataRepo.findExact(c, ct, nt, o).isPresent()) {
+    throw new IllegalStateException("이미 등록된 제품 조합입니다");
+}
+```
+
+프론트는 이 예외를 409 로 받아 "이미 등록된 제품 조합" 알림 — 사용자에게 직관적.
+
+## Product mapping 와일드카드 매칭
+
+DB NOT NULL DEFAULT '' 로 저장하고, **빈 문자열은 wildcard**:
+
+```sql
+-- 예시 데이터
+INSERT INTO ufs_product_metadata (controller, cell_type, nand_type, oem, metadata_type_ids) VALUES
+  ('', '', '', '', '1,2'),              -- 모든 제품에 타입 1,2
+  ('CONTROLLER_A', '', '', '', '3'),    -- CONTROLLER_A 라면 타입 3도 추가
+  ('CONTROLLER_A', 'TLC', '', '', '4'); -- CONTROLLER_A + TLC 에 타입 4도
+```
+
+`findByProduct(c, ct, nt, o)` 는 각 컬럼이 `= ''` OR `= ?` 인 row 들을 모두 반환 → `metadataTypeIds` CSV 를 합집합으로 모아 **타입 1, 2, 3, 4** 전부 수집.
+
+## 코드 투어 — `{userdata}` placeholder 조회 & 치환
+
+<CodeTour
+  client:visible
+  language="java"
+  source="MetadataCommandExecutor.java#resolveUserdataBlock"
+  height={680}
+  code={userdataRaw}
+  steps={[
+    {
+      id: 'readlink',
+      title: '1차 — readlink -f',
+      lines: [5, 11],
+      body: '<p>readlink 는 symlink chain 을 끝까지 따라가 최종 실체 경로 반환. /dev/block/by-name/userdata → /dev/block/sda10. adb shell 이라 디바이스가 Android 이고 userdata 파티션이 있는 경우에만 동작.</p>',
+    },
+    {
+      id: 'fallback',
+      title: '2차 fallback — ls -al',
+      lines: [13, 22],
+      body: '<p>readlink 가 빈 문자열 반환하거나 /로 안 시작하면(일부 초기 android), ls -al 의 "-> target" 에서 추출. 두 방법 모두 실패하면 log.warn + null — {userdata} 를 쓰는 command 는 다음 tick 에 unresolved 경고.</p>',
+    },
+    {
+      id: 'basename',
+      title: 'basename 추출',
+      lines: [28, 31],
+      body: '<p>lastIndexOf(\'/\') + 1 로 basename — /dev/block/sda10 → sda10. placeholder 로 쓰이는 것이 f2fs sysfs 경로(/sys/fs/f2fs/{userdata}/...) 이므로 full path 가 아니라 name 이 필요.</p>',
+    },
+    {
+      id: 'resolve',
+      title: 'resolvePlaceholders',
+      lines: [43, 53],
+      body: '<p>monitorOnce 가 매 tick 마다 호출 — template 에 {} 없으면 바로 return(성능). placeholders map 순회로 "{key}" → value. 최종 문자열에 여전히 {userdata} 가 남아있으면 경고(조회 실패 = 해당 command 전체 skip 유도).</p>',
+    },
+  ]}
+/>
+
+## 왜 placeholder 를 1회만 조회하는가
+
+`/dev/block/by-name/userdata` 는 **디바이스가 같은 한 불변**:
+
+- 디바이스 연결 = 같은 파티션 레이아웃
+- 부팅 후 바뀌지 않음 (partition table 자체가 변경되는 경우는 극단)
+
+매 tick 마다 readlink 를 다시 치면:
+
+- adb 왕복 1회 추가 — 주기 30초에서 수집 20개 명령이면 **20% 오버헤드**
+- 디바이스 slowdown 시 전체 수집이 지연
+- placeholder 값이 변할 이유가 없음
+
+**"안 변하는 건 한 번만"** 원칙 — SlotMonitorContext 가 TC running 동안 살아 있으므로 그 수명에 바인딩.
+
+## `{userdata}` 외의 placeholder 는?
+
+현재는 `{userdata}` 하나만. 추가하고 싶다면:
+
+1. `SlotMonitorContext.placeholders.put("newkey", value)` 를 startMonitoring 어딘가에서 populate
+2. commandTemplate 에 `{newkey}` 쓰기 — resolvePlaceholders 가 자동 치환
+
+예시 후보:
+- `{ufs_partition}` — RPMB 등 다른 UFS LU 경로
+- `{kernel_version}` — 커널 별 sysfs 경로 변주
+
+추가 시 코드는 단순 — **설계 공간이 이미 열려 있음**.
+
+## 직접 해보기
+
+- [ ] `readlink -f /dev/block/by-name/userdata` 를 adb shell 로 직접 실행 → 디바이스의 f2fs 파티션 확인
+- [ ] `commandTemplate = "/sys/fs/f2fs/{userdata}/iostat_info"` 인 table command 등록 → monitorOnce 가 `/sys/fs/f2fs/sda10/iostat_info` 로 치환해 호출하는지
+- [ ] `/api/admin/metadata/product-mappings` POST 로 중복 조합 시도 → 409 응답 + 메시지 확인
+- [ ] `PUT .../interval?intervalSeconds=5` → Controller 가 10으로 clamp 하는지
+- [ ] 일부러 userdata 파티션 없는 디바이스 (비 Android, 또는 파티션명 다름) 로 monitoring → log 에 `Unresolved {userdata}` 경고 확인
+
+다음: [6. MetadataDialog & f2fs 전용 뷰 3종](/learn/l2-metadata/06-frontend-f2fs-views/) →

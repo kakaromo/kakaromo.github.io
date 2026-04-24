@@ -1,0 +1,212 @@
+---
+title: 4. binary command_type + BinMapper 통합
+description: adb shell → /dev/debug_xxx.bin → adb pull → SFTP read → binMapperService.parseFromBytes → MappedResultFlattener → flat JSON. BinMapper L2 가 devtool 을 넘어 서비스 계층의 첫 소비자가 되는 지점
+sidebar:
+  order: 4
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import binaryRaw from '../../../../snippets/MetadataCommandExecutor-binary.java?raw';
+import flattenRaw from '../../../../snippets/MappedResultFlattener.java?raw';
+
+## 30초 요약
+
+UFS 컨트롤러는 상태 덤프를 **C struct 바이너리** 로 제공하는 경우가 많습니다. 이걸 JSON 으로 바꾸는 기존 경로:
+
+1. **adb shell** 로 tool 실행 → 디바이스가 `/dev/debug_ssr.bin` 같은 경로에 덤프
+2. **adb pull** → tentacle VM 의 `/tmp/metadata-binary-{nanoTime}.bin`
+3. **SFTP read** → Portal 의 `byte[] data`
+4. **`binMapperService.parseFromBytes(data, predefinedStructId, ...)`** → `MappedResult` (중첩 struct 트리)
+5. **`MappedResultFlattener.flatten(mapped)`** → `Map<String, Object>` (dot-notation)
+6. **Jackson** → JSON 문자열 반환
+
+5단계가 핵심 — **BinMapper L2 를 devtool 외에 서비스 계층에서 호출하는 첫 사례**.
+
+## 왜 BinMapper 를 재사용하는가
+
+[BinMapper L2](/learn/l2-binmapper/) 는 원래 **devtool**:
+
+- 사용자가 C struct 텍스트 + 바이너리 파일을 업로드 → 파싱된 필드 트리를 Table/Hex/JSON 로 표시
+- stateless · pure function · 한 번 실행하고 버리는 구조
+
+Metadata 의 binary `command_type` 은 같은 파이프라인을 **서비스로** 호출:
+
+- `predefined_structs.kind='metadata'` 사전에 struct 등록 (Admin UI)
+- 사용자는 Admin 에서 **struct 고르기만** — 실제 매핑은 monitorOnce 가 자동
+
+이 구조의 장점:
+
+- **struct 정의는 DB 에** — binary 포맷이 바뀌면 Admin 에서 struct 수정, 코드 배포 없음
+- **sample 데이터를 BinMapper devtool 에서 미리 검증** — 같은 파이프라인이라 devtool 검증 = 서비스 동작
+- **엔진 한 개**를 두 진입점(devtool UI · 서비스 호출) 으로 공유
+
+이게 "**엔진 축**" L2 의 가치를 증명하는 지점 — L2 비교에서 BinMapper 를 엔진으로 분류한 이유가 여기서 실현됨.
+
+## 코드 투어 — `executeBinary`
+
+<CodeTour
+  client:visible
+  language="java"
+  source="MetadataCommandExecutor.java#executeBinary"
+  height={780}
+  code={binaryRaw}
+  steps={[
+    {
+      id: 'guards',
+      title: '필수 파라미터 검증',
+      lines: [6, 12],
+      body: '<p>binaryOutputPath 와 predefinedStructId 는 binary type 에서 반드시 있어야 함. monitorOnce 에서도 predefinedStruct 가 null 이면 continue 로 skip 하지만 여기서 한 번 더 방어.</p>',
+    },
+    {
+      id: 'tmp',
+      title: 'tentacle 임시 경로',
+      lines: [14, 18],
+      body: '<p>/tmp/metadata-binary-{nanoTime}.bin — 동시 수집 여러 슬롯에서 파일 이름이 겹치지 않도록 nanoTime. finally 에서 cleanup 하지만 실패해도 /tmp 가 부팅 시 정리되니 허용.</p>',
+    },
+    {
+      id: 'step1',
+      title: '(1) adb shell 로 tool 실행',
+      lines: [20, 26],
+      body: '<p>commandTemplate = "dump_ssr" 같은 디바이스 내 명령. tool 이 binaryOutputPath (/dev/debug_ssr.bin 등) 로 덤프를 쓰게 설계돼 있음. 60초 timeout — 큰 덤프가 오래 걸릴 수 있어 일반 adb 명령보다 여유.</p>',
+    },
+    {
+      id: 'step2',
+      title: '(2) adb pull',
+      lines: [28, 33],
+      body: '<p>adb -s {serial} pull {devicePath} {tentaclePath}. 120초 timeout — GB 단위 덤프는 이 경로에서 가장 오래 걸림. pull 결과 로그는 stdout 에 "N KB/s (M bytes)" 형태로 나옴.</p>',
+    },
+    {
+      id: 'step3',
+      title: '(3) SFTP read',
+      lines: [35, 43],
+      body: '<p>tentacle VM 의 임시파일을 portal 로 가져옴. session 은 이미 SSH 연결이 있어 openChannel("sftp") 로 재사용. InputStream.readAllBytes() 라 메모리에 전체 — 덤프가 수십 MB 예상, 수백 MB 이상이면 streaming 으로 바꿔야.</p>',
+    },
+    {
+      id: 'step4',
+      title: '(4) binmapper.parseFromBytes',
+      lines: [45, 51],
+      body: '<p>핵심 재사용 지점. predefined_structs 테이블의 id 로 struct 정의 조회 → byte[] 를 파싱해 MappedResult 반환. endianness 는 LITTLE 기본, AUTO 는 magic byte 등으로 자동 판정. overrideStructText=null 이라 사전 그대로 사용, preview=false 라 전체 파싱.</p>',
+    },
+    {
+      id: 'step5',
+      title: '(5) flatten',
+      lines: [52, 55],
+      body: '<p>MappedResult 는 struct 계층 트리 — 그대로는 차트/테이블에 불편. flatten 이 dot-notation 단일 Map 으로 평탄화. "a.b.c" 같은 key 라 프론트가 filter 로 선택·검색 쉬움.</p>',
+    },
+    {
+      id: 'cleanup',
+      title: '(6) 임시파일 cleanup',
+      lines: [57, 62],
+      body: '<p>best-effort — 실패해도 예외 안 터뜨림(/tmp 는 OS 가 관리). finally 에서 sftp/session 정리.</p>',
+    },
+    {
+      id: 'endianness',
+      title: 'parseEndianness — 방어적 파싱',
+      lines: [74, 80],
+      body: '<p>DB 에 잘못된 값이 들어와도 LITTLE fallback. valueOf 대소문자 정규화. AUTO 는 BinMapper 가 struct 정의를 보고 magic byte 검사(원래 BinMapper L2 기능).</p>',
+    },
+  ]}
+/>
+
+## 코드 투어 — `MappedResultFlattener`
+
+<CodeTour
+  client:visible
+  language="java"
+  source="MappedResultFlattener.java"
+  height={640}
+  code={flattenRaw}
+  steps={[
+    {
+      id: 'purpose',
+      title: 'MappedResult → flat Map',
+      lines: [1, 9],
+      body: '<p>BinMapper 가 돌려주는 트리 구조를 dot-notation Map 으로. 같은 원본 데이터에 두 표현이 있지만 시각화가 훨씬 편해짐.</p>',
+    },
+    {
+      id: 'entry',
+      title: 'flatten 진입',
+      lines: [17, 31],
+      body: '<p>instances.size() 로 분기 — 단일이면 prefix 생략, repeatAsArray 면 "structName[i]." 로. preview 모드에서는 instances 가 1~2개, 실데이터는 array 크기만큼.</p>',
+    },
+    {
+      id: 'walk',
+      title: 'walk — 재귀 순회',
+      lines: [32, 44],
+      body: '<p>리프 노드는 parsedValue 그대로 out 에. 리프 판정은 children == null || isEmpty. parsedValue 는 Long/Double/String/byte[] 등 Jackson 이 직접 serialize 가능한 타입 — BinMapper 엔진이 이미 primitive 로 변환해 둔 덕.</p>',
+    },
+    {
+      id: 'join',
+      title: 'join — dot-notation + 배열 처리',
+      lines: [46, 52],
+      body: '<p>name 이 "[0]" 같은 배열 인덱스면 dot 없이 붙임(arr[0]). 빈 prefix 면 name 만. 간단하지만 핵심 — 이 규칙으로 key 가 유효한 dot-notation 이 됨.</p>',
+    },
+  ]}
+/>
+
+**변환 예시**:
+
+```java
+// MappedResult (트리)
+smart_data {
+  temperature: 45
+  wear_level {
+    host: 10
+    ffu: 2
+  }
+  bad_blocks: [120, 122, 150]
+}
+
+// flatten 후
+{
+  "smart_data.temperature": 45,
+  "smart_data.wear_level.host": 10,
+  "smart_data.wear_level.ffu": 2,
+  "smart_data.bad_blocks[0]": 120,
+  "smart_data.bad_blocks[1]": 122,
+  "smart_data.bad_blocks[2]": 150
+}
+```
+
+프론트 `PerfChart` 의 key 선택 UI 에서 `smart_data.wear_level.host` 체크박스만 고르면 해당 라인 차트가 뜸.
+
+## Admin UI 에서 binary command 등록
+
+Admin → Metadata 탭 → Commands 섹션에서 **"binary"** 선택 시 3 필드가 추가 노출:
+
+1. **`predefinedStruct`** 드롭다운 — `kind='metadata'` 인 사전만 표시 (BinMapper 의 전체 사전이 아니라 **metadata 전용 subset**)
+2. **`binaryOutputPath`** — 디바이스 내 덤프 경로 (예: `/dev/debug_ssr.bin`)
+3. **`binaryEndianness`** — LITTLE / BIG / AUTO 드롭다운 (기본 LITTLE)
+
+> `predefined_structs.kind` 는 BinMapper 쪽 추가 (2026-04-22~23 세션). **metadata / dlm / general** 3종 — metadata 모니터링 용도로 구분된 struct 만 Admin UI 에서 선택 가능해 사용자 실수 방지.
+
+## 왜 AUTO endianness 를 기본으로 두지 않는가
+
+AUTO 는 매 수집마다 struct 의 magic byte 필드를 검사해 판정. 하지만:
+
+- 매 호출 CPU 비용 (작지만 누적)
+- magic 이 없는 struct 는 실패
+- UFS 컨트롤러는 **대부분 LITTLE** 로 고정
+
+그래서 **LITTLE 기본** + 필요 시 AUTO 선택. BIG 은 드물지만 일부 legacy 장비용.
+
+## 실패 모드와 복구
+
+| 실패 | 동작 | 복구 |
+|---|---|---|
+| adb shell 실패 (tool 없음) | RuntimeException | 다음 tick 에 다시 시도 |
+| adb pull 실패 (경로 없음) | RuntimeException | 같음 |
+| SFTP read 실패 | RuntimeException | 같음 |
+| binmapper 파싱 실패 (struct mismatch) | RuntimeException | 다음 tick, struct 재검토 필요 |
+| JSON 직렬화 실패 (비정상 타입) | RuntimeException | BinMapper 의 parsedValue 타입 재점검 |
+
+monitorOnce 가 per-command try/catch 라 **한 binary 실패가 다른 command 를 막지 않음** — 같은 슬롯의 다른 타입은 정상 수집 계속.
+
+## 직접 해보기
+
+- [ ] BinMapper devtool(`/devtools/binmapper`) 에서 metadata struct 정의 + sample binary 로 파싱 → `MappedResult` 트리 확인
+- [ ] 같은 struct 를 `predefined_structs.kind='metadata'` 로 저장 → Admin → Metadata → Commands 에서 선택 가능해지는지
+- [ ] 일부러 잘못된 predefinedStructId 로 binary command 등록 → monitorOnce 가 해당 command 만 skip 하는지 (다른 command 는 정상)
+- [ ] binaryEndianness=BIG 로 변경 → 같은 struct 가 완전히 다른 값을 내는지 (bit 순서 역전)
+
+다음: [5. REST API & `{userdata}` placeholder](/learn/l2-metadata/05-rest-placeholder/) →

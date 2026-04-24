@@ -257,12 +257,11 @@ L2 19종을 읽으며 반복되는 판단 기준:
 - **SlotInfomation · SetInfomation 상세** — TestDB 크로스-컷의 하부 엔티티 상세
 - **Debug Registry** — 디버그 도구 동적 등록 (debugRegistry + DebugTypeInitializer). 엔진 축 4번째 후보?
 - **App Macro 녹화/재생** — Android 이벤트 녹화 + Tesseract OCR. 엔진 축 또는 기능 축
-- **UFS Metadata 모니터링** — `@Scheduled` per-slot executor + 4 command_type(iostat/heatmap/bitmap/binary) + f2fs 전용 뷰 + `{userdata}` placeholder. 2026-04-14~23 간 크게 확장돼 L2 승격 적기
 - **L1 보강** — 학습 경로 최적화, 19 L2 지도 갱신, 신규 개발자 온보딩 트랙 명시화
 
 어느 것을 다음에 쓸지는 "신규 개발자 온보딩에 가장 일찍 나타나는 모듈"로 고르면 됩니다.
 
-**검증된 사례 15건**:
+**검증된 사례 16건**:
 - [T32 Dump L2](/learn/l2-t32/) — 5단계 템플릿이 단발 Stepper 도메인에 적합함을 증명.
 - [Pre-Command L2](/learn/l2-precmd/) — 실시간 스트림이 없는 이벤트 훅 모듈에도 템플릿이 적용됨.
 - [Log Browser L2](/learn/l2-logbrowser/) — 재사용 레이어(전략 패턴)에도 적용됨.
@@ -278,6 +277,7 @@ L2 19종을 읽으며 반복되는 판단 기준:
 - [🛠 Admin 대시보드 L2](/learn/l2-admin/) — 관리 UI 패턴 1호. 2652줄 단일 페이지 18 탭 + 비관적 락 승인 워크플로.
 - [🖥 Server Admin L2](/learn/l2-serveradmin/) — 관리 UI 패턴 2호. 비트마스크 3 프로토콜 + null fallback + 5 L2 공용 인프라 관리.
 - [🎯 Trace Analysis L2](/learn/l2-trace/) — 기능 축 11호 · 데이터 규모 서브축. Rust gRPC + Arrow IPC + parquet projection + WebGL binary attribute + MinIO range-GET async reader. 4 신규 L3 개념 도입([Apache Arrow](/learn/l3-concepts/data/apache-arrow/) · [Parquet ProjectionMask/RowFilter](/learn/l3-concepts/data/parquet-projection/) · [AsyncFileReader trait](/learn/l3-concepts/rust/async-file-reader/) · [Deck.gl OrthographicView + binary attribute](/learn/l3-concepts/webgl/deckgl-orthographic/)).
+- [UFS Metadata 모니터링 L2](/learn/l2-metadata/) — 기능 축 (재작성, 20호). TC running 감지 자동 수집 + 7 command_type(tool/sysfs/keyvalue/raw/table/bitmap/binary) + BinMapper 재사용(binary) + f2fs 3 전용 뷰(Iostat/Heatmap/Bitmap) + `{userdata}` placeholder. "감지자 + 작업자 분리" 패턴의 모범.
 
 ---
 

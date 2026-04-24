@@ -1,0 +1,275 @@
+---
+title: 3. 6 가지 adb shell 파싱 방식
+description: tool/sysfs/keyvalue/raw/table/bitmap — 서로 다른 UFS 출력 포맷을 6가지 경로로 분기 파싱. 새 포맷이 나오면 Executor 에 메서드 하나 추가
+sidebar:
+  order: 3
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import monitorOnceRaw from '../../../../snippets/MetadataMonitorService-monitorOnce.java?raw';
+import sysfsRaw from '../../../../snippets/MetadataCommandExecutor-sysfs.java?raw';
+import keyvalueRaw from '../../../../snippets/MetadataCommandExecutor-keyvalue.java?raw';
+
+## 30초 요약
+
+`MetadataMonitorService.monitorOnce()` 가 `cmd.getCommandType()` 으로 **switch 분기** → `MetadataCommandExecutor` 의 메서드 호출. 이 장에서는 **비바이너리 6가지** 를 다룹니다 (binary 는 다음 장):
+
+| command_type | Executor 메서드 | 핵심 파싱 |
+|---|---|---|
+| `tool` | `executeCommand` | 출력을 그대로 반환 (JSON 가정) |
+| `sysfs` | `executeSysfsRead` | regex 캡처 그룹 → keys 매핑 |
+| `keyvalue` | `executeKeyValue` | 들여쓰기 스택 + 섹션 + 괄호 내 값 추출 |
+| `raw` | `executeRaw` | 전체 출력을 `{basename: "..."}` 로 |
+| `table` | `executeTable` | 3-column 섹션 (WRITE/READ/OTHER) |
+| `bitmap` | `executeBitmap` | 라인 배열 `{format, path, lines: [...]}` |
+
+모든 결과는 **`{...}` JSON 형태의 문자열** — monitorOnce 가 `ObjectMapper.readValue` 로 파싱해 `Map<String, Object>` 으로, `time` 필드 추가해 `CopyOnWriteArrayList` 에 누적.
+
+## 코드 투어 — `monitorOnce` 의 switch
+
+<CodeTour
+  client:visible
+  language="java"
+  source="MetadataMonitorService.java#monitorOnce"
+  height={720}
+  code={monitorOnceRaw}
+  steps={[
+    {
+      id: 'lock',
+      title: 'tryLock — 이전 tick 미완료면 skip',
+      lines: [4, 6],
+      body: '<p>scheduleAtFixedRate 는 이전 tick 실행 여부와 무관하게 다음 tick 을 trigger. 실제 수집이 주기보다 오래 걸리면 중복 실행 위험 — tryLock 으로 방어. stopMonitoring 의 최종 수집과도 race 방지.</p>',
+    },
+    {
+      id: 'switch',
+      title: 'command_type switch — 7 분기',
+      lines: [13, 34],
+      body: '<p>sysfs/raw/keyvalue/table/bitmap/binary 명시 분기, 그 외는 "tool"(default)로 처리. Java 17 switch expression — 각 케이스가 rawJson 에 대입. binary 만 predefinedStruct 누락 체크 + outputPath placeholder 치환 추가 로직.</p>',
+    },
+    {
+      id: 'non-json-skip',
+      title: 'non-JSON 출력 skip',
+      lines: [37, 40],
+      body: '<p>adb 가 에러 메시지(예: "device offline") 를 리턴하면 { 또는 [ 로 시작 안 함 → skip. 한 tick 망쳐도 다음 tick 이 정상 복구. 정상 응답 80% 이상이면 차트는 계속 유효.</p>',
+    },
+    {
+      id: 'accumulate',
+      title: 'in-memory 누적 + SFTP 저장',
+      lines: [42, 55],
+      body: '<p>parsed.put("time", elapsedSeconds) 로 시계열 X축 주입. CopyOnWriteArrayList.add — 읽기 많고 쓰기 1초 1회라 CoW 적합. SFTP 로 VM 에 debug_{typeKey}.json 덮어쓰기(전체 배열) — 프론트가 history 로 접근 가능.</p>',
+    },
+    {
+      id: 'elapsed',
+      title: 'elapsedSeconds 누적',
+      lines: [58, 63],
+      body: '<p>intervalSec 만큼 더해 다음 entry 의 time 이 됨. 중요: 실제 경과 시간이 아니라 <strong>스케줄 기준 시간</strong> — 수집이 늦어져도 time 은 일정하게 증가해 차트가 균일.</p>',
+    },
+  ]}
+/>
+
+## 왜 6 가지 분기가 필요한가
+
+"전용 tool 로 JSON 만 받자" 라는 이상은 현실에 안 맞습니다. UFS 는:
+
+- **업체마다 출력 포맷이 다름** — Samsung, SK hynix, Micron, WDC, …
+- **같은 업체 내 펌웨어마다** 라인 수/섹션 헤더가 조금씩 다름
+- **f2fs 가 제공하는 sysfs 파일** 은 f2fs 자체 구조라 업체 무관하지만, **human-readable** (예: 들여쓰기)
+- **디바이스에 새 도구를 push 할 수 없는 경우** 가 있음 (production firmware, 읽기 전용)
+
+여섯 분기는 이 다양성의 **합집합** — 각각 특정 상황에 최적:
+
+- `tool`: 디바이스에 도구 push 가능 + 도구가 JSON 내줌 (이상적, 가장 깔끔)
+- `sysfs`: 도구 push 없이 sysfs 라인 한 줄에서 여러 숫자 뽑기 (regex 로 단번에)
+- `keyvalue`: f2fs status 처럼 구조화된 human-readable (코드 수정 없이 새 필드 자동 포함)
+- `raw`: 파싱이 무의미한 큰 덩어리 — 원본 보관 + 프론트 후처리
+- `table`: iostat_info 같은 고정 3-column 섹션 (WRITE/READ 축)
+- `bitmap`: 수만 라인의 비트맵 — 라인 배열 보존해 프론트 Canvas 로 시각화
+
+## 코드 투어 — `executeSysfsRead`
+
+<CodeTour
+  client:visible
+  language="java"
+  source="MetadataCommandExecutor.java#executeSysfsRead"
+  height={720}
+  code={sysfsRaw}
+  steps={[
+    {
+      id: 'template',
+      title: 'commandTemplate 포맷 — 3 파이프 토큰',
+      lines: [3, 10],
+      body: '<p>줄바꿈으로 여러 경로, 각 라인은 "경로 | regex:패턴 | keys:키1,키2" 형태. regex/keys 생략 가능 — 생략 시 전체 출력이 value, key 는 경로의 basename.</p>',
+    },
+    {
+      id: 'split',
+      title: '라인별 파이프 분리',
+      lines: [19, 32],
+      body: '<p>split("\\\\s*\\\\|\\\\s*") 로 파이프 분리. 앞 부분은 sysfs 경로, 나머지는 prefix("regex:", "keys:") 로 구분. 기본 key 는 경로 마지막 세그먼트 — "/sys/block/sda/size" → "size".</p>',
+    },
+    {
+      id: 'adb',
+      title: 'adb shell cat 실행',
+      lines: [33, 36],
+      body: '<p>adb -s {serial} shell \'cat {sysfsPath}\'. serial 은 디바이스 시리얼 — USB ID. execCommandWithTimeout 으로 30초 이상 걸리는 경로는 차단.</p>',
+    },
+    {
+      id: 'regex',
+      title: 'regex 매칭 → 캡처 그룹 × keys',
+      lines: [38, 54],
+      body: '<p>Pattern.compile + matcher.find() — 첫 match 만. groupCount 와 keys.length 중 작은 쪽까지 반복해 JSON 필드 생성. 미매치 시 log.warn 으로 기록만 (해당 라인 skip).</p>',
+    },
+    {
+      id: 'no-regex',
+      title: 'regex 없음 → 전체 출력',
+      lines: [55, 60],
+      body: '<p>regex 없으면 출력 전체가 value — /sys/block/sda/size 같은 단일 숫자 경로에 적합.</p>',
+    },
+  ]}
+/>
+
+**예시 입력/출력**:
+
+```
+# commandTemplate
+/sys/block/sda/stat | regex:(\d+)\s+\d+\s+(\d+) | keys:read_ios,read_sectors
+/sys/block/sda/size
+
+# 출력 (executeSysfsRead 결과)
+{"read_ios":"12345","read_sectors":"67890000","size":"1953525168"}
+```
+
+## 코드 투어 — `executeKeyValue` (f2fs status 파싱)
+
+<CodeTour
+  client:visible
+  language="java"
+  source="MetadataCommandExecutor.java#executeKeyValue"
+  height={780}
+  code={keyvalueRaw}
+  steps={[
+    {
+      id: 'why',
+      title: '들여쓰기 기반 human-readable',
+      lines: [2, 15],
+      body: '<p>f2fs status 가 전형 — "key: value" 라인에 들여쓰기로 depth 표현. 섹션 헤더 "=====[ partition info(sda21) ]=====" 가 있으면 deviceSection prefix 로. 괄호 안 "(BG: 189)" 같은 내부 값도 별도 필드로 추출.</p>',
+    },
+    {
+      id: 'stack',
+      title: 'prefix + indent 스택',
+      lines: [32, 36],
+      body: '<p>ArrayDeque 2개 — prefix 는 "a" 의 value 가 비어있으면 push, indent 는 level 비교용. 초기값 -1 은 bottom guard.</p>',
+    },
+    {
+      id: 'section',
+      title: '섹션 헤더 감지 + 리셋',
+      lines: [56, 65],
+      body: '<p>partition info(dev) 패턴 매칭 시 deviceSection 갱신 + 스택 리셋. f2fs 는 여러 파티션을 한 파일에 나열하므로 섹션마다 depth 계산이 독립. 특수문자는 _ 로 정규화.</p>',
+    },
+    {
+      id: 'indent-calc',
+      title: '들여쓰기 계산 (space 1, tab 4)',
+      lines: [44, 50],
+      body: '<p>단순하지만 중요 — tab 폭 고정(4) 이라 스페이스와 탭 혼용에서도 일관. 실제 f2fs 출력이 스페이스 기반이라 문제 없음.</p>',
+    },
+    {
+      id: 'depth-pop',
+      title: '들여쓰기 감소 시 prefix pop',
+      lines: [75, 78],
+      body: '<p>현재 indent <= 스택 top 이면 pop. "같거나 작아질 때" 라 형제 노드도 이전 prefix 를 쓰지 않음. dot-notation 경로가 자동으로 유지.</p>',
+    },
+    {
+      id: 'number-extract',
+      title: '숫자 추출 + 단위 제거',
+      lines: [89, 98],
+      body: '<p>extractNumber 는 첫 숫자 토큰만 — "512 kB" → 512, "1.5 ms" → 1.5. 차트용이라 숫자면 숫자로 저장. 숫자 아니면 문자열.</p>',
+    },
+    {
+      id: 'paren',
+      title: '괄호 안 값 자동 추출',
+      lines: [100, 115],
+      body: '<p>"GC calls: 234 (BG: 189)" → fullKey="gc_calls"=234 + fullKey_BG="gc_calls_BG"=189. f2fs 가 주요 값 뒤에 breakdown 을 괄호로 주는 관행이 일반적 — 놓치면 아쉬움이 큼.</p>',
+    },
+  ]}
+/>
+
+**예시**:
+
+```
+# 디바이스 출력
+=====[ partition info(sda21). #0, RDWR ]=====
+  GC calls: 234 (BG: 189)
+  Hot data:
+      segment: 5
+      blocks: 1024
+
+# executeKeyValue 결과
+{
+  "sda21.gc_calls": 234,
+  "sda21.gc_calls_BG": 189,
+  "sda21.hot_data.segment": 5,
+  "sda21.hot_data.blocks": 1024
+}
+```
+
+## 나머지 3 타입 요약 (`raw` / `table` / `bitmap`)
+
+### `raw` — 파싱 불가능한 덩어리
+
+```java
+// 출력 전체를 key=basename 에 담아 JSON 화
+{ "iostat_info": "Period: 1\nWRITE\n  app_buffered_data  12345 30 411\n..." }
+```
+
+테이블/비트맵을 **프론트에서** 파싱하고 싶거나, 디버깅용으로 원본을 그대로 보고 싶을 때. 파싱 비용 0, 스토리지 비용 크게 증가.
+
+### `table` — f2fs iostat_info 3-column
+
+```
+WRITE
+             app_buffered_data     12345  30    411
+             app_direct_data           0   0      0
+READ
+             app_buffered_data    678901 120   5657
+```
+
+→
+
+```json
+{
+  "WRITE": {
+    "app_buffered_data": { "io_bytes": 12345, "count": 30, "avg_bytes": 411 },
+    "app_direct_data":   { "io_bytes": 0,     "count": 0,  "avg_bytes": 0 }
+  },
+  "READ":  { "app_buffered_data": { ... } }
+}
+```
+
+섹션 헤더(`WRITE`, `READ`, `OTHER`) 로 그룹핑, 라인은 공백 구분 4-token (이름 + 3 숫자). 차트에서 **섹션 × 3 컬럼** 구조를 그대로 활용.
+
+### `bitmap` — 대용량 라인 배열
+
+```
+SECTION 0:
+  row0 10101010...
+  row1 11001100...
+  ... 수천 라인
+```
+
+→
+
+```json
+{
+  "segment_info": { "format": "segment_info", "path": "/sys/fs/f2fs/sda10/segment_info", "lines": ["row0 ...", "row1 ..."] }
+}
+```
+
+JSON 파싱은 없고 **라인 배열 보존**. 프론트 `SegmentHeatmap` / `BitmapGridView` 가 Canvas 로 렌더 (6장).
+
+## 직접 해보기
+
+- [ ] sysfs command: `/sys/block/sda/stat | regex:(\d+)\s+\d+\s+(\d+)\s+\d+\s+(\d+) | keys:read_ios,read_sectors,write_ios` 등록 → in-memory 에서 3 key 가 나오는지
+- [ ] keyvalue command: f2fs status 경로(`/sys/kernel/debug/f2fs/status`) 등록 → partition section prefix 가 붙는지
+- [ ] `bitmap` command 로 `/sys/fs/f2fs/{userdata}/segment_info` 등록 → lines 배열 길이가 디바이스 segment 수와 일치하는지
+- [ ] 일부러 틀린 경로로 `tool` command 등록 → adb 에러가 non-JSON 이라 skip 되는지 로그 확인
+
+다음: [4. binary command_type + BinMapper 통합](/learn/l2-metadata/04-binary-binmapper/) →

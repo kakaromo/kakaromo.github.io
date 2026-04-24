@@ -87,7 +87,7 @@ export default defineConfig({
                   autogenerate: { directory: 'learn/l2-remote' },
                 },
                 {
-                  label: 'UFS Metadata 모니터링 (Scheduled + adb)',
+                  label: 'UFS Metadata 모니터링 (TC running 감지 · 7 command_type · f2fs 뷰)',
                   autogenerate: { directory: 'learn/l2-metadata' },
                 },
                 {

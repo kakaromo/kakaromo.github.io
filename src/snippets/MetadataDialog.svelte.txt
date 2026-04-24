@@ -1,0 +1,116 @@
+<!-- routes/../components/debug/MetadataDialog.svelte — 메타데이터 시각화 시트.
+     멀티 슬롯 + 6 뷰 탭(chart/table/tree/iostat/heatmap/bitmap) + 초단위 polling. -->
+<script lang="ts">
+  import { onDestroy } from 'svelte';
+  import PerfChart from '$lib/components/PerfChart.svelte';
+  import DataTable from '$lib/components/DataTable.svelte';
+  import JsonView from '$lib/components/JsonView.svelte';
+  import IostatTableView from './IostatTableView.svelte';
+  import SegmentHeatmap from './SegmentHeatmap.svelte';
+  import BitmapGridView from './BitmapGridView.svelte';
+  import {
+    fetchSlotMetadata, fetchSlotMetadataStatus, fetchSlotMetadataFiles,
+    setSlotMetadataEnabled, setExcludedTypes, setSlotInterval
+  } from '$lib/api/metadata';
+
+  let { open, allSlots, activeSlotIdx = 0 }: Props = $props();
+
+  // 슬롯 전환 — 멀티 슬롯일 때 상단 탭
+  const activeSlot = $derived(allSlots[activeSlotIdx]);
+  let applyToAllSlots = $state(false);   // 토글/주기 변경 시 모든 슬롯에 일괄 적용
+
+  // 뷰 탭 선택 — typeKey 패턴 매칭으로 일부는 자동 표시
+  type ViewTab = 'chart' | 'table' | 'tree' | 'iostat' | 'heatmap' | 'bitmap';
+  let viewTab = $state<ViewTab>('chart');
+
+  // 현재 선택된 metadata typeKey (예: "f2fs_iostat_info", "segment_info") 와 시계열 데이터
+  let selectedTypeKey = $state<string | null>(null);
+  let entries = $state<Array<Record<string, unknown>>>([]);
+  let flatEntries = $state<Array<Record<string, unknown>>>([]);
+  let slotStatus = $state<{ monitoring: boolean; elapsedSeconds?: number; types?: string[] } | null>(null);
+
+  // 1초 polling — 수집 중일 때만 최신 시계열을 다시 받음
+  let pollTimer: ReturnType<typeof setInterval> | undefined;
+  function startPolling() {
+    stopPolling();
+    pollTimer = setInterval(async () => {
+      if (!selectedTypeKey || !slotStatus?.monitoring) return;
+      try {
+        entries = await fetchSlotMetadata(
+          activeSlot.tentacleName, activeSlot.slotNumber, selectedTypeKey);
+        flatEntries = flattenObject(entries);
+      } catch (e) { /* silent — 네트워크 flake 허용 */ }
+    }, 1000);
+  }
+  function stopPolling() { if (pollTimer) { clearInterval(pollTimer); pollTimer = undefined; } }
+
+  // 시트 open 상태에 맞춰 자원 획득/해제
+  $effect(() => {
+    if (open && activeSlot) {
+      loadStatus();
+      startPolling();
+    } else {
+      stopPolling();
+    }
+    return () => stopPolling();
+  });
+
+  onDestroy(stopPolling);   // 보험
+
+  // 멀티슬롯 일괄 토글 — Promise.allSettled 로 실패해도 나머지 진행
+  async function toggleEnabled(enabled: boolean) {
+    const targets = (applyToAllSlots && allSlots.length > 1) ? allSlots : [activeSlot];
+    await Promise.allSettled(
+      targets.map(s => setSlotMetadataEnabled(s.tentacleName, s.slotNumber, enabled))
+    );
+    await loadStatus();
+  }
+
+  // typeKey 패턴 매칭으로 뷰 탭 자동 전환 후보 결정
+  const canIostat  = $derived(selectedTypeKey?.includes('iostat_info')  ?? false);
+  const canHeatmap = $derived(selectedTypeKey?.includes('segment_info') ?? false);
+  const canBitmap  = $derived(
+    selectedTypeKey?.includes('victim_bits') || selectedTypeKey?.includes('segment_bits') || false);
+</script>
+
+<div class="flex flex-col h-full">
+  <!-- 상단: 슬롯 탭 + 활성화 토글 + applyToAll 체크 -->
+  <header class="flex items-center gap-2 p-2 border-b">
+    {#each allSlots as s, i}
+      <button class:active={i === activeSlotIdx} onclick={() => activeSlotIdx = i}>
+        {s.tentacleName}/{s.slotNumber}
+      </button>
+    {/each}
+    <label><input type="checkbox" bind:checked={applyToAllSlots}> 모든 슬롯</label>
+    <button onclick={() => toggleEnabled(!slotStatus?.monitoring)}>
+      {slotStatus?.monitoring ? 'Stop' : 'Start'}
+    </button>
+  </header>
+
+  <!-- 뷰 탭 -->
+  <nav class="flex gap-1 p-2 border-b">
+    <button class:active={viewTab === 'chart'}  onclick={() => viewTab = 'chart'}>Chart</button>
+    <button class:active={viewTab === 'table'}  onclick={() => viewTab = 'table'}>Table</button>
+    <button class:active={viewTab === 'tree'}   onclick={() => viewTab = 'tree'}>Tree</button>
+    {#if canIostat}<button class:active={viewTab === 'iostat'} onclick={() => viewTab = 'iostat'}>Iostat</button>{/if}
+    {#if canHeatmap}<button class:active={viewTab === 'heatmap'} onclick={() => viewTab = 'heatmap'}>Heatmap</button>{/if}
+    {#if canBitmap}<button class:active={viewTab === 'bitmap'} onclick={() => viewTab = 'bitmap'}>Bitmap</button>{/if}
+  </nav>
+
+  <!-- 메인 뷰 -->
+  <main class="flex-1 overflow-auto">
+    {#if viewTab === 'chart'}
+      <PerfChart data={flatEntries} xKey="time" selectedKeys={chartSelectedKeys} />
+    {:else if viewTab === 'table'}
+      <DataTable rows={flatEntries} />
+    {:else if viewTab === 'tree'}
+      <JsonView data={entries} />
+    {:else if viewTab === 'iostat'}
+      <IostatTableView entries={entries} />
+    {:else if viewTab === 'heatmap'}
+      <SegmentHeatmap entries={entries} />
+    {:else if viewTab === 'bitmap'}
+      <BitmapGridView entries={entries} />
+    {/if}
+  </main>
+</div>

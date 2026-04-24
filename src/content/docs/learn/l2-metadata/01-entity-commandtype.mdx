@@ -1,0 +1,141 @@
+---
+title: 1. 엔티티 & 7가지 command_type
+description: UfsMetadataType / UfsMetadataCommand / UfsProductMetadata 3 테이블. command_type 은 7가지 — UFS 공급사·펌웨어 다양성이 이 필드 하나에 흡수된다
+sidebar:
+  order: 1
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import entityRaw from '../../../../snippets/UfsMetadataCommand-entity.java?raw';
+
+## 30초 요약
+
+DB 3 테이블이 전부:
+
+1. **`ufs_metadata_types`** — 어떤 종류의 metadata 를 수집할지 (예: `f2fs_iostat_info`, `smart_health`, `segment_info`). `enabled` 플래그로 global off.
+2. **`ufs_metadata_commands`** — 각 타입당 1~N 개의 실제 "수집 명령". **`command_type` 필드가 7가지 분기점**.
+3. **`ufs_product_metadata`** — 어떤 제품(controller/cellType/nandType/oem) 이 어떤 타입을 지원하는지. `metadataTypeIds` 는 CSV.
+
+런타임 흐름: TC running → Portal 이 제품 → `ufs_product_metadata` 조회 → `metadataTypeIds` 의 enabled 타입들 → 각 타입의 `ufs_metadata_commands` → 수집.
+
+## 왜 "타입 - 명령 - 제품" 세 테이블인가
+
+"타입 = 보여주고 싶은 것", "명령 = 실제로 어떻게 읽는가", "제품 = 어떤 기기에 해당하는가" — **3 축이 독립적**이라 테이블을 나눕니다.
+
+- 같은 타입(`f2fs_iostat_info`) 을 읽는 방법이 컨트롤러마다 다를 수 있음 → commands 여러 개
+- 같은 제품이 여러 타입을 지원 → mapping 의 typeIds CSV
+- 타입 추가/제거는 command/mapping 과 독립 — Admin UI 에서 체크박스로 on/off
+
+## 7가지 `command_type`
+
+`UfsMetadataCommand.commandType` 이 파싱 경로를 결정합니다. `MetadataMonitorService.monitorOnce()` 가 이 필드로 분기:
+
+| command_type | 언제 쓰나 | `commandTemplate` 포맷 | 파싱 결과 |
+|---|---|---|---|
+| `tool` (기본) | 전용 도구가 JSON 을 바로 뱉는 경우 | `smart_parse --json` 같은 adb shell 명령 | JSON 을 그대로 파싱 |
+| `sysfs` | sysfs/proc 의 숫자 라인 | `/sys/block/sda/stat \| regex:... \| keys:...` | regex 캡처 그룹 → key 매핑 |
+| `keyvalue` | f2fs status 같은 들여쓰기 human-readable | sysfs 경로 (줄바꿈 구분) | 들여쓰기 depth → dot-notation |
+| `raw` | 파싱이 안 되는 덩어리 (예: 설정 dump) | `cat /data/...` | 출력 전체를 key=basename 에 저장 |
+| `table` | f2fs `iostat_info` 3-column 섹션표 | 경로 | 섹션(WRITE/READ) × 3 컬럼 |
+| `bitmap` | `segment_info` 같은 대용량 라인 배열 | 경로 | `lines: [...]` 배열 보존 |
+| `binary` | UFS 컨트롤러의 바이너리 덤프 | `tool_name`, + `binaryOutputPath` + `predefinedStructId` + `binaryEndianness` | BinMapper → flatten |
+
+**결정 팁**:
+
+- **새 UFS 세대가 JSON 을 내주면 `tool`** — 가장 단순
+- **sysfs 한 줄에 여러 숫자가 들어있으면 `sysfs`** — regex 로 분해
+- **human-readable 이라면 `keyvalue`** — 코드 수정 없이 새 필드 자동 파싱
+- **파싱하기 싫거나 시각화만 목적이면 `raw`/`bitmap`**
+- **C struct 가 있으면 `binary`** — BinMapper 사전(kind=`metadata`) 등록
+
+## 코드 투어 — `UfsMetadataCommand`
+
+<CodeTour
+  client:visible
+  language="java"
+  source="UfsMetadataCommand.java"
+  height={640}
+  code={entityRaw}
+  steps={[
+    {
+      id: 'header',
+      title: '@Entity ufs_metadata_commands',
+      lines: [4, 9],
+      body: '<p>한 행 = 한 수집 명령. 같은 type 에 여러 command 가 가능해 컨트롤러별 다른 경로/도구를 동시 등록할 수 있다.</p>',
+    },
+    {
+      id: 'type-fk',
+      title: 'metadataType 외래키',
+      lines: [14, 17],
+      body: '<p>EAGER fetch — monitorOnce 루프에서 매 iteration 마다 type.getTypeKey() 를 접근하므로 n+1 을 피함.</p>',
+    },
+    {
+      id: 'template',
+      title: 'commandTemplate — 해석은 commandType 이',
+      lines: [19, 21],
+      body: '<p>1000자 — f2fs keyvalue 처럼 줄바꿈 구분 경로 목록이 들어갈 수 있어 넉넉히. 같은 필드가 tool 에겐 "명령 문자열" 이고 sysfs 에겐 "경로+regex+keys" 포맷.</p>',
+    },
+    {
+      id: 'type-field',
+      title: 'command_type — 7가지 분기의 핵심',
+      lines: [22, 35],
+      body: '<p>주석에 7가지 의미가 모두 적혀 있다. DB 제약은 VARCHAR(20) 뿐 — 새 타입 추가 시 executor + monitorOnce 의 switch 두 곳만 수정.</p>',
+    },
+    {
+      id: 'debug-tool',
+      title: 'debugTool — 최초 1회 push',
+      lines: [37, 39],
+      body: '<p>수집에 전용 바이너리가 필요하면 tool 을 디바이스에 push 해두고 commandTemplate 에서 호출. SlotMonitorContext.pushedToolIds 로 중복 push 방지.</p>',
+    },
+    {
+      id: 'binary-fields',
+      title: 'binary 전용 3 필드',
+      lines: [42, 58],
+      body: '<p>predefinedStruct — binmapper 사전(kind=\'metadata\') 참조. binaryOutputPath — 디바이스가 덤프를 쓸 경로(/dev/debug_ssr.bin 등). binaryEndianness — LITTLE/BIG/AUTO (기본 LITTLE).</p>',
+    },
+  ]}
+/>
+
+## `UfsMetadataType` — 타입 정의
+
+```java
+@Entity @Table(name = "ufs_metadata_types")
+public class UfsMetadataType {
+    @Id Long id;
+    String name;           // "F2FS Iostat" — UI 라벨
+    String typeKey;        // "f2fs_iostat_info" — API 키 + 파일명
+    String category;       // "common" / "f2fs" / "debug" — UI 그룹핑
+    boolean enabled;       // global off switch
+    String description;
+}
+```
+
+- `typeKey` 는 API 경로(`/api/metadata/slot/.../{typeKey}`) 와 파일명(`debug_{typeKey}.json`) 에 그대로 쓰여 **변경하면 이력 단절** — unique constraint
+- `category` 는 순수 UI 용 — backend 로직에는 영향 없음
+
+## `UfsProductMetadata` — 제품 매핑
+
+```java
+@Entity @Table(name = "ufs_product_metadata")
+public class UfsProductMetadata {
+    @Id Long id;
+    String controller;              // "" → 모든 controller 매칭 (wildcard)
+    String cellType;                // "" → 모든 cell
+    String nandType;                // "" → 모든 nand
+    String oem;                     // "" → 모든 oem
+    String metadataTypeIds;         // CSV "1,3,5"
+}
+```
+
+- **UNIQUE `(controller, cell_type, nand_type, oem)`** — 같은 조합 중복 등록 방지
+- DB NULL 대신 **빈 문자열 `''`** 로 저장 — MySQL 의 UNIQUE 는 NULL 을 중복으로 안 보기 때문
+- 와일드카드: 빈 값은 **모든** 값과 매칭 — `findByProduct(...)` 가 wildcard 쿼리로 합쳐서 반환
+
+## 직접 해보기
+
+- [ ] Admin UI `/admin` → Metadata 탭 → Types 에서 새 타입 추가 → DB `ufs_metadata_types` 에 행 생성 확인
+- [ ] 해당 타입에 `command_type=sysfs` 명령 하나 추가 → `commandTemplate: /sys/block/sda/size` 로 지정
+- [ ] Product mapping 에서 컨트롤러 비워두고 `metadataTypeIds=[새타입]` 으로 저장 → 모든 슬롯이 이 타입을 수집하도록
+- [ ] 슬롯에 metadata 수집 on → TC 를 running 으로 만들고 2장의 감지 로직 확인
+
+다음: [2. 스케줄러 & 슬롯 상태 감지](/learn/l2-metadata/02-scheduler-slotstate/) →

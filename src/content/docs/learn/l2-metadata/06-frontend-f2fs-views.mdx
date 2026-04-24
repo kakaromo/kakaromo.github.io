@@ -1,0 +1,204 @@
+---
+title: 6. MetadataDialog & f2fs 전용 뷰 3종
+description: 멀티 슬롯 + 6 뷰 탭(chart/table/tree/iostat/heatmap/bitmap) + 1초 polling — Iostat 시계열·SegmentHeatmap Canvas·BitmapGridView 비트 그리드
+sidebar:
+  order: 6
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import dialogRaw from '../../../../snippets/MetadataDialog.svelte.txt?raw';
+
+## 30초 요약
+
+`MetadataDialog.svelte` (1161 줄) 가 프론트 진입점 — sheet 형태로 열림:
+
+- **멀티 슬롯**: `allSlots[activeSlotIdx]` + `applyToAllSlots` 토글로 모든 슬롯 일괄 제어
+- **6 뷰 탭**: `chart`(PerfChart 라인), `table`(DataTable), `tree`(JsonView), `iostat`(IostatTableView), `heatmap`(SegmentHeatmap), `bitmap`(BitmapGridView)
+- **자동 탭 가용성**: `typeKey` 에 `iostat_info` 포함 → Iostat 탭 활성, `segment_info` → Heatmap, `victim_bits`/`segment_bits` → Bitmap
+- **1 초 polling**: `setInterval + fetchSlotMetadata(typeKey)` — 시트 열리면 시작, 닫히면 `clearInterval`
+- **3 f2fs 전용 뷰**: 일반 `chart/table/tree` 는 모든 타입에 공통, 나머지 3개는 f2fs 데이터 구조에 맞춰 특화
+
+## 코드 투어 — `MetadataDialog` 구조
+
+<CodeTour
+  client:visible
+  language="html"
+  source="MetadataDialog.svelte"
+  height={780}
+  code={dialogRaw}
+  steps={[
+    {
+      id: 'imports',
+      title: '6 뷰 컴포넌트 import',
+      lines: [4, 10],
+      body: '<p>PerfChart/DataTable/JsonView 공통 3 + IostatTableView/SegmentHeatmap/BitmapGridView f2fs 전용 3. 6 뷰가 같은 entries 배열을 입력으로 받지만 해석이 다름.</p>',
+    },
+    {
+      id: 'multi-slot',
+      title: '멀티 슬롯 상태',
+      lines: [17, 22],
+      body: '<p>allSlots 는 부모가 전달. activeSlotIdx = 현재 포커스 슬롯. applyToAllSlots 토글이 on 이면 활성화/주기 변경 등이 모든 슬롯에 일괄 적용.</p>',
+    },
+    {
+      id: 'viewtab',
+      title: '뷰 탭 상태',
+      lines: [23, 26],
+      body: '<p>6 값 중 하나. 탭마다 data 해석이 달라 렌더 컴포넌트도 다름. 기본은 chart.</p>',
+    },
+    {
+      id: 'polling',
+      title: '1 초 polling',
+      lines: [34, 48],
+      body: '<p>selectedTypeKey && monitoring 둘 다 true 일 때만 fetch. 실패는 silent — 네트워크 flake 허용. $effect 의 cleanup 에서 stopPolling.</p>',
+    },
+    {
+      id: 'lifecycle',
+      title: '$effect — 리소스 획득/해제',
+      lines: [49, 58],
+      body: '<p>open=true + activeSlot 있으면 startPolling + 상태 로드. 시트 닫히면 stopPolling. $effect 의 return 이 cleanup. onDestroy 에서도 stopPolling — 컴포넌트 파괴 시 이중 안전장치.</p>',
+    },
+    {
+      id: 'toggle',
+      title: '멀티슬롯 일괄 토글',
+      lines: [62, 69],
+      body: '<p>applyToAllSlots 체크 + 슬롯 2개 이상이면 allSlots, 아니면 activeSlot 만. Promise.allSettled — 일부 실패해도 나머지 진행, 사용자에게는 "대부분 성공" 경험.</p>',
+    },
+    {
+      id: 'auto-tabs',
+      title: '자동 탭 활성화',
+      lines: [71, 76],
+      body: '<p>typeKey 문자열 패턴 매칭으로 해당 뷰 탭 노출. 고정 매핑이라 typeKey 가 다르면 (예: "my_f2fs_iostat") 수정 필요. 문자열 contains 가 살짝 coupling 이지만 실용적.</p>',
+    },
+  ]}
+/>
+
+## 6 뷰 탭 — 공통 3 + f2fs 전용 3
+
+### 공통 뷰
+
+| 탭 | 컴포넌트 | 입력 해석 |
+|---|---|---|
+| `chart` | `PerfChart` | `time` X축 + 선택된 숫자 key 들 라인 차트 (ECharts) |
+| `table` | `DataTable` | `flatEntries` — flattenObject 결과를 row 로 나열 |
+| `tree` | `JsonView` | 원본 `entries` 배열을 JSON 트리로 — depth 구조 확인용 |
+
+`chart` 는 가장 사용 빈도 높음 — `localStorage(l1_chart.keys.{typeKey})` 에 선택 키 저장해 다음 열람에도 유지.
+
+### f2fs 전용 3 뷰
+
+#### Iostat (`IostatTableView` ~529 줄)
+
+**입력 구조**:
+```json
+[
+  { "time": 0,
+    "WRITE": {
+      "app_buffered_data": { "io_bytes": 12345, "count": 30, "avg_bytes": 411 },
+      "app_direct_data":   { "io_bytes": 0,     "count": 0,  "avg_bytes": 0 }
+    },
+    "READ":  { "app_buffered_data": { ... } },
+    "OTHER": { ... }
+  },
+  { "time": 30, ... }
+]
+```
+
+**표시 구성**:
+- 상단 탭: **섹션 필터** (WRITE/READ/OTHER)
+- 좌측 체크박스: **metric 선택** (app_buffered_data, fs_data, fs_node, ...)
+- 우측 3 차트: **io_bytes / count / avg_bytes** 컬럼별 라인 (ECharts)
+- **델타/누적 모드 토글** — io_bytes 는 누적이지만 각 주기 증분을 보고 싶을 때
+- `localStorage('l1_iostat.selectedMetrics.v1')` 에 선택 유지
+
+#### Heatmap (`SegmentHeatmap` ~399 줄)
+
+**입력**: `bitmap` command_type 으로 수집된 `segment_info` — 라인 배열.
+
+```
+# 한 라인 예시 (segment index + type flags + block map)
+0 3|512 4|256 ...
+1 0|512 1|256 ...
+```
+
+**렌더**:
+- Canvas 로 그리드 그림 — 한 row = 한 segment, 색상 = segment type 6종 (HD/WD/CD/HN/WN/CN)
+- 여러 시점이 있으면 **재생 컨트롤** (이전/다음/자동)
+- 마우스 hover 시 segment 번호 + type 툴팁
+
+f2fs 의 segment 할당 변화를 **시간·공간 2D** 로 볼 수 있음 — GC 패턴 분석에 핵심.
+
+#### Bitmap (`BitmapGridView` ~416 줄)
+
+**입력**: `victim_bits` / `segment_bits` — 각 라인이 "offset: 비트열" 또는 hex.
+
+```
+0: 1010101010...
+64: 1100110011...
+```
+
+**렌더**:
+- Canvas 에 비트별 픽셀 — 1 = 채워짐, 0 = 비움
+- **지속성 모드**: 여러 시점의 bitmap 을 색상 그라디언트로 중첩 — "몇 번 쓰였나" 를 한 이미지에
+- 시간 슬라이더로 특정 시점만 보기 가능
+
+GC victim 선택·segment invalidation 패턴을 시각적으로 확인.
+
+## 왜 typeKey contains 매칭인가
+
+```typescript
+const canIostat = $derived(selectedTypeKey?.includes('iostat_info') ?? false);
+```
+
+- 딱 `f2fs_iostat_info` 하나만 대응하려면 `===` 이 맞지만,
+- 커스텀 typeKey 가 `custom_f2fs_iostat_info`, `iostat_info_v2` 같이 확장되는 경우도 자동 처리
+- 매칭 실패하면 그냥 탭이 안 뜸 — 사용자는 기본 3 공통 뷰로 fallback
+
+규약: **typeKey 에 `iostat_info` / `segment_info` / `victim_bits` / `segment_bits` 를 포함시키면** 자동으로 해당 뷰가 열림. 새 타입 만들 때 이 규칙 따르면 프론트 수정 불필요.
+
+## JSON export
+
+시트 상단에 **"Export JSON"** 버튼 — 현재 `selectedTypeKey` 의 entries 배열을 `.json` 다운로드. 운영자가 다른 분석 도구(Excel/Python) 로 가져가 볼 때.
+
+파일명: `{tentacleName}-{slotNumber}-{typeKey}-{timestamp}.json`. 시계열 JSON 이라 numpy/pandas 로 즉시 로드 가능.
+
+## 히스토리 조회
+
+**현재 활성 슬롯** + **TC 가 끝난 슬롯의 logPath** 둘 다 파일 목록에 합쳐짐:
+
+```typescript
+const files = await fetchSlotMetadataFiles(
+  activeSlot.tentacleName,
+  activeSlot.slotNumber,
+  /* logPath (TC 완료 후) */ completedTcLogPath,
+  /* tentacleIp (다른 세트) */ tentacleIp
+);
+```
+
+Backend `listMetadataFiles` 가 두 디렉터리 합쳐서 반환 — 프론트는 파일 이름만 보고 typeKey 추출해 드롭다운 구성.
+
+## 1 초 polling vs SSE — 재확인
+
+index.mdx 에서 짧게 다뤘지만 실제 체감:
+
+- SSE 연결: 시트가 닫혀 있어도 브라우저 프로세스가 이벤트 큐 유지, 서버 resource 상주
+- polling: 시트 열림 = 네트워크 트래픽 ON, 시트 닫힘 = OFF (clearInterval)
+- 사용자 대부분은 시트를 **가끔만 연다** — 연결 수명이 짧은 쪽이 자원 효율
+
+트레이드오프: polling 은 "가장 늦은 업데이트가 1초 뒤" — 수집 주기가 30초라면 상관 없음. 수집 주기가 1초 미만이어야 한다면 SSE 고려.
+
+## 직접 해보기
+
+- [ ] `/slots` 에서 슬롯 카드 클릭 → Metadata 아이콘 → 시트 열림
+- [ ] 여러 슬롯에 동시 수집 중이면 상단 탭으로 전환 — 시트 단일 인스턴스에서 슬롯별 context 분리
+- [ ] typeKey 드롭다운에서 `f2fs_iostat_info` 선택 → Iostat 탭 자동 활성 → metric 체크 → 3 컬럼 차트
+- [ ] `segment_info` 타입 선택 → Heatmap 탭 → 재생 컨트롤로 시간축 이동
+- [ ] Export JSON 버튼 → 다운로드 파일을 `jq '.[].time'` 으로 시계열 확인
+
+---
+
+## 여기까지 마친 당신
+
+- DB 3 테이블 + 7 `command_type` → 슬롯 감지 + pool → 6 shell 파싱 + binary/binmapper → REST + placeholder → 프론트 멀티슬롯 + 3 f2fs 전용 뷰 까지 **전체 여정**을 훑었습니다
+- [UFS Metadata 아키텍처](/architecture/ufs-metadata/) 문서의 세부 섹션을 깊게 볼 준비가 됐습니다
+
+[← L2 비교로 돌아가기](/learn/l2-compare/)
