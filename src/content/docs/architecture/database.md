@@ -1,11 +1,11 @@
 ---
 title: 데이터베이스
-description: Samsung Portal의 4개 MySQL 데이터베이스(testdb, UFSInfo, binmapper, portal) 스키마, 테이블 구조 및 관계를 설명합니다.
+description: MOVE의 4개 MySQL 데이터베이스(testdb, UFSInfo, binmapper, portal) 스키마, 테이블 구조 및 관계를 설명합니다.
 ---
 
 ## 개요
 
-Samsung Portal은 네 개의 MySQL 데이터베이스를 사용합니다. 각각 독립적인 DataSource, EntityManagerFactory, TransactionManager로 설정됩니다.
+MOVE은 네 개의 MySQL 데이터베이스를 사용합니다. 각각 독립적인 DataSource, EntityManagerFactory, TransactionManager로 설정됩니다.
 
 | DB | 포트 | 용도 | DataSource Config | 패키지 |
 |----|------|------|-------------------|--------|

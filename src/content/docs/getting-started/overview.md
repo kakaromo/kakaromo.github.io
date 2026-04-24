@@ -1,9 +1,9 @@
 ---
 title: 소개
-description: Samsung Portal 프로젝트 개요 및 주요 기능 소개
+description: MOVE 프로젝트 개요 및 주요 기능 소개
 ---
 
-Samsung Portal은 UFS(Universal Flash Storage) 테스트 자동화 관리 시스템입니다. 호환성/성능 테스트의 전체 생명주기를 관리하고, 실시간 슬롯 모니터링, 원격 접속, 로그 분석, 바이너리 디버깅 도구까지 통합 제공합니다.
+MOVE은 UFS(Universal Flash Storage) 테스트 자동화 관리 시스템입니다. 호환성/성능 테스트의 전체 생명주기를 관리하고, 실시간 슬롯 모니터링, 원격 접속, 로그 분석, 바이너리 디버깅 도구까지 통합 제공합니다.
 
 ## 핵심 기능
 

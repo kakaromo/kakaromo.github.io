@@ -1,9 +1,9 @@
 ---
 title: 개발 환경 설정
-description: macOS에서 Samsung Portal 개발 환경 구축, Java 17, Node.js, IDE 설정 및 빌드/실행 방법
+description: macOS에서 MOVE 개발 환경 구축, Java 17, Node.js, IDE 설정 및 빌드/실행 방법
 ---
 
-Samsung Portal 개발에 필요한 환경 설정을 안내합니다.
+MOVE 개발에 필요한 환경 설정을 안내합니다.
 
 ## 필수 환경
 

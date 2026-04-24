@@ -1,9 +1,9 @@
 ---
 title: 코딩 컨벤션
-description: Samsung Portal 프로젝트의 백엔드/프론트엔드 코딩 컨벤션, 패키지 구조, 명명 규칙, 커밋 메시지 가이드
+description: MOVE 프로젝트의 백엔드/프론트엔드 코딩 컨벤션, 패키지 구조, 명명 규칙, 커밋 메시지 가이드
 ---
 
-Samsung Portal 프로젝트의 코딩 컨벤션입니다.
+MOVE 프로젝트의 코딩 컨벤션입니다.
 
 ## 백엔드 (Spring Boot)
 

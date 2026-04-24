@@ -1,9 +1,9 @@
 ---
 title: API 개요
-description: Samsung Portal REST API의 공통 사항, 인증, CSRF, 에러 응답 구조 및 API 도메인 목록
+description: MOVE REST API의 공통 사항, 인증, CSRF, 에러 응답 구조 및 API 도메인 목록
 ---
 
-Samsung Portal의 모든 API는 REST 아키텍처를 따르며, JSON 형식으로 요청/응답합니다.
+MOVE의 모든 API는 REST 아키텍처를 따르며, JSON 형식으로 요청/응답합니다.
 
 ## Base URL
 

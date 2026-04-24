@@ -3,7 +3,7 @@ title: 컴포넌트 가이드
 description: DataTable, GenPerf, LogBrowser, PerfChart, SlotCard 등 주요 컴포넌트 Props 및 사용법
 ---
 
-Samsung Portal 프론트엔드의 주요 컴포넌트를 설명합니다.
+MOVE 프론트엔드의 주요 컴포넌트를 설명합니다.
 
 ## DataTable
 
