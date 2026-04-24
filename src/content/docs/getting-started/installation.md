@@ -72,8 +72,8 @@ java -jar target/portal-*.jar
 
 ```bash
 ./mvnw test                                          # 전체 테스트
-./mvnw test -Dtest="com.samsung.portal.ClassName"     # 단일 클래스
-./mvnw test -Dtest="com.samsung.portal.ClassName#method"  # 단일 메서드
+./mvnw test -Dtest="com.samsung.move.ClassName"     # 단일 클래스
+./mvnw test -Dtest="com.samsung.move.ClassName#method"  # 단일 메서드
 ```
 
 ## 선택 사항: 외부 서비스

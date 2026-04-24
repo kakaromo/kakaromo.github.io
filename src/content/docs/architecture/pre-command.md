@@ -169,7 +169,7 @@ portal_slot_pre_commands
 ## 4. 패키지 구조
 
 ```
-com.samsung.portal.head/
+com.samsung.move.head/
 ├── entity/
 │   ├── PreCommand.java          # 명령어 템플릿
 │   └── SlotPreCommand.java      # 슬롯+TC 통합 (pre_command_id + tc_pre_command_ids)

@@ -225,9 +225,9 @@ Portal은 3개의 독립적인 MySQL 데이터소스를 사용합니다. 어떤 
 
 | DataSource | 패키지 | DB (포트) | 용도 |
 |------------|--------|-----------|------|
-| **testdb** (Primary) | `com.samsung.portal.testdb` | testdb (3306) | 성능/호환성 테스트 데이터 |
-| **portal** | `com.samsung.portal.{admin,agent,auth,binmapper,...}` | portal (3307) | Portal 전용 데이터 |
-| **ufsinfo** | `com.samsung.portal.ufsinfo` | ufsinfo (3306) | UFS 참조 코드 |
+| **testdb** (Primary) | `com.samsung.move.testdb` | testdb (3306) | 성능/호환성 테스트 데이터 |
+| **portal** | `com.samsung.move.{admin,agent,auth,binmapper,...}` | portal (3307) | Portal 전용 데이터 |
+| **ufsinfo** | `com.samsung.move.ufsinfo` | ufsinfo (3306) | UFS 참조 코드 |
 
 각 DataSource는 독립적인 `EntityManagerFactory`와 `TransactionManager`를 가집니다:
 
@@ -235,7 +235,7 @@ Portal은 3개의 독립적인 MySQL 데이터소스를 사용합니다. 어떤 
 // config/datasource/TestdbDataSourceConfig.java
 @Configuration
 @EnableJpaRepositories(
-    basePackages = "com.samsung.portal.testdb",    // ← 패키지로 DataSource 결정
+    basePackages = "com.samsung.move.testdb",    // ← 패키지로 DataSource 결정
     entityManagerFactoryRef = "testdbEntityManagerFactory",
     transactionManagerRef = "testdbTransactionManager"
 )

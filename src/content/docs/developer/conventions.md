@@ -13,7 +13,7 @@ Samsung Portal 프로젝트의 코딩 컨벤션입니다.
 
 ```mermaid
 flowchart TD
-    root["com.samsung.portal"]
+    root["com.samsung.move"]
 
     subgraph core["핵심 도메인"]
         head["head/ — Head TCP 통신, SSE, 슬롯 상태"]

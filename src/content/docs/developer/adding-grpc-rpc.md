@@ -49,7 +49,7 @@ message NewResponse {
 ```protobuf
 // src/main/proto/device_agent.proto
 
-option java_package = "com.samsung.portal.agent.grpc";  // ← Java 전용 옵션
+option java_package = "com.samsung.move.agent.grpc";  // ← Java 전용 옵션
 option java_outer_classname = "DeviceAgentProto";
 
 service DeviceAgent {

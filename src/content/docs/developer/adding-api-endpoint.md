@@ -24,9 +24,9 @@ Portal은 3개의 MySQL 데이터소스를 사용합니다. 새 Entity가 어느
 
 | DataSource | 패키지 | DB | 언제 사용? |
 |------------|--------|-----|-----------|
-| **testdb** | `com.samsung.portal.testdb.*` | testdb (3306) | 레거시 시스템과 공유하는 테스트 데이터 |
-| **portal** | `com.samsung.portal.{admin,agent,auth,binmapper,...}` | portal (3307) | Portal 전용 데이터 |
-| **ufsinfo** | `com.samsung.portal.ufsinfo.*` | ufsinfo (3306) | UFS 참조 코드 (읽기 위주) |
+| **testdb** | `com.samsung.move.testdb.*` | testdb (3306) | 레거시 시스템과 공유하는 테스트 데이터 |
+| **portal** | `com.samsung.move.{admin,agent,auth,binmapper,...}` | portal (3307) | Portal 전용 데이터 |
+| **ufsinfo** | `com.samsung.move.ufsinfo.*` | ufsinfo (3306) | UFS 참조 코드 (읽기 위주) |
 
 :::tip[판단 기준]
 - 다른 시스템과 데이터를 **공유**하는가? → testdb 또는 ufsinfo
@@ -43,7 +43,7 @@ Portal은 3개의 MySQL 데이터소스를 사용합니다. 새 Entity가 어느
 선택한 DataSource 패키지 내에 Entity 클래스를 생성합니다.
 
 ```java
-package com.samsung.portal.agent.entity;  // portal DB에 속하는 경우
+package com.samsung.move.agent.entity;  // portal DB에 속하는 경우
 
 import jakarta.persistence.*;
 import lombok.*;
@@ -100,9 +100,9 @@ portal DB의 테이블은 `portal_` 접두사를 사용합니다 (예: `portal_a
 같은 패키지 내에 JPA Repository를 생성합니다.
 
 ```java
-package com.samsung.portal.agent.repository;
+package com.samsung.move.agent.repository;
 
-import com.samsung.portal.agent.entity.DeviceProfile;
+import com.samsung.move.agent.entity.DeviceProfile;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 public interface DeviceProfileRepository extends JpaRepository<DeviceProfile, Long> {
@@ -125,10 +125,10 @@ Repository가 해당 DataSource의 `basePackages`에 포함되지 않으면 Spri
 비즈니스 로직과 캐시를 담당하는 Service를 생성합니다.
 
 ```java
-package com.samsung.portal.agent.service;
+package com.samsung.move.agent.service;
 
-import com.samsung.portal.agent.entity.DeviceProfile;
-import com.samsung.portal.agent.repository.DeviceProfileRepository;
+import com.samsung.move.agent.entity.DeviceProfile;
+import com.samsung.move.agent.repository.DeviceProfileRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
@@ -190,10 +190,10 @@ Map<String, RedisCacheConfiguration> cacheConfigurations = Map.of(
 REST 엔드포인트를 생성합니다.
 
 ```java
-package com.samsung.portal.agent.controller;
+package com.samsung.move.agent.controller;
 
-import com.samsung.portal.agent.entity.DeviceProfile;
-import com.samsung.portal.agent.service.DeviceProfileService;
+import com.samsung.move.agent.entity.DeviceProfile;
+import com.samsung.move.agent.service.DeviceProfileService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;

@@ -197,7 +197,7 @@ flowchart LR
 syntax = "proto3";
 package agent;
 option go_package = "agent/pb";
-option java_package = "com.samsung.portal.agent.proto";
+option java_package = "com.samsung.move.agent.proto";
 option java_outer_classname = "DeviceAgentProto";
 ```
 
@@ -266,7 +266,7 @@ service DeviceAgent {
 
 | RPC | 타입 | 설명 |
 |-----|------|------|
-| `RunBenchmark` | Unary | fio/iozone/tiotest 벤치마크 실행, job_id 반환 |
+| `RunBenchmark` | Unary | fio/iozone/tiotest/**iotest** 벤치마크 실행, job_id 반환 |
 | `GetJobStatus` | Unary | Job 상태 + 디바이스별 진행률 조회 |
 | `SubscribeJobProgress` | Server-stream | 실시간 진행 이벤트 (SSE로 브릿지) |
 | `GetBenchmarkResult` | Unary | 완료된 벤치마크 결과 (metrics, raw_output) |
@@ -278,7 +278,7 @@ service DeviceAgent {
 ```protobuf
 message RunBenchmarkRequest {
   repeated string device_ids = 1;      // 대상 디바이스 (복수)
-  BenchmarkTool tool = 2;             // FIO / IOZONE / TIOTEST
+  BenchmarkTool tool = 2;             // FIO / IOZONE / TIOTEST / IOTEST
   map<string, string> params = 3;     // 도구별 파라미터
   string job_name = 4;
   string busy_policy = 5;             // "reject" | "wait" | "force"
@@ -328,7 +328,7 @@ message RunScenarioRequest {
 
 | type | 설명 | 주요 params |
 |------|------|------------|
-| `benchmark` | 벤치마크 실행 | tool, params (fio/iozone/tiotest 옵션) |
+| `benchmark` | 벤치마크 실행 | tool, params (fio/iozone/tiotest/**iotest** 옵션) |
 | `shell` | 쉘 명령 실행 | `cmd` |
 | `cleanup` | 파일 삭제 | `delete_files_from_steps`, `path` |
 | `sleep` | 대기 | `seconds` |
@@ -631,7 +631,7 @@ portal datasource (MySQL 3307)에 6개 테이블을 사용합니다.
 | id | BIGINT | PK, AUTO_INCREMENT | |
 | name | VARCHAR(200) | NOT NULL | 프리셋 이름 |
 | description | VARCHAR(500) | | 설명 |
-| tool | VARCHAR(20) | NOT NULL | FIO / IOZONE / TIOTEST |
+| tool | VARCHAR(20) | NOT NULL | FIO / IOZONE / TIOTEST / IOTEST |
 | params_json | TEXT | NOT NULL | JSON: `{"bs":"4k", "rw":"randread", ...}` |
 | created_at | DATETIME | | 생성 시각 |
 | updated_at | DATETIME | | 수정 시각 |
@@ -658,7 +658,7 @@ portal datasource (MySQL 3307)에 6개 테이블을 사용합니다.
 | serverId | BIGINT | NOT NULL | 실행한 Agent 서버 ID |
 | serverName | VARCHAR(100) | | 서버 이름 (비정규화) |
 | type | VARCHAR(20) | NOT NULL | benchmark / scenario / trace |
-| tool | VARCHAR(20) | | FIO / IOZONE / TIOTEST |
+| tool | VARCHAR(20) | | FIO / IOZONE / TIOTEST / IOTEST |
 | jobName | VARCHAR(200) | | 사용자 지정 Job 이름 |
 | deviceIds | TEXT | | JSON array: `["dev1","dev2"]` |
 | state | VARCHAR(30) | NOT NULL, DEFAULT "running" | running / completed / failed / cancelled |
@@ -1000,6 +1000,19 @@ onMount(() => {
 | 기본 | file_size, block_size, threads, num_runs, directory |
 | 고급 | sequential_only, random_only, write_sync, raw_drives |
 
+### iotest (syscall I/O 테스트 엔진)
+
+generic `RunBenchmark` gRPC 에 `BENCHMARK_TOOL_IOTEST` 로 기생하는 syscall DSL 엔진. 일반 벤치마크와 달리 **thread × commands 트리를 JSON configJson 으로 전달**하고, Go Agent 가 각 thread 에 goroutine 을 띄워 `open/pread/pwrite/fsync` 같은 실제 syscall 을 실행합니다.
+
+- `RunBenchmarkRequest.params["config"]` 에 configJson 전체 문자열 주입
+- Go Agent executor 가 파싱 → thread 별 goroutine 시작 → syscall 반복
+- `SubscribeJobProgress` 스트림으로 thread 별 ThreadProgress 누적 (클라이언트 누적)
+- 종료 조건: 모든 thread complete / failed / `duration_seconds` 만료
+
+관리 UI 는 `IOTestEditor` (thread + commands 트리 편집) + `IOTestPreset` 엔티티(`configJson` MEDIUMTEXT) + 내장 18 프리셋. Portal 은 JSON 생성 + 서빙만 하고 실행 로직은 전부 Go Agent 쪽.
+
+**상세**: [iotest L2 (엔진 축 3번째)](/learn/l2-iotest/) · [iotest 가이드](/guide/iotest/)
+
 ---
 
 ## 9. 화면 스트리밍 (WebSocket 프록시)
@@ -1029,3 +1042,13 @@ flowchart TD
 // key 이벤트 예시
 {"type": "key", "keycode": 4}  // KEYCODE_BACK
 ```
+
+---
+
+## 관련 문서
+
+- [Agent 가이드](/guide/agent/) — 사용법, 벤치마크·시나리오·trace·매크로 실전
+- [Agent L2](/learn/l2-scenario/) — Orchestration 축, ScenarioCanvas(@xyflow) + Kahn 위상 정렬 + has_branching DAG 실행
+- [iotest L2](/learn/l2-iotest/) — 엔진 축 3번째, syscall DSL 엔진
+- [L2 19종 비교](/learn/l2-compare/) — Agent 축별 위치 (기능 축, 벤치마크/모니터링/trace)
+- [변경 이력](/reference/changelog/) — `2026-04-13 iotest` / `2026-03-30 ScenarioCanvas` 등 Agent 주요 갱신

@@ -46,7 +46,7 @@ spring:
 기존 `PortalDataSourceConfig.java`를 참고하여 새 설정 클래스를 만듭니다.
 
 ```java
-package com.samsung.portal.config.datasource;
+package com.samsung.move.config.datasource;
 
 import jakarta.persistence.EntityManagerFactory;
 import javax.sql.DataSource;
@@ -61,7 +61,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 
 @Configuration
 @EnableJpaRepositories(
-    basePackages = "com.samsung.portal.newdomain",  // ← 새 패키지
+    basePackages = "com.samsung.move.newdomain",  // ← 새 패키지
     entityManagerFactoryRef = "newdbEntityManagerFactory",
     transactionManagerRef = "newdbTransactionManager"
 )
@@ -89,7 +89,7 @@ public class NewdbDataSourceConfig {
         LocalContainerEntityManagerFactoryBean factory = new LocalContainerEntityManagerFactoryBean();
         factory.setDataSource(newdbDataSource());
         factory.setJpaVendorAdapter(adapter);
-        factory.setPackagesToScan("com.samsung.portal.newdomain");  // ← 엔티티 패키지
+        factory.setPackagesToScan("com.samsung.move.newdomain");  // ← 엔티티 패키지
         factory.setPersistenceUnitName("newdb");
 
         var props = new java.util.HashMap<String, Object>();
@@ -126,7 +126,7 @@ public class NewdbDataSourceConfig {
 ## Step 3: 새 패키지에 Entity/Repository 생성
 
 ```
-com.samsung.portal.newdomain/
+com.samsung.move.newdomain/
 ├── entity/
 │   └── NewEntity.java
 ├── repository/

@@ -54,7 +54,7 @@ flowchart TD
 ## 2. 패키지 구조
 
 ```
-com.samsung.portal.t32
+com.samsung.move.t32
 ├── entity/
 │   ├── T32Config.java           — Lab별 JTAG/T32 인프라 설정 (18개 컬럼)
 │   └── T32ConfigServer.java     — Config ↔ 텐타클 매핑 (N:M)
