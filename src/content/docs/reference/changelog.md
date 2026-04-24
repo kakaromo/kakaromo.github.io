@@ -1,6 +1,369 @@
 ---
 title: 변경 이력
-description: Samsung Portal의 주요 변경 사항 및 기능 추가 이력
+description: MOVE (Mobile OS Validation Eco-system) 의 주요 변경 사항 및 기능 추가 이력
+---
+
+## 2026-04-25
+
+### 문서 — UFS Metadata 동기화 + Changelog 갱신
+
+architecture/guide/learn 세 레벨 문서를 현재 구현에 맞춰 일괄 최신화:
+
+- **UFS Metadata L2 전면 재작성** — 구버전 5장(4 command_type 가정) → 신버전 6장 (index + 엔티티·7 commandType + 스케줄러·슬롯 상태 + 6 shell 파싱 + binary/BinMapper + REST/placeholder + 프론트/f2fs 뷰). 스니펫 12개 추가
+- **architecture/ufs-metadata.md** — ERD 에 binary 3필드 + predefined_structs.kind + CSV metadataTypeIds + 빈 문자열 와일드카드 + UNIQUE 제약 반영. Command Type 섹션 4→7. `{userdata}` Placeholder 섹션 신설. monitorOnce 시퀀스 재작성. MetadataDialog 6 뷰 탭. API 전면 재작성
+- **guide/ufs-metadata.md** — 7 command_type 표. `{userdata}` 자동 치환 섹션. 뷰 탭 설명 (공통 3 + f2fs 전용 3). Table/Bitmap/Binary 모드 각 예시 + BinMapper 재사용. Product Mappings CSV·UNIQUE 안내
+- **L2 19종 비교** — Trace(기능 축 11호, 데이터 규모 서브축) 추가로 18→19. 검증 사례 16건 확장. Metadata 를 후보에서 제거
+- **L3 4 개념 신설** — data/apache-arrow, data/parquet-projection, rust/async-file-reader, webgl/deckgl-orthographic (사이드바에 3 카테고리 신설)
+- **Trace L2 6장 신설** — index + upload-parse + parquet-schema + chart-arrow-ipc + stats-pipeline + webgl-renderer + async-reader. 스니펫 14개. MinIO range-GET async reader 까지 전 여정
+
+문서 총 222 페이지 빌드 통과.
+
+---
+
+## 2026-04-23
+
+### Trace UX 종합 개편
+
+기존 단순 텍스트 Viewer 였던 `/trace` 페이지를 Agent trace 시트와 같은 **paneforge 기반 3-pane 구조**로 전면 이식:
+
+- 좌측 Jobs 리스트, 중앙 Toolbar + Filter Bar + Raw Chart/Stats 탭
+- localStorage `autoSaveId="trace-layout"` 로 사이즈 저장
+- Job 선택 시 좌측 패널 자동 collapse 로 분석 공간 확보
+- ECharts 기본 + **Deck.gl WebGL 렌더러 opt-in** (`VITE_TRACE_RENDERER=deckgl`, dynamic import) — 1M 포인트 60fps
+- UFSCUSTOM parquet 타입 지원 추가 (action/cpu 컬럼 없음 → chart 변환 시 `action="complete"`, `cpu=0` 채움)
+- `friendlyError.ts` + `FriendlyErrorBox.svelte` — 9가지 에러 패턴 인간화 (OUT_OF_RANGE → "차트 데이터가 너무 커요 · Samples 값을 줄여 다시 시도")
+
+### Trace Arrow IPC 파이프라인 + 상세 통계 API
+
+차트 데이터 전송 포맷을 **JSON → Arrow IPC** 로 전환, 전용 통계 API 추가:
+
+- `POST /api/trace/chart` — 응답 `application/vnd.apache.arrow.stream` + `X-Trace-Total-Events` / `X-Trace-Sampled-Events` / `X-Trace-Schema-Version` / `X-Trace-Stats`(Base64 JSON) 헤더
+- `POST /api/trace/stats` — Latency 4종(dtoc/ctod/ctoc/qd) × min/max/avg/stddev/median/p99…p999999, CMD 별 stats, Latency Histogram, CMD × Size count. 단일 RecordBatch scan 으로 모든 집계 동시 산출
+- Rust trace 서비스 (port 50053) 분리 — ftrace/blktrace/UFSCUSTOM 파서 + parquet (UFS/Block/UFSCUSTOM 3 스키마 공용 10컬럼 정규화) + `ProjectionMask` + `RowFilter` + time-bucket decimate
+- MinIO range-GET 기반 **async streaming parquet reader** (`TRACE_PARQUET_READER=async`) — 5GB+ 파일을 `/tmp` 경유 없이 footer 2-step fetch + row group 단위 async read
+- gRPC payload 상한 256MB (Rust 서버 + Portal client 양쪽)
+
+### Metadata `{userdata}` placeholder
+
+f2fs 파티션 block 이름(`sda10`, `sdc77` 등)이 디바이스마다 달라 commandTemplate 에 하드코딩하기 어려움 → `{userdata}` placeholder 도입:
+
+- `startMonitoring` 시 `adb shell readlink -f /dev/block/by-name/userdata` 로 1회 조회, fallback 은 `ls -al` 의 `-> target` 파싱
+- `SlotMonitorContext.placeholders` 에 캐싱, 매 `monitorOnce` 에서 치환
+- `binaryOutputPath` 에도 적용
+- 해석 실패 시 해당 command 만 skip + 경고 로그, 다른 command 는 정상 진행
+
+### Slot 상세시트 개선
+
+- TC 종료 시 `endTime` / `log` / `meta` 자동 갱신 — history refetch 기준을 숫자 `status` + `endTime` 으로 변경
+- Head TCP 전체 명령 종료 `\n` 제거 — SetTc / SetTc2 / 기타 명령 모두 일관
+
+---
+
+## 2026-04-22
+
+### Metadata binary command_type + BinMapper 재사용
+
+UFS 컨트롤러의 바이너리 덤프를 JSON 화하는 7번째 `command_type` 추가:
+
+- `adb shell` → 디바이스 `/dev/debug_xxx.bin` → `adb pull` → SFTP read → `BinMapperService.parseFromBytes()` → `MappedResultFlattener` → dot-notation flat JSON
+- `ufs_metadata_commands` 테이블에 binary 전용 3 필드 추가: `predefined_struct_id`, `binary_output_path`, `binary_endianness`
+- `predefined_structs.kind` 컬럼 도입 — `metadata` / `dlm` / `general` 3종으로 사전 분리. Metadata Admin UI 는 `kind='metadata'` 만 드롭다운에 노출
+- `MappedResultFlattener` 신규 — 중첩 struct/배열을 `parent.child[0].field` 형태로 평탄화해 Jackson serialize
+- 통합 테스트 추가 — struct text → byte[] → flatten JSON 전 경로
+- **BinMapper 엔진의 첫 in-process 서비스 소비자** (기존엔 devtool 단독)
+
+### Metadata 멀티 슬롯 일괄 적용 + initslot 초기화
+
+- `MetadataDialog` 에 `applyToAllSlots` 체크박스 — 모니터링 ON/OFF · 주기 · 제외 타입을 모든 선택 슬롯에 일괄 적용 (`Promise.allSettled`)
+- HEAD `initslot` 명령 도착 시 `MetadataMonitorService.clearSlot()` 호출 — enabled / excludedTypes / slotIntervalSeconds 3 맵 + activeMonitors 모두 청소, 진행 중 future 취소. VM 디스크 `debug_*.json` 은 이력 보존
+
+### 호환성/성능 TR 필수 검증 + name 자동생성
+
+- **호환성 TR**: name 자동 생성 (`{setName}_{count}_{engineer}_{yyyyMMdd}`) + engineer 자동 입력 + 필수 필드 검증
+- **성능 TR**: `controller` / `nandType` / `cellType` / `nandSize` / `density` / `fwVersion` 6개 필수
+- **호환성 settc**: `testTime` 0 이하 전송 차단 + 버튼 비활성화, string concat 버그 (분 환산) 수정
+
+### SftpPanel 파일 로그 보기
+
+`SftpPanel` 에서 파일 우클릭 메뉴에 "로그 보기" 추가 — `LogViewerDialog` 연결로 다운로드 없이 원격 파일 텍스트 즉시 확인
+
+### crypto.randomUUID fallback
+
+일부 레거시 브라우저/WebView 에서 `crypto.randomUUID` 미지원 문제 — `DataTable` 에 수동 fallback (timestamp + random 조합)
+
+---
+
+## 2026-04-21
+
+### Metadata f2fs 전용 시각화 (Iostat / Heatmap / Bitmap)
+
+`MetadataDialog` 에 f2fs 데이터 구조를 살려 표현하는 3개 전용 뷰 신설:
+
+- **IostatTableView** (`iostat_info` typeKey) — 섹션 필터(WRITE/READ/OTHER) + 다중 metric 체크박스 + io_bytes/count/avg_bytes 3컬럼 라인 차트 (ECharts). Excel 내보내기. 표 셀 클릭으로 metric 드릴다운. 델타/누적 모드. `localStorage('l1_iostat.selectedMetrics.v1')` 저장
+- **SegmentHeatmap** (`segment_info` typeKey) — Canvas 6색 segment type (HD/WD/CD/HN/WN/CN) 그리드 + **타임라인 슬라이더** + 집계 라인 + valid 표현 강화. ECharts heatmap 대신 custom 시리즈로 직접 렌더 (대용량 처리)
+- **BitmapGridView** (`victim_bits`/`segment_bits` typeKey) — Canvas 비트 그리드 + **지속성 그라디언트** 모드 (여러 시점 누적을 색상으로). 타임라인 재생
+
+뷰는 `typeKey` contains 매칭으로 자동 활성. 공통 3 뷰(chart/table/tree) 는 모든 타입 공통.
+
+### 권한 알림 실시간화 + SSE
+
+권한 위반을 사용자에게 즉시 알리도록 SSE 기반 실시간 알림:
+
+- **Admin SSE 스트림** — 권한 위반이 발생하면 Admin 페이지에 실시간 배지
+- 위반 이력 DB 기록 유지
+- 이후 이력 관리는 제거, 실시간 알림만 유지 (운영 복잡도 감소)
+
+### UI 이모지 → Lucide 아이콘 일괄 교체
+
+UI 전반에 산재한 이모지/유니코드 심볼을 `lucide-svelte` 아이콘으로 교체. 접근성/일관성 개선.
+
+### 기타
+
+- **TR 상세 TC sidebar** — 접기/펼치기 + 드래그 리사이즈
+- **SetTcSheet Footer** — settc / settc2 전환 토글 (원본 TC 할당 vs 신규 TC 할당 포맷 선택)
+- **setLocation 파싱** — `"DT-0"` 등 숫자 없는 prefix 지원 (DT1 fix)
+
+---
+
+## 2026-04-19 ~ 04-20
+
+### Metadata 멀티슬롯 기반 + 키 선택 UX
+
+`MetadataDialog` 를 단일 슬롯에서 멀티 슬롯 구조로 재작성:
+
+- 슬롯 탭 UI (`allSlots[activeSlotIdx]`) + 일괄 수집 설정
+- 키 선택 — 검색 / 그룹 / 선택요약 / 섹션 접기-펼치기
+- 차트 키 선택을 `localStorage` 에 **typeKey 별** 저장 → 다음 열람에서 복원
+- Dialog 풀스크린 모드 + history 에서 testTrId/headType 전달
+- `debug_*.json` 실제 파일 스캔 + 경로 표시 — history 에서 여러 슬롯의 JSON 을 교차 조회
+- Metadata SSH 접속 — `tentacleIp` 직접 전달 옵션 추가 (다른 세트 이전된 TC 조회 가능)
+
+### 용어 통일 — "수집" → "모니터링"
+
+UI 문구 + 백엔드 변수명 + 클래스명 대대적 통일:
+
+- `CollectionIntervalMin` → (유지, yaml 키 호환) 하지만 변수명 `collect*` → `monitor*`
+- `Collecting` → `Monitoring`
+- 사용자 UI 의 "수집" 관련 텍스트 모두 "모니터링"
+- 혼란 방지: "수집" 은 데이터 취득 과정 느낌이라 중단 가능성을 시사, "모니터링" 이 "TC 기간 동안 상주" 의미에 더 정확
+
+### Metadata 초 단위 주기 + 슬롯별 개별 설정
+
+- `ScheduledExecutorService(8 threads)` + `scheduleAtFixedRate` 로 전환 (기존 `@Scheduled` 분 단위 → 감지자+작업자 분리)
+- 슬롯별 `setSlotIntervalSeconds` — 최소 10초 clamp
+- `@Scheduled(5000ms)` 는 상태 감지 전용 (running 진입/이탈)
+- 슬롯별 `excludedTypes` — 특정 typeKey 만 끄기 (용량 큰 bitmap 류 등)
+- JSON export 버튼
+
+### Metadata Product Mapping CSV 구조 + UNIQUE
+
+- `ufs_product_metadata.metadata_type_ids` 를 CSV `"1,3,5"` 로 전환 — 한 매핑이 여러 타입 커버
+- UNIQUE `(controller, cell_type, nand_type, oem)` 제약 추가, 빈값은 `''` 로 정규화 (NULL 중복 판정 이슈 회피)
+- Product Mapping 중복 시 409 Conflict + 프론트 "이미 등록된 제품 조합" 안내
+- Admin UI 체크박스 다중 타입 선택 + 그룹핑 테이블 표시
+- Product Mappings 폼 — Controller/CellType/NandType/OEM 을 UFS Info DB 에서 select (자유 입력 방지)
+- Matching 로직: testTrName 파싱 → `testTrId + TR 조회` 로 전환 (더 안정)
+
+### Metadata raw / keyvalue / table / bitmap command_type 추가
+
+4 command_type (tool/sysfs) 구조에서 7 command_type 로 확장:
+
+- **raw** — 전체 출력을 `{basename: "..."}` 에 저장 (파싱 불가능한 덩어리)
+- **keyvalue** — f2fs status 같은 들여쓰기 human-readable. 스택 기반 depth → dot-notation, 섹션 prefix (`partition info(sda21)`), 숫자 추출 + 단위 제거, 괄호 내 값 추출 (`GC calls: 234 (BG: 189)` → 2 키)
+- **table** — f2fs `iostat_info` 3-column 섹션 파서
+- **bitmap** — f2fs `segment_info` / `victim_bits` / `segment_bits` 라인 배열 보존
+
+각 타입은 `MetadataCommandExecutor` 의 독립 메서드로 구현, `monitorOnce` 의 switch 분기.
+
+---
+
+## 2026-04-18
+
+### MOVE 브랜딩 + 패키지 리네이밍
+
+- 프로젝트 명칭 **Samsung Portal → MOVE (Mobile OS Validation Eco-system)**
+- 로고 — 회로 M 아이콘 + 애니메이션 + 목업 프리뷰
+- 패키지 리네이밍: `com.samsung.portal` → `com.samsung.move` (패키지 변경 가이드 문서 작성)
+- 헤더 MOVE 브랜딩 + favicon
+
+### Head 연결 test-instance 모드 격리
+
+테스트용 Head 인스턴스를 일반 Head 와 분리해 실제 TCP 연결:
+
+- `testMode=true` Head 는 일반 인스턴스와 완전 격리 (startClient 동적 호출 포함)
+- 가짜 연결(mock) 제거 — testMode Head 도 실제 TCP 로 동작
+- Test Mode 별도 인스턴스 — `test` 프로파일 + 접근 권한 + UI 배너 (포트 분리)
+
+### SSH tentacleIp 직접 접속 — PortalServer 의존 제거
+
+슬롯 터미널/로그브라우저가 `PortalServer` 테이블을 거치지 않고 `SlotInfomation.tentacleIp` 로 직접 SSH:
+
+- `ba7b8e3` feat: 슬롯 터미널/로그브라우저 tentacleIp 직접 SSH 접속
+- `SftpPanel` 도 tentacleIp(host) 로 접속
+- 로그브라우저 `setLocation` 정규식 범용화 + `tentacle.head.host` 프로파일별 분리
+- Pre-Command SSH 도 `PortalServer` 없을 때 tentacleIp fallback
+- Metadata SSH 도 tentacleIp fallback
+
+### AuthController ObjectMapper static 변환 + ADFS 로그아웃
+
+Spring Boot 4.0.2 에서 ObjectMapper 를 직접 주입 안 되는 이슈 회피 — `static` 으로 변환. ADFS 로그아웃 흐름 정리.
+
+### 테스트 프로파일 ADFS 비활성화
+
+포트 분리 환경(test=8443)에서 ADFS 콜백 불가 → test 프로파일 ADFS 비활성화, 로컬 로그인만 사용. base-url/redirect-url 프로파일별 분리.
+
+---
+
+## 2026-04-17
+
+### Head TCP 3시간 idle reconnect
+
+Head TCP 연결이 3시간 idle 상태에서 끊기는 문제:
+
+- 3시간 idle 시 `exit` 명령 강제 전송 후 자동 reconnect
+- `isOutSocketAlive` 제거 (30초 재연결 버그 원인), idle 체크만 유지
+- 권한 요청 관련 버그 5건 수정
+
+### 헤더 세션 남은 시간 + 연장 버튼
+
+- 헤더에 세션 카운트다운 표시 (120분 sliding)
+- 연장 버튼 — CSRF 토큰 포함 요청
+- 비밀번호 변경 버튼 추가
+
+---
+
+## 2026-04-14 ~ 04-16
+
+### 권한 요청/승인 플로우
+
+신규 사용자가 기본 비활성화 상태로 가입되며, 접근 요청을 통해 Admin 승인을 받는 구조:
+
+- `portal_permission_requests` 테이블 추가
+- 신규 사용자 기본 disabled → disabled 접근 요청 화면 연결
+- Admin 배지 + 승인/거부 기능
+- 비관적 락 + 원자적 3 write (승인 시 user 활성화 + 권한 부여 + 요청 상태 변경)
+
+### Frontend 버그 수정 5건
+
+- 로그아웃 상태 초기화, 세션 만료 정리, 401 리다이렉트
+- `@Transactional` 트랜잭션 매니저 누락 + `@Modifying` clear/flush 추가
+- `UserPermission` constraint 에러 — `@Modifying` JPQL DELETE 로 변경
+- `noPermission` 화면 미표시 — `visibleMenuItems` 빈 배열 early return 제거
+
+---
+
+## 2026-04-13
+
+### AD(ADFS) OpenID Connect 인증 + 사용자별 권한 + 세션 타임아웃
+
+외부 인증 전면 적용 (구현 완료):
+
+- **ADFS Hybrid Flow 수동 구현** — Spring Security OAuth2 의 표준 플로우가 Samsung AD 와 호환 안 되어 직접 구현. `form_post` → id_token 파싱 → claims 추출 (userid/loginid/username/mail)
+- **HttpSession 120분 sliding** — 헤더 카운트다운 + 연장
+- **17개 권한 체계** — DB 기반 URL 인터셉터 + `UserPermission` + `UserHeadAccess` (사용자별 Head 탭 접근 제한)
+- **portal.auth.disabled** — true (기본) / false (dev/prod) 플래그로 개발 편의
+- **다크모드 제거** — 라이트 테마 전용으로 단순화
+- **액션 권한 인터셉터** — 컨트롤러 수정 없이 URL 매핑만으로 권한 체크
+
+ADFS 설정은 `dev` / `prod` / `test` 프로파일로 분리. ADFS callback 경로 여러 차례 수정 후 안정화.
+
+### iotest — syscall I/O 테스트 엔진
+
+`iotest` 를 generic `RunBenchmark` gRPC 에 기생하는 syscall 엔진으로 구현:
+
+- `IOTestEditor` — thread + commands 트리 편집
+- `IOTestPreset` 엔티티 (configJson MEDIUMTEXT) + 내장 18 프리셋
+- Go Agent executor 가 thread 별 goroutine 으로 실제 syscall (open/pread/pwrite/fsync) 수행
+- `SubscribeJobProgress` 스트림 → SSE → `IOTestProgressView`
+- duration_seconds 만료 또는 모든 thread 완료/실패 시 종료
+
+---
+
+## 2026-04-11 ~ 04-12
+
+### 대규모 패키지 리팩토링
+
+**Backend**:
+- `minio`, `logbrowser`, `head`(precmd/makeset), `web`, `dto` 패키지 기능별 분리
+- head 패키지 기능별 하위 패키지 분리
+
+**Frontend**:
+- `components/` 를 기능별 그룹(`remote/`, `debug/` 등) 으로 분리
+- `slots` 페이지에서 TC `status` / `options` 유틸 추출 (3562 → 3452 줄)
+- `lib/styles/common.ts` — 공통 CSS 스타일 유틸 (41 파일 적용, 3단계)
+  - `inputSm`, `emptyState`, `tagMuted`, `btnXs` 추가
+- `SlotCard` 아이콘 lucide-svelte 로 교체, memo/preCmd/tcPreCmd 색상 구분
+
+---
+
+## 2026-04-09 ~ 04-10
+
+### dev/prod 프로파일 분리 + run.sh
+
+환경별 설정을 명확히 분리:
+
+- `application-dev.yaml` / `application-prod.yaml` / `application-test.yaml`
+- `run.sh` — PORTAL_PROFILE=dev|prod|test 선택, 8가지 메뉴
+- 주소/인증 정보를 프로파일별로 이동
+- `tentacle.head.host` 프로파일별 분리 (dev/prod/test 각각 IP)
+- 실행은 `java -jar` (graceful shutdown), 빌드는 `mvnd`
+- nginx 443→8080 (일반), 8443→8081 (test)
+
+### T32 Dump 품질 개선
+
+- 결과 datetime 형식 (`{yyyyMMdd-HHmmss}_{...}`)
+- FW branch 폴더 안에 저장하지 않음 (폴더 분리)
+- Canary 결과 자동 ZIP
+- HTML report SSH 프록시 — 로컬에서 `127.0.0.1:port` 로 접근
+
+### FILE_SYSTEM 컬럼
+
+성능 테스트 결과 표시에 File System 정보 추가:
+
+- `FILE_SYSTEM` entity + DataTable 컬럼 (slot TC / compatibility / performance)
+- 성능 차트 부제목(subtext) 에 fileSystem 추가
+- Excel export proto 에 fileSystem 전달
+- history 없으면 `headSlotData` 에서 표시 (fallback)
+
+### Pre-Command 개선 (setLocations 기반)
+
+- Pre-Command 즉시 실행 시 `setLocation` 기반으로 정확한 VM 에 전송 (이전엔 브로드캐스트)
+- 디버깅 로그 전체 삭제 — 운영 정리
+
+### RDP Win키 / CtrlAltDel
+
+Guacamole RDP 에 Win키 + Ctrl+Alt+Del 버튼 추가. 원격 Windows 제어성 개선.
+
+### Remote 접속 사용자 식별을 auth 세션 기반으로
+
+기존 시스템 계정 기반이던 원격 접속 식별을 Spring auth 세션 기반으로 전환.
+
+---
+
+## 2026-04-08
+
+### TC Pre-Command init 감지 개선
+
+TC Pre-Command 가 `init` 상태에서 실행되지 않는 버그 + 감지 로직 재설계:
+
+- TC Pre-Command 초기화를 `testState clear` → `initslot` 명령 시점으로 변경
+- `isNewInit` 체크 제거, `executedTcs` 만으로 중복 방지
+- 시작 감지를 `testcaseStatus` 기반으로 복원 (이전 `testHistoryIds` 시도 롤백)
+- `testcaseIds` / `testcaseStatus` 선행 슬래시 제거 (`"/42"` → `"42"`)
+- TC 완료 판단 기준을 `status==0` 만 보는 대신 완료 상태 Set 기반으로 확장
+
+### 성능 차트 VS hover 미리보기
+
+History 목록에서 VS 버튼 hover 시 성능 차트 미리보기 팝오버:
+
+- `VS` 버튼에 historyId 전달 → `CompareToggleCell` + `PerfRenderer` 팝오버
+- History 전체 목록 페이지에도 동일하게 적용
+
+### 성능 차트 Legend 색상 커스터마이징
+
+- PerfChart 에 팔레트 버튼 → `ChartColorPicker` 컬러 피커
+- Legend 별 색상 개별 선택, `sharedColors` export 로 차트 간 공유
+
 ---
 
 ## 2026-04-07
