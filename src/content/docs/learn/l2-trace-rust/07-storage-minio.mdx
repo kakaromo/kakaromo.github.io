@@ -148,38 +148,100 @@ trait이 `Range<u64>` (Rust 표준, end exclusive)를 주는데 rust-s3는 inclu
 
 ## get_metadata — footer 2-step fetch
 
-가장 흥미로운 부분. parquet footer 구조:
+가장 흥미로운 부분. **parquet footer 바이트 레이아웃**:
 
-```text
-파일 끝 →                                   끝에서 8 바이트
-                                            ┌──────────┬──────┐
-[ ... row groups (대부분) ... ][ metadata ][  length   │ PAR1 │
-                               ↑           │  u32_le   │ magic│
-                               footer 시작 │  (4 byte) │ (4)  │
-                                            └──────────┴──────┘
-```
+<figure style="margin: 1.5rem 0;">
+<svg viewBox="0 0 760 200" role="img" aria-label="Parquet 파일 끝 8바이트는 metadata length(4) + PAR1 magic(4). length를 읽어야 metadata 시작 위치를 알 수 있음." style="width: 100%; height: auto; font-family: var(--sl-font-mono, monospace); font-size: 12px;">
+  {/* 파일 베이스라인 */}
+  <text x="20" y="40" fill="var(--sl-color-gray-2)" font-size="10">0</text>
+  <text x="20" y="55" fill="var(--sl-color-gray-2)" font-size="10">파일 시작 →</text>
 
-`length`를 읽기 전엔 metadata가 어디부터 시작하는지 모릅니다 (가변 길이). 그래서 두 단계:
+  {/* row groups (큰 영역) */}
+  <rect x="20" y="70" width="430" height="50" fill="var(--sl-color-gray-6, #2a2a2a)" stroke="var(--sl-color-gray-3)" stroke-width="1" rx="3" />
+  <text x="235" y="100" text-anchor="middle" fill="var(--sl-color-white)" font-size="11">row groups (대부분 차지 — 5GB)</text>
 
-```text
-[Step 1] tail 64KB range-GET
-                                           ┌────── tail 64 KB ──────┐
-                                           ▼                        ▼
-[ ... row groups (5GB) ............ ][ metadata ][ len ][ PAR1 ]
-                                           │                  │
-                                           └─ 보통 여기 모두 들어옴 ┘
-                                           ↓
-                                      len = u32_le(tail[-8..-4])
+  {/* metadata (가변 길이) */}
+  <rect x="450" y="70" width="180" height="50" fill="var(--sl-color-blue-low, #1e3a5f)" stroke="var(--sl-color-blue, #4a9eff)" stroke-width="1.5" rx="3" />
+  <text x="540" y="92" text-anchor="middle" fill="var(--sl-color-white)" font-size="11">metadata (encoded)</text>
+  <text x="540" y="108" text-anchor="middle" fill="#9ec5ff" font-size="10">길이 가변, 보통 수십 KB</text>
 
-[Step 2A] footer가 64KB 안 → 그대로 슬라이스 (RTT 1번)
-                                           ┌── slice ──┐
-                                           [ metadata ][ len ][ PAR1 ]
-                                           ↑ 파싱 OK
+  {/* length (4 bytes) */}
+  <rect x="630" y="70" width="60" height="50" fill="#5f4a1e" stroke="#ffd43b" stroke-width="1.5" rx="3" />
+  <text x="660" y="90" text-anchor="middle" fill="var(--sl-color-white)" font-size="10" font-weight="700">length</text>
+  <text x="660" y="103" text-anchor="middle" fill="#ffd43b" font-size="9">u32_le</text>
+  <text x="660" y="115" text-anchor="middle" fill="#ffd43b" font-size="9">4 byte</text>
 
-[Step 2B] footer > 64KB (큰 schema) → 한 번 더 range-GET (RTT 2번)
-                                  ┌─ 2nd GET ─┐    ┌── tail (이미 받음) ──┐
-                                  [ metadata ...]  [ ... metadata ][ len ][ PAR1 ]
-                                                ↑ 합쳐서 파싱 OK
+  {/* PAR1 magic (4 bytes) */}
+  <rect x="690" y="70" width="50" height="50" fill="var(--sl-color-purple-low, #3a2a5f)" stroke="var(--sl-color-purple, #b58aff)" stroke-width="1.5" rx="3" />
+  <text x="715" y="92" text-anchor="middle" fill="var(--sl-color-white)" font-size="10" font-weight="700">PAR1</text>
+  <text x="715" y="106" text-anchor="middle" fill="#d4baff" font-size="9">magic 4B</text>
+
+  {/* EOF 라벨 */}
+  <text x="740" y="55" text-anchor="end" fill="var(--sl-color-gray-2)" font-size="10">← 파일 끝</text>
+
+  {/* footer 시작 화살표 */}
+  <line x1="450" y1="135" x2="450" y2="125" stroke="var(--sl-color-blue, #4a9eff)" stroke-width="1.5" />
+  <polygon points="450,123 446,131 454,131" fill="var(--sl-color-blue, #4a9eff)" />
+  <text x="450" y="150" text-anchor="middle" fill="var(--sl-color-blue, #4a9eff)" font-size="10" font-weight="700">footer 시작</text>
+  <text x="450" y="165" text-anchor="middle" fill="var(--sl-color-gray-2)" font-size="10">(어디인지는 length를 봐야 앎)</text>
+
+  {/* 끝에서 8바이트 묶음 */}
+  <line x1="630" y1="135" x2="630" y2="125" stroke="#ffd43b" stroke-width="1" />
+  <line x1="740" y1="135" x2="740" y2="125" stroke="#ffd43b" stroke-width="1" />
+  <line x1="630" y1="135" x2="740" y2="135" stroke="#ffd43b" stroke-width="1" />
+  <text x="685" y="150" text-anchor="middle" fill="#ffd43b" font-size="10" font-weight="700">끝에서 8 byte</text>
+  <text x="685" y="163" text-anchor="middle" fill="#ffd43b" font-size="9">고정 위치 — 무조건 여기</text>
+
+  {/* 핵심 메시지 */}
+  <text x="380" y="190" text-anchor="middle" fill="var(--sl-color-gray-2)" font-size="11">
+    먼저 끝에서 8 byte를 읽어 length를 파악 → metadata 영역 시작 위치 결정
+  </text>
+</svg>
+<figcaption style="text-align: center; color: var(--sl-color-gray-2); font-size: 0.8125rem;">
+끝 8 byte는 항상 [length(4) + PAR1(4)]로 고정. metadata 길이는 가변이라 length를 먼저 읽어야 footer 시작 위치를 안다.
+</figcaption>
+</figure>
+
+`length`를 읽기 전엔 metadata가 어디부터 시작하는지 모릅니다. 그래서 **두 단계**로 가져옵니다.
+
+```mermaid
+flowchart TB
+    START["GetChartData / GetTraceStats<br/>요청 진입"]
+    HEAD["head_object<br/>file_size 획득<br/>(MinioParquetReader::new)"]
+    STEP1["Step 1: tail 64KB range-GET<br/>HTTP Range: bytes=-65536"]
+    PARSE_LEN["len = u32_le(tail[-8..-4])<br/>footer_total = len + 8"]
+
+    CHECK{"footer_total<br/>≤ 64KB ?"}
+
+    STEP2A["Step 2A: 그대로 슬라이스<br/>tail.slice(initial - footer_total..)<br/>RTT 총 2번 (head + Step 1)"]
+    STEP2B["Step 2B: 추가 range-GET<br/>file_size − footer_total ..<br/>file_size − initial<br/>RTT 총 3번"]
+
+    PARSE_META["ParquetMetaDataReader<br/>::parse_and_finish<br/>→ Arc&lt;ParquetMetaData&gt;"]
+    READY["StreamBuilder 가능<br/>(이후 row group lazy fetch)"]
+
+    START --> HEAD
+    HEAD --> STEP1
+    STEP1 --> PARSE_LEN
+    PARSE_LEN --> CHECK
+    CHECK -- "yes (~99% 케이스)" --> STEP2A
+    CHECK -- "no (wide schema)" --> STEP2B
+    STEP2A --> PARSE_META
+    STEP2B --> PARSE_META
+    PARSE_META --> READY
+
+    classDef io fill:#1e3a5f,stroke:#4a9eff,color:#fff
+    classDef state fill:#3a2a5f,stroke:#b58aff,color:#fff
+    classDef good fill:#1e4f3a,stroke:#51cf66,color:#fff
+    classDef warn fill:#5f2a2a,stroke:#ff6b6b,color:#fff
+    classDef decision fill:#5f4a1e,stroke:#ffd43b,color:#fff
+
+    class HEAD,STEP1 io
+    class PARSE_LEN,PARSE_META state
+    class STEP2A good
+    class STEP2B warn
+    class CHECK decision
+    class READY state
+    class START io
 ```
 
 **Step 1 한 번만으로 거의 모든 parquet의 footer를 회수**합니다. ftrace parquet 같이 컬럼 수십 개 수준이면 metadata가 수 KB라 64KB 안에 여유롭게 들어옴. Step 2B는 컬럼이 수백~수천개인 wide schema에서만 발동.
