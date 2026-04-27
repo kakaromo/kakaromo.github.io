@@ -1,0 +1,310 @@
+---
+title: 6. gRPC RPC 카탈로그 — 9개 엔드포인트 한눈에
+description: trace --grpc-server가 노출하는 9개 RPC의 시그니처·스트리밍 모드·사용 시점을 한 표로 정리하고 핵심 5개의 흐름을 코드로 따라간다
+sidebar:
+  order: 6
+---
+
+## 30초 요약
+
+`trace --grpc-server`는 `proto/log_processor.proto`에 정의된 **9개 RPC**를 tonic으로 노출합니다. 절반은 streaming(progress/이벤트), 절반은 unary(통계/리스트).
+
+| # | RPC | 모드 | 입력 | 출력 |
+|---|---|---|---|---|
+| 1 | `ProcessLogs` | server-streaming | MinIO 로그 path | `ProcessLogsProgress` × N (DOWNLOAD→PARSING→…→COMPLETED) |
+| 2 | `ConvertToCsv` | server-streaming | MinIO parquet path | `ConvertToCsvProgress` × N |
+| 3 | `GetJobStatus` | unary | `job_id` | 마지막 progress snapshot |
+| 4 | `ListFiles` | unary | bucket + prefix | 파일 path list |
+| 5 | `ReadParquet` | server-streaming | parquet path + 최대 레코드 | row JSON × N |
+| 6 | `StartRealtimeParsing` | server-streaming | log path + window | `ParquetFileReady` × N (윈도우마다 1개) |
+| 7 | `StopParsing` | unary | `job_id` | 마지막 파일 + 누적 통계 |
+| 8 | `GetChartData` | unary | parquet + 시간 범위 + actions | **Arrow IPC bytes** + latency 요약 |
+| 9 | `GetTraceStats` | unary | parquet + 시간 범위 + bucket edges | **JSON 통계** (cmd_stats, histograms, ...) |
+
+이 장은 위 9개를 카테고리로 묶어 설명합니다.
+
+## 카테고리 — 데이터 변환 vs 조회 vs 실시간
+
+| 카테고리 | RPC | 특징 |
+|---|---|---|
+| **변환 파이프라인** | `ProcessLogs`, `ConvertToCsv` | 큰 입력 → 큰 출력. 진행률 streaming. job_id로 추적 |
+| **메타·내용 조회** | `GetJobStatus`, `ListFiles`, `ReadParquet` | MinIO/in-memory 상태 조회 |
+| **실시간** | `StartRealtimeParsing`, `StopParsing` | tail -f + 윈도우 streaming. CancellationToken |
+| **분석 응답** | `GetChartData`, `GetTraceStats` | UI가 직접 호출. parquet → Arrow IPC / JSON |
+
+마지막 카테고리(분석)가 portal이 가장 자주 호출하는 두 RPC입니다.
+
+## tonic 서버 셋업
+
+`grpc/server.rs` 진입점:
+
+```rust
+use tonic::transport::Server;
+
+#[tokio::main]
+pub async fn run_grpc_server(port: u16, minio_config: MinioConfig)
+    -> Result<(), Box<dyn Error>>
+{
+    let addr = format!("0.0.0.0:{}", port).parse()?;
+    let service = LogProcessorService::new(minio_config);
+
+    println!("🚀 gRPC server listening on 0.0.0.0:{}", port);
+
+    Server::builder()
+        .max_decoding_message_size(256 * 1024 * 1024)  // 256MB
+        .max_encoding_message_size(256 * 1024 * 1024)
+        .add_service(LogProcessorServer::new(service))
+        .serve(addr)
+        .await?;
+    Ok(())
+}
+```
+
+핵심 디테일:
+
+- **256MB max message size** — Arrow IPC payload가 큰 차트 응답을 한 번에 보내기 위해. 기본 4MB로는 부족
+- **단일 서비스** — 9개 RPC가 모두 `LogProcessorService` 한 impl 안. 각각 트레이트 메서드
+- **MinioConfig 공유** — 모든 RPC가 같은 client 인스턴스를 빌려 씀
+
+## ProcessLogs — 변환 파이프라인의 본보기
+
+```rust
+async fn process_logs(
+    &self,
+    request: Request<ProcessLogsRequest>,
+) -> Result<Response<Self::ProcessLogsStream>, Status> {
+    let req = request.into_inner();
+    let job_id = Uuid::new_v4().to_string();
+    let (tx, rx) = mpsc::channel(32);
+
+    // job 상태 등록 (GetJobStatus가 읽음)
+    self.jobs.lock().await.insert(job_id.clone(), JobState::default());
+
+    // 무거운 작업은 별도 task에서 — 이 함수는 즉시 stream 반환
+    let svc = self.clone();
+    tokio::spawn(async move {
+        svc.process_logs_internal(req, job_id.clone(), tx).await;
+    });
+
+    Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
+}
+```
+
+패턴:
+
+1. **즉시 stream 반환** — 클라이언트는 끊지 않고 진행률을 받음
+2. **job_id 발급** — `GetJobStatus`로 폴링 가능
+3. **mpsc channel** — 내부 task가 progress를 push, gRPC가 pull
+
+내부 단계:
+
+```rust
+async fn process_logs_internal(...) {
+    send_progress(DOWNLOADING, 0, "downloading log...").await;
+    let local_log = download_from_minio(...).await?;
+
+    send_progress(PARSING, 30, "parsing log file...").await;
+    let traces = parse_log_file_high_perf(&local_log)?;  // ← parsers/
+
+    send_progress(CONVERTING, 60, "computing latency...").await;
+    let processed = ufs_bottom_half_latency_process(traces.0);  // ← processors/
+
+    send_progress(UPLOADING, 80, "uploading parquet...").await;
+    save_ufs_to_parquet(&processed, &temp_path, 50_000)?;       // ← output/
+    upload_to_minio(...).await?;
+
+    send_progress(COMPLETED, 100, "done").await;
+}
+```
+
+이 흐름이 `ConvertToCsv`도 거의 동일. parquet → Arrow → CSV로 후반만 다름.
+
+## GetChartData — Arrow IPC unary
+
+```rust
+async fn get_chart_data(
+    &self,
+    request: Request<GetChartDataRequest>,
+) -> Result<Response<GetChartDataResponse>, Status> {
+    let req = request.into_inner();
+
+    // sync vs async reader 분기 (TRACE_PARQUET_READER 환경변수)
+    let payload = if is_async_reader_enabled() {
+        let reader = MinioParquetReader::new(config, req.parquet_path).await?;
+        match req.trace_type.as_str() {
+            "ufs"       => build_ufs_chart_payload_async(reader, ...).await?,
+            "block"     => build_block_chart_payload_async(reader, ...).await?,
+            "ufscustom" => build_ufscustom_chart_payload_async(reader, ...).await?,
+            _ => return Err(Status::invalid_argument("unknown trace_type")),
+        }
+    } else {
+        // sync — /tmp 다운로드 후 spawn_blocking으로 CPU-bound 작업 격리
+        download_parquet_to_temp(...).await?;
+        tokio::task::spawn_blocking(move || build_ufs_chart_payload(...)).await?
+    };
+
+    Ok(Response::new(GetChartDataResponse {
+        arrow_ipc: payload.arrow_ipc,
+        total_events: payload.total_events,
+        sampled_events: payload.sampled_events,
+        // latency 요약 (min/max/avg/median/p99)
+        dtoc: Some(payload.dtoc.into_proto()),
+        ctod: Some(payload.ctod.into_proto()),
+        ctoc: Some(payload.ctoc.into_proto()),
+        qd:   Some(payload.qd.into_proto()),
+        schema_version: payload.schema_version.to_string(),
+    }))
+}
+```
+
+핵심:
+
+- **trace_type 디스패치** — proto의 `trace_type` 문자열로 ufs/block/ufscustom 분기
+- **sync는 spawn_blocking** — `parquet::ArrowReader`가 동기 + CPU-bound. tokio worker를 막으면 다른 RPC가 starve. 별도 blocking pool로 옮김
+- **async는 그대로 await** — `MinioParquetReader`가 자체 async, range-GET이 I/O bound라 worker 점유 시간 짧음
+
+응답 페이로드는 [l2-trace의 03-chart-arrow-ipc](/learn/l2-trace/03-chart-arrow-ipc/)에서 자세히.
+
+## StartRealtimeParsing — server-streaming + Cancel
+
+```rust
+async fn start_realtime_parsing(
+    &self,
+    request: Request<StartRealtimeParsingRequest>,
+) -> Result<Response<Self::StartRealtimeParsingStream>, Status> {
+    let req = request.into_inner();
+    let job_id = Uuid::new_v4().to_string();
+
+    let (tx, rx) = mpsc::channel(32);
+    let cancel_token = CancellationToken::new();
+
+    // 취소 토큰 등록 — StopParsing이 발화시킴
+    self.realtime_jobs
+        .lock()
+        .await
+        .insert(job_id.clone(), cancel_token.clone());
+
+    // bridge: BottomHalfState용 알림 채널 → gRPC stream으로 forward
+    let (notif_tx, mut notif_rx) = mpsc::channel(32);
+
+    let job_id_for_task = job_id.clone();
+    tokio::spawn(async move {
+        run_realtime_parser(
+            req.log_source,
+            req.output_dir,
+            req.window_seconds.unwrap_or(1),
+            cancel_token,
+            notif_tx,
+        ).await
+    });
+
+    // notification → ParquetFileReady 변환
+    tokio::spawn(async move {
+        while let Some(n) = notif_rx.recv().await {
+            let msg = ParquetFileReady {
+                file_path: n.file_path,
+                event_count: n.event_count,
+                total_events: n.total_events,
+                file_seq: n.file_seq,
+                is_final: n.is_final,
+                job_id: job_id_for_task.clone(),
+            };
+            if tx.send(Ok(msg)).await.is_err() { break; }
+        }
+    });
+
+    Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
+}
+
+async fn stop_parsing(
+    &self,
+    request: Request<StopParsingRequest>,
+) -> Result<Response<StopParsingResponse>, Status> {
+    let job_id = request.into_inner().job_id;
+
+    // CancellationToken 발화 → run_realtime_parser 루프 break
+    if let Some(token) = self.realtime_jobs.lock().await.remove(&job_id) {
+        token.cancel();
+    } else {
+        return Err(Status::not_found("job not found"));
+    }
+
+    // 자동 머지가 끝날 때까지 잠시 대기 후 응답
+    // (run_realtime_parser가 머지 후 is_final=true notification을 보냄)
+    Ok(Response::new(StopParsingResponse {
+        last_file_path: String::new(),
+        total_events: 0,
+        elapsed_seconds: 0.0,
+    }))
+}
+```
+
+핵심 두 가지:
+
+- **CancellationToken** — `tokio_util::sync`. `cancel()` 호출 시 모든 `is_cancelled()` 체크 지점이 즉시 반응
+- **2단계 채널** — 파서는 `mpsc::Sender<ParquetFileNotification>`만 알면 됨 (gRPC와 무관). 서버 레이어가 proto 메시지로 변환. 파서 단위 테스트도 쉽게
+
+## ListFiles / GetJobStatus / ReadParquet — 단순 unary
+
+```rust
+async fn list_files(
+    &self,
+    request: Request<ListFilesRequest>,
+) -> Result<Response<ListFilesResponse>, Status> {
+    let req = request.into_inner();
+    let client = MinioAsyncClient::new(&MinioConfig {
+        bucket: req.bucket,
+        ..self.minio_config.clone()
+    })?;
+    let files = client.list_objects(&req.prefix).await?;
+    Ok(Response::new(ListFilesResponse { files }))
+}
+```
+
+`GetJobStatus`도 비슷 — 그냥 in-memory `HashMap<job_id, JobState>` 조회. `ReadParquet`은 Parquet의 처음 N행을 JSON으로 streaming.
+
+운영용/디버깅용에 가까운 RPC들이라 코드도 짧음.
+
+## RPC별 사용 시점
+
+| 사용 주체 | 호출 RPC | 시나리오 |
+|---|---|---|
+| portal upload UI | `ProcessLogs` | 로그 파일 업로드 → @Async parsing |
+| portal trace UI | `GetChartData`, `GetTraceStats` | 차트/표 렌더링 |
+| portal trace UI | `ListFiles`, `ReadParquet` | 디버깅/리스트 화면 |
+| agent (Go) | `StartRealtimeParsing`, `StopParsing` | 라이브 trace 수집 |
+| portal admin | `GetJobStatus` | 변환 진행률 폴링 |
+| 운영자 CLI | `ConvertToCsv` | parquet → CSV 추출 |
+
+`l2-trace`의 portal 흐름은 위 표에서 마지막 줄을 빼면 다 호출합니다.
+
+## 클라이언트 — `--grpc-client`로 직접 호출
+
+`grpc/client.rs`가 같은 서비스를 호출하는 CLI 클라이언트도 제공.
+
+```bash
+# 서버
+./trace --grpc-server --port 50053
+
+# 클라이언트 명령
+./trace --grpc-client process \
+    --server localhost:50053 \
+    --source-bucket trace --source-path raw/job1.log \
+    --target-bucket trace --target-path parquet/job1 \
+    --log-type ufs
+
+./trace --grpc-client list --server localhost:50053 --bucket trace --prefix parquet/
+
+./trace --grpc-client realtime --server localhost:50053 \
+    --source-path /tmp/trace.log --output-dir /tmp/realtime --log-type ufs --window 1
+
+./trace --grpc-client stop --server localhost:50053 --job-id <UUID>
+```
+
+서버 디버깅이나 portal 없이 통계 확인할 때 유용.
+
+## 다음 — Storage backend
+
+`GetChartData`/`GetTraceStats`가 환경변수로 선택하는 sync vs async parquet reader. 다음 장에서 둘의 trade-off와 async reader가 5GB+ parquet에서 어떻게 footer 2-step + range-GET을 하는지 봅니다.
+
+→ [7. Storage & MinIO](/learn/l2-trace-rust/07-storage-minio/)

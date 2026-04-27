@@ -1,0 +1,254 @@
+---
+title: 3. Bottom half — DtoC/CtoC/CtoD/QD 계산
+description: send_req/complete_rsp 두 이벤트를 매칭해 4가지 latency를 추출하는 processors의 핵심 알고리즘
+sidebar:
+  order: 3
+---
+
+import SequenceTimeline from '../../../../components/learn/SequenceTimeline.svelte';
+
+## 30초 요약
+
+ftrace에서 한 I/O 요청은 **두 이벤트**로 기록됩니다.
+
+- `send_req` (UFS) / `block_rq_issue` (Block) — 디바이스로 명령 전송
+- `complete_rsp` (UFS) / `block_rq_complete` (Block) — 완료 응답 수신
+
+`processors/ufs.rs`와 `processors/block.rs`는 이 두 이벤트를 매칭해 **4가지 latency**를 추출합니다.
+
+| 약어 | 풀이 | 의미 |
+|---|---|---|
+| **DtoC** | Dispatch to Complete | 한 요청의 send → complete 시간 (ms) |
+| **CtoC** | Complete to Complete | 직전 complete → 현재 complete 시간 |
+| **CtoD** | Complete to Dispatch | 직전 complete → 다음 send (큐가 비었다 다시 채워질 때만) |
+| **QD** | Queue Depth | 진행 중인 요청 수 |
+
+이들이 `Vec<UFS>`/`Vec<Block>`의 각 원소에 채워져 parquet으로 저장됩니다.
+
+## 시각화 — 매칭과 4가지 latency
+
+아래 시퀀스는 두 요청 흐름입니다. send 시점의 시간을 **`pending` HashMap**에 보관했다가 complete 시점에 꺼내 DtoC를 계산하고, complete 사이 간격으로 CtoC/CtoD를 추출합니다. ▶ 버튼으로 재생하거나 마지막 t로 건너뛸 수 있습니다.
+
+<SequenceTimeline
+  client:visible
+  height={420}
+  caption="(tag=10, R)과 (tag=11, W) 두 요청. send_req는 pending에 등록 → complete_rsp 도착 시 꺼내 DtoC 계산. 사이 시간이 CtoC, idle gap이 CtoD."
+  altText="t=10에 send_req(tag=10,R)가 pending에 들어가며 QD 0→1, t=18에 complete_rsp(tag=10) 도착해 DtoC=8ms 산출 + QD 1→0. t=22에 send_req(tag=11,W) — QD가 0→1로 차오르며 CtoD=4ms. t=30에 complete_rsp(tag=11) → DtoC=8ms, CtoC는 직전 사이클 시작 시각(22)부터라 8ms."
+  lanes={[
+    { id: 'evt',     label: 'ftrace 이벤트', sublabel: 'send_req / complete_rsp', layer: 'hw' },
+    { id: 'pending', label: 'pending HashMap', sublabel: '(tag, opcode) → time', layer: 'state' },
+    { id: 'qd',      label: 'QD 변화', sublabel: 'current_qd', layer: 'tx' },
+    { id: 'out',     label: 'parquet row', sublabel: 'dtoc/ctoc/ctod 채움', layer: 'be' },
+  ]}
+  messages={[
+    { from: 'evt', to: 'pending', t: 10, label: 'send(tag=10,R) t=10', kind: 'sync', note: 'pending.insert((10,R), 10.0)' },
+    { from: 'evt', to: 'qd',      t: 11, label: 'QD 0 → 1', kind: 'async' },
+    { from: 'evt', to: 'pending', t: 18, label: 'complete(tag=10,R) t=18', kind: 'sync', note: 'pending.remove → send_time=10' },
+    { from: 'pending', to: 'out', t: 19, label: 'DtoC = 18 − 10 = 8 ms', kind: 'async' },
+    { from: 'evt', to: 'qd',      t: 20, label: 'QD 1 → 0', kind: 'async' },
+    { from: 'evt', to: 'pending', t: 22, label: 'send(tag=11,W) t=22', kind: 'sync', note: '큐가 0 → 1, first_c=true' },
+    { from: 'pending', to: 'out', t: 23, label: 'CtoD = 22 − 18 = 4 ms (idle gap)', kind: 'async' },
+    { from: 'evt', to: 'qd',      t: 24, label: 'QD 0 → 1', kind: 'async' },
+    { from: 'evt', to: 'pending', t: 30, label: 'complete(tag=11,W) t=30', kind: 'sync', note: 'pending.remove → send_time=22' },
+    { from: 'pending', to: 'out', t: 31, label: 'DtoC = 30 − 22 = 8 ms', kind: 'async' },
+    { from: 'pending', to: 'out', t: 32, label: 'CtoC = 30 − 22 = 8 ms (사이클 시작 기준)', kind: 'async' },
+    { from: 'evt', to: 'qd',      t: 33, label: 'QD 1 → 0', kind: 'async' },
+  ]}
+/>
+
+핵심 관찰:
+
+- **DtoC**는 같은 요청의 complete 시점에 산출 (pending에서 send_time 꺼냄)
+- **CtoC**는 두 번째 complete의 timing — 단, 큐가 비었다 다시 차올랐던 사이클이면 직전 complete가 아니라 **사이클 시작 send 시점**부터 계산 (`first_c` 플래그)
+- **CtoD**는 큐가 0→1로 차오를 때만 — 직전 complete가 큐를 0으로 만든 시각부터 다음 send까지의 idle gap
+- **QD**는 send/complete 모든 이벤트에 그 시점 값 기록 (parquet에 복원 가능)
+
+## DtoC — 가장 직관적인 latency
+
+```rust
+"send_req" => {
+    req_times.insert((ufs.tag, ufs.opcode.clone()), ufs.time);
+}
+"complete_rsp" => {
+    let key = (ufs.tag, ufs.opcode.clone());
+    if let Some(send_time) = req_times.remove(&key) {
+        ufs.dtoc = (ufs.time - send_time) * MILLISECONDS as f64;
+    }
+}
+```
+
+- 키는 `(tag, opcode)` — 디바이스 큐 슬롯 ID + 명령 종류
+- send 시점에 시간을 `HashMap`에 저장, complete 시점에 꺼내 차이 계산
+- 결과는 **complete 이벤트의 dtoc 필드**에 기록
+
+## CtoC — throughput 지표
+
+```rust
+match first_c {
+    true => {
+        ufs.ctoc = (ufs.time - first_complete_time) * MILLISECONDS as f64;
+        first_c = false;
+    }
+    false => {
+        if let Some(t) = last_complete_time {
+            ufs.ctoc = (ufs.time - t) * MILLISECONDS as f64;
+        }
+    }
+}
+last_complete_time = Some(ufs.time);
+```
+
+- "직전 complete → 현재 complete" 간격
+- **단, 큐가 비었다 다시 차오른 경우**(`first_c` 플래그가 true)는 직전이 아니라 **사이클이 시작된 send 시점**부터 계산
+- 이유: 큐가 비어있던 idle 구간은 throughput 측정에서 제외해야 함. 그래야 "디바이스가 일하는 동안의 처리율"이 됨
+
+`first_c` 플래그는 `current_qd == 1`일 때 `true`로 설정 (큐가 비어있다 1개로 차오른 순간):
+
+```rust
+current_qd += 1;
+if current_qd == 1 {
+    first_c = true;
+    first_complete_time = ufs.time;  // send 시간이지만 의미상 사이클 시작
+}
+```
+
+## CtoD — idle gap 측정
+
+```rust
+"send_req" => {
+    current_qd += 1;
+    if current_qd == 1 {
+        if let Some(t) = last_complete_qd0_time {
+            ufs.ctod = (ufs.time - t) * MILLISECONDS as f64;
+        }
+    }
+}
+```
+
+- "직전에 큐가 0으로 비었던 마지막 complete → 다음 send" 간격
+- 즉 **디바이스가 idle했던 시간**
+- `current_qd == 1`로 올라가는 순간(큐가 다시 채워지는 순간)에만 계산
+
+`last_complete_qd0_time`은 complete 시점에 `current_qd == 0`이면 갱신:
+
+```rust
+"complete_rsp" => {
+    current_qd = current_qd.saturating_sub(1);
+    if current_qd == 0 {
+        last_complete_qd0_time = Some(ufs.time);
+    }
+}
+```
+
+## QD — 모든 이벤트에 기록
+
+```rust
+ufs.qd = current_qd;
+```
+
+루프 끝에서 매 이벤트에 현재 큐 깊이를 기록. send 시점엔 증가 후 값, complete 시점엔 감소 후 값. 이 컬럼이 차트의 QD timeseries가 됩니다.
+
+## 처리 순서 — 정렬 필수
+
+bottom half 계산 전에 **시간 순으로 정렬**합니다.
+
+```rust
+ufs_list.par_sort_by(|a, b| {
+    a.time.partial_cmp(&b.time).unwrap_or(std::cmp::Ordering::Equal)
+});
+```
+
+이유:
+- 청크 병렬 파싱 결과는 청크 순서로 결합되지만, 청크 내부에서 ftrace는 CPU별로 나눠 기록되어 **타임스탬프가 섞일 수 있음**
+- send와 complete가 시간 역순으로 들어오면 DtoC가 음수가 됨
+- `par_sort_by`로 병렬 정렬 — `O(n log n)`이지만 코어 수만큼 가속
+
+정렬 후 단일 패스로 위 4종 latency를 동시에 계산.
+
+## continuous & aligned
+
+bottom half와 함께 두 가지 boolean도 채웁니다.
+
+```rust
+"send_req" => {
+    if let Some((prev_lba, prev_size, ref prev_opcode)) = prev_send_req {
+        ufs.continuous = ufs.lba == prev_lba + prev_size as u64
+                      && ufs.opcode == *prev_opcode;
+    }
+    prev_send_req = Some((ufs.lba, ufs.size, ufs.opcode.clone()));
+}
+```
+
+- **continuous** — 이전 request의 (lba + size)가 현재 lba와 같고 opcode도 같으면 true. 순차 I/O 비율 계산용
+- **aligned** — `lba % 8 == 0 && size % 8 == 0` (4KB 정렬). 모델 필드에는 있지만 parquet에는 저장 안 함 → 통계 단계에서 재계산
+
+continuous는 **반드시 send/issue 이벤트에서만** 판정해야 합니다 (complete는 OOO로 끝날 수 있음). 이번 세션에서 통계 RPC가 complete 기준으로 잘못 재계산하던 걸 수정했어요 — 자세한 건 [5. Debug story](/learn/l2-trace-rust/05-debug-stories/).
+
+## Block 처리 — UFS와 다른 점
+
+Block에는 추가 단계가 있습니다.
+
+### 1. 중복 issue dedup
+```rust
+if processed_issues.contains(&(sector, io_op, size)) { continue; }
+```
+ftrace의 `block_rq_issue`가 같은 요청에 대해 두 번 찍히는 경우가 있음. `(sector, io_op, size)` 키로 중복 제거.
+
+### 2. Flush(W size=0) complete 스킵
+```rust
+if block.io_type.starts_with('W') && block.size == 0 { continue; }
+```
+Flush는 같은 이벤트가 두 번 로깅되는 ftrace 특성. complete 단계에서 스킵.
+
+### 3. io_type 정규화
+```rust
+let io_op = if io_type.starts_with('R') { "read" }
+            else if io_type.starts_with('W') { "write" }
+            else if io_type.starts_with('D') { "discard" }
+            else { "other" };
+```
+issue는 `"RA"`(Read Ahead) 같은 변종, complete는 `"R"`만 올 수 있음. 정규화 안 하면 매칭 실패 → QD 무한 증가. **이 정규화 누락이 realtime 모드의 QD 150 스파이크 원인이었습니다** (자세한 건 5장).
+
+## UFSCUSTOM — 한 줄에 start/end
+
+```
+ufscustom OPCODE LBA SIZE START_TIME END_TIME
+```
+
+UFSCUSTOM 라인은 **send와 complete가 한 줄**에 있어 매칭 자체가 필요 없습니다.
+
+```rust
+ufscustom.dtoc = (ufscustom.end_time - ufscustom.start_time) * 1000.0;
+```
+
+다만 QD/CtoC/CtoD는 여전히 이전 이벤트와 비교해서 계산해야 함. `start_qd`/`end_qd` 두 필드로 진입/완료 시점의 QD를 분리해 기록합니다.
+
+## 메모리 최적화
+
+processor가 메모리 압박을 받기 쉬운 부분이라 다음 패턴을 씁니다.
+
+```rust
+// HashMap은 1/3 크기로 reserve — 보수적 추정
+let estimated_capacity = ufs_list.len() / 3;
+let mut req_times: HashMap<(u32, Box<str>), f64> =
+    HashMap::with_capacity(estimated_capacity);
+
+// 주기적 shrink_to_fit — 진행 중 메모리 reclaim
+if batch_end % (batch_size * 3) == 0 {
+    req_times.shrink_to_fit();
+}
+```
+
+또 batch 단위로 처리해 cache locality 확보:
+```rust
+let batch_size = 50_000;
+for batch_start in (0..ufs_list.len()).step_by(batch_size) {
+    // ...
+}
+```
+
+## 다음 — Realtime mode
+
+지금까지는 **로그 파일 전체가 끝난 뒤** 일괄 처리하는 batch 모드. 다음 장은 **로그가 쌓이는 동안** 같은 계산을 윈도우 단위로 하는 realtime 모드.
+
+→ [4. Realtime mode](/learn/l2-trace-rust/04-realtime-mode/)

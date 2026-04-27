@@ -1,0 +1,125 @@
+---
+title: Trace Rust — 스토리지 I/O 트레이스 분석 엔진
+description: ftrace/blktrace/UFSCUSTOM 로그를 mmap+rayon으로 파싱하고 bottom half latency를 계산해 parquet/Arrow IPC로 내보내는 Rust 단일 바이너리의 내부 구조
+sidebar:
+  order: 0
+---
+
+import ArchitectureDiagram from '../../../../components/learn/ArchitectureDiagram.svelte';
+
+## 이 모듈에서 배울 것
+
+`l2-trace`가 **portal에서 trace 서비스를 호출하는 흐름**을 다뤘다면, 이 모듈은 **trace 바이너리 그 자체**가 어떻게 만들어졌는지 봅니다.
+
+"5GB ftrace 로그를 mmap으로 매핑하고, rayon으로 청크를 병렬 파싱하고, send/complete 이벤트를 매칭해서 DtoC/CtoC/CtoD/QD 4가지 latency를 계산하고, parquet으로 떨군다. 또는 `tail -f` 모드로 로그가 쌓이는 동안 1초 윈도우마다 parquet을 내놓고, 중단 시 합쳐서 단일 파일로 머지한다."
+
+`l2-trace`와의 관계:
+
+| 축 | l2-trace (portal 관점) | **l2-trace-rust (엔진 관점)** |
+|---|---|---|
+| 시점 | "API를 호출하면 무엇이 돌아오는가" | **"바이너리 안에서 무슨 일이 일어나는가"** |
+| 주요 등장인물 | TraceController, gRPC client, 차트 컴포넌트 | **parsers/, processors/, output/, grpc/** |
+| 데이터 단위 | RecordBatch, Arrow IPC bytes | **UFS/Block/UFSCUSTOM 구조체, mmap chunk, pending HashMap** |
+| 디버깅 도구 | 브라우저 DevTools, Spring 로그 | **`RUST_LOG`, cargo bench, `--parquet-only`** |
+
+같은 시스템을 다른 렌즈로 보는 셈입니다. portal 사용자는 `l2-trace`만 읽어도 충분하고, trace 자체에 손을 대거나 새 trace_type을 추가할 사람은 이 모듈을 읽어야 합니다.
+
+## 여정 한눈에
+
+<ArchitectureDiagram
+  client:visible
+  height={360}
+  caption="로그 파일을 mmap+rayon으로 병렬 파싱 → bottom half로 latency 계산 → parquet/MinIO 출력. 별도로 tail -f 기반 realtime 모드는 윈도우 단위 증분 처리."
+  altText="trace 바이너리는 mmap 기반 high-perf 파서로 로그를 청크 병렬 파싱하고, processors가 send↔complete를 매칭해 DtoC/CtoC/CtoD/QD를 계산합니다. 결과는 parquet으로 떨어지고, gRPC RPC가 Arrow IPC 차트 + 통계로 응답합니다. realtime 모드는 tail -f로 같은 파이프라인을 윈도우 단위로 돌립니다."
+  nodes={[
+    { id: 'r1', label: '1. Architecture',     sublabel: '모듈 지도',          layer: 'be',    x: 0,   y: 0,   href: '/learn/l2-trace-rust/01-architecture/' },
+    { id: 'r2', label: '2. Parser pipeline',  sublabel: 'mmap + rayon',      layer: 'be',    x: 200, y: 0,   href: '/learn/l2-trace-rust/02-parser-pipeline/' },
+    { id: 'r3', label: '3. Bottom half',      sublabel: 'DtoC/CtoC/CtoD/QD', layer: 'tx',    x: 400, y: 0,   href: '/learn/l2-trace-rust/03-bottom-half/' },
+    { id: 'r4', label: '4. Realtime mode',    sublabel: 'tail -f + 윈도우',   layer: 'tx',    x: 600, y: 0,   href: '/learn/l2-trace-rust/04-realtime-mode/' },
+    { id: 'r5', label: '5. Debug story',      sublabel: 'QD 150 스파이크',    layer: 'state', x: 300, y: 160, href: '/learn/l2-trace-rust/05-debug-stories/' },
+  ]}
+  edges={[
+    { from: 'r1', to: 'r2', label: '진입',     kind: 'sync' },
+    { from: 'r2', to: 'r3', label: 'Vec<UFS>', kind: 'sync' },
+    { from: 'r3', to: 'r4', label: '재사용',    kind: 'sync' },
+    { from: 'r4', to: 'r5', label: '버그 사례', kind: 'async' },
+  ]}
+/>
+
+## trace 바이너리가 하는 일
+
+단일 Rust 바이너리(`./target/release/trace`)가 모드 플래그에 따라 6가지 일을 합니다.
+
+| 모드 | 호출 | 입력 | 출력 |
+|---|---|---|---|
+| 로컬 분석 | `trace <log> <prefix>` | 로컬 로그 파일 | parquet + 차트 PNG + 통계 |
+| Parquet 재분석 | `trace --parquet ufs <pq> <prefix>` | 기존 parquet | 통계 + 차트 |
+| MinIO 워크플로 | `trace --minio-log <src> <dst>` | MinIO 로그 객체 | MinIO parquet 객체 |
+| **gRPC 서버** | `trace --grpc-server` | 8개 RPC | parquet/Arrow IPC stream |
+| gRPC 클라이언트 | `trace --grpc-client <cmd>` | 서버 호스트 | 위 RPC 호출 |
+| **Realtime 파서** | `trace --grpc-client realtime ...` | live 로그 파일 | 윈도우별 parquet + 알림 |
+
+이 모듈은 **gRPC 서버 + realtime 파서**를 중심에 둡니다. 로컬 CLI는 같은 파서/프로세서를 단순히 한 번에 돌리는 래퍼라 별도 장은 두지 않아요.
+
+## 왜 단일 바이너리인가
+
+trace는 의도적으로 **여러 프로세스로 나누지 않습니다**:
+
+- 파서·프로세서·출력은 **데이터 흐름이 직선**이라 IPC가 오버헤드
+- gRPC 서버 자체도 같은 프로세스 안에서 파싱 함수를 그대로 호출
+- realtime 모드는 별도 프로세스처럼 보이지만 같은 바이너리의 다른 RPC
+
+분리할 가치가 있는 경계는 **portal ↔ trace** 사이뿐. 이미 gRPC로 격리돼 있고, 이쪽 너머는 단일 프로세스로 가는 게 단순합니다.
+
+## 왜 Rust 인가
+
+`l2-trace/index`에서 한 번 짚었지만, 엔진 관점에서 다시 짚으면:
+
+- **mmap + rayon** — 5GB 파일을 메모리 매핑해 chunk 경계만 찾고 각 청크를 스레드가 독립 파싱. JVM 대비 GC가 없어 latency 변동 적음
+- **`Box<str>` 기반 작은 메모리 fingerprint** — `String` 대신 `Box<str>`을 쓰면 capacity 필드(8B)를 절약. 이벤트 5천만 개면 400MB 차이
+- **단일 정적 바이너리** — 의존성 배포 없이 scp 한 번으로 운영
+- **`memchr` / `lazy_static`** — 정규식 없이 byte search로 파싱. 정규식 대비 5~10배
+
+대안이었던 Go/Python:
+- Go: GC가 있고, parquet/arrow 라이브러리가 Rust 대비 미성숙
+- Python: 단순 dev 비용 우위 외엔 모든 면에서 열세 (특히 5GB 처리 메모리/속도)
+
+## 학습 순서와 예상 시간
+
+| 단계 | 제목 | 성격 | 시간 |
+|---|---|---|---|
+| 1 | Architecture — 모듈 지도와 데이터 플로우 | 읽기 | 8분 |
+| 2 | Parser pipeline — mmap + rayon 청크 병렬 파싱 | 코드 투어 | 12분 |
+| 3 | Bottom half — DtoC/CtoC/CtoD/QD 계산 | 개념 + 코드 | 15분 |
+| 4 | Realtime mode — tail -f + 윈도우 + 증분 처리 | 코드 투어 | 15분 |
+| 5 | Debug story — QD 150 스파이크 추적기 | 사례 | 12분 |
+| 6 | gRPC RPC 카탈로그 — 9개 엔드포인트 | 레퍼런스 | 12분 |
+| 7 | Storage & MinIO — sync vs async reader | 코드 투어 | 12분 |
+| 8 | Stats pipeline — 단일 scan + send 기준 | 코드 투어 | 14분 |
+
+총 약 **100분**. `l2-trace`를 먼저 읽지 않아도 됩니다 (오히려 이 모듈이 더 기초). 다만 ftrace/blktrace 포맷에 익숙하지 않으면 [parquet 스키마](/learn/l2-trace/02-parquet-schema/)를 먼저 보면 좋습니다.
+
+1~5장은 trace 바이너리 자체의 구조와 동작을 다루고, 6~8장은 외부에서 trace를 쓰는 인터페이스(gRPC/MinIO/통계)를 깊게 봅니다. 1~5장만 읽어도 trace 코드 변경에 충분히 들어갈 수 있습니다.
+
+## 사용된 라이브러리
+
+trace 바이너리 의존성 중 핵심:
+
+| 크레이트 | 역할 |
+|---|---|
+| `memmap2` | 로그 파일 mmap |
+| `rayon` | chunk 병렬 처리 |
+| `arrow` / `parquet` | columnar 데이터 + Parquet I/O |
+| `tonic` | gRPC 서버/클라이언트 |
+| `tokio` / `tokio-util` | async runtime + CancellationToken |
+| `rust-s3` | MinIO/S3 client |
+| `bincode` / `serde` | 직렬화 (테스트/디버깅용) |
+| `memchr` | byte search (정규식 회피) |
+
+## 새로 등장할 L3 개념
+
+- [**Async file reader (Rust)**](/learn/l3-concepts/rust/async-file-reader/) — `tokio::fs::File` + `BufReader::read_line` 패턴
+- **mmap + rayon 병렬 처리** — chunk 경계 탐색 + 스레드별 독립 파싱
+- **Bottom half latency** — Linux 커널 트레이스에서 send↔complete 매칭으로 4가지 latency 추출
+
+이제 [1. Architecture](/learn/l2-trace-rust/01-architecture/)부터 시작합니다.

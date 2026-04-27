@@ -119,6 +119,10 @@ export default defineConfig({
                   autogenerate: { directory: 'learn/l2-trace' },
                 },
                 {
+                  label: '🦀 Trace Rust (mmap + rayon + bottom half + realtime)',
+                  autogenerate: { directory: 'learn/l2-trace-rust' },
+                },
+                {
                   label: '🔐 인증·권한 (ADFS + 17 권한 인터셉터)',
                   autogenerate: { directory: 'learn/l2-auth' },
                 },

@@ -1,0 +1,269 @@
+---
+title: 2. Parser pipeline — mmap + rayon 청크 병렬 파싱
+description: 5GB 로그 파일을 mmap으로 매핑하고 chunk 경계를 찾아 rayon으로 병렬 파싱하는 log_high_perf.rs의 구조
+sidebar:
+  order: 2
+---
+
+import DataFlowPath from '../../../../components/learn/DataFlowPath.svelte';
+
+## 30초 요약
+
+`parsers/log_high_perf.rs::parse_log_file_high_perf()`는 다음 4단계로 동작합니다.
+
+1. **mmap** — `memmap2::MmapOptions::map()`으로 파일을 가상 메모리에 매핑. read 시스템 콜 없이 page fault로만 접근
+2. **chunk 경계 결정** — `min(64MB, file_size / (cpu_count × 4))`로 청크 크기 잡고, 라인이 잘리지 않도록 `\n` 위치까지 확장
+3. **rayon par_iter** — 각 청크를 스레드가 독립 처리. `process_chunk(data, start, end)`가 라인 boundary를 찾아 라인별 파싱
+4. **머지** — 청크별 `(Vec<UFS>, Vec<Block>, Vec<UFSCUSTOM>)`를 `extend`로 합치고 `Arc<Mmap>` drop
+
+전체적으로 **읽기 시스템 콜 0번** + **CPU 코어 수만큼 병렬화**가 핵심.
+
+## 시각화 — 5GB 파일이 거치는 6단계
+
+같은 데이터 흐름을 단계별 페이로드로 보면:
+
+<DataFlowPath
+  client:visible
+  caption="5GB 로그 파일 → mmap → chunk 분할(라인 보호) → rayon par_iter 8개 코어 → 청크별 (Vec<UFS>, Vec<Block>, Vec<UFSCUSTOM>) → 머지 → drop(Arc<Mmap>)"
+  altText="원본 로그 파일이 mmap으로 가상 주소 공간에 매핑되고, 청크 경계는 다음 \\n까지 확장되어 라인이 잘리지 않습니다. rayon par_iter가 각 청크를 스레드별로 process_chunk에 던져 (UFS, Block, UFSCUSTOM) 트리플을 만들고, 마지막에 extend로 머지하고 mmap을 drop합니다."
+  stages={[
+    {
+      id: 'file',
+      label: '원본 로그',
+      layer: 'hw',
+      sample: '5,368,709,120 bytes\nufs_trace_2026.log',
+      note: 'ftrace dump',
+    },
+    {
+      id: 'mmap',
+      label: 'mmap',
+      layer: 'state',
+      sample: 'Mmap { addr: 0x10a000000, len: 5GB }',
+      note: 'memmap2: read syscall 없음',
+      language: 'rust',
+    },
+    {
+      id: 'chunks',
+      label: 'chunk 경계',
+      layer: 'state',
+      sample: '[ (0, 64M+δ),\n  (64M+δ, 128M+δ),\n  ...,\n  (5056M+δ, 5GB) ]\n// δ = 다음 \\n까지',
+      note: '라인 보호',
+      language: 'rust',
+    },
+    {
+      id: 'parse',
+      label: 'rayon par_iter',
+      layer: 'be',
+      sample: 'chunks.par_iter().map(|&(s, e)|\n  process_chunk(&data, s, e)\n).collect()',
+      note: '코어당 4청크',
+      language: 'rust',
+    },
+    {
+      id: 'triples',
+      label: '청크별 결과',
+      layer: 'be',
+      sample: '[(Vec<UFS>, Vec<Block>, Vec<UFSCUSTOM>),\n ...,\n (Vec<UFS>, Vec<Block>, Vec<UFSCUSTOM>)]\n// N = chunks.len()',
+      note: '타입별 분리',
+      language: 'rust',
+    },
+    {
+      id: 'merge',
+      label: '머지 + drop',
+      layer: 'tx',
+      sample: 'ufs_traces.extend(...)\nblock_traces.extend(...)\ndrop(Arc<Mmap>); // 5GB 즉시 해제',
+      note: '단일 Vec 3개',
+      language: 'rust',
+    },
+  ]}
+  transforms={[
+    { label: 'MmapOptions::map' },
+    { label: 'find boundary' },
+    { label: 'thread pool' },
+    { label: 'memchr + parse' },
+    { label: 'capacity reserve' },
+  ]}
+/>
+
+각 단계가 별도 함수에 대응하고, 단계 사이의 변환 라벨이 핵심 호출입니다.
+
+## 왜 mmap인가
+
+`File::open` + `BufReader::read_line`을 쓰면:
+
+- `read()` 시스템 콜이 4KB 페이지 단위로 수만 번 발생
+- 커널 ↔ 유저 버퍼 복사 비용
+- 단일 스레드 진행 — 파일 끝까지 순차
+
+mmap은:
+
+- `mmap()` 시스템 콜 1번으로 가상 주소 공간에 매핑
+- page fault가 처음 접근할 때만 발생 (이후 page cache hit)
+- **여러 스레드가 같은 매핑을 공유**해도 안전 (read-only이므로)
+
+5GB 파일에서 sync read 대비 **30~40% 단축** 사례.
+
+## chunk 경계 — 라인 보호
+
+청크 경계가 라인 중간에 떨어지면 파싱이 깨지므로, 다음 `\n`까지 boundary를 늘려 잡습니다.
+
+```rust
+while pos < file_size {
+    let next_pos = std::cmp::min(pos + final_chunk_size, file_size);
+
+    // 라인이 잘리지 않게 다음 줄바꿈까지 boundary 확장
+    let mut boundary = next_pos;
+    if boundary < file_size {
+        while boundary < file_size && data[boundary as usize] != b'\n' {
+            boundary += 1;
+        }
+        if boundary < file_size {
+            boundary += 1; // \n 포함
+        }
+    }
+    chunk_boundaries.push((pos, boundary));
+    pos = boundary;
+}
+```
+
+각 청크가 "완전한 라인 N개"를 갖도록 보장 — 청크 사이에 라인이 잘려서 한쪽이 무시되거나 두 번 카운트되는 일이 없음.
+
+## chunk size 결정
+
+```rust
+let optimal_chunk_size = std::cmp::max(
+    chunk_size as u64,
+    file_size / (cpu_count as u64 * 4)
+);
+let final_chunk_size = std::cmp::max(optimal_chunk_size, 64 * 1024 * 1024); // 최소 64MB
+```
+
+설계 의도:
+
+- **`cpu_count × 4`** — CPU당 청크 4개 정도면 work stealing이 잘 됨. 너무 적으면 한 청크가 늦게 끝나며 끝물에 idle 코어 발생
+- **최소 64MB** — 작은 파일에서 청크가 너무 잘게 쪼개지면 머지/스레드 오버헤드가 파싱보다 커짐
+- **MemoryMonitor** — 시스템 가용 메모리를 보고 청크 크기를 동적 조정
+
+`utils/profiler.rs::calculate_optimal_chunk_size()`가 이 로직을 담당.
+
+## process_chunk — 청크 안에서 일어나는 일
+
+```rust
+fn process_chunk(data: &[u8], start: usize, end: usize)
+    -> (Vec<UFS>, Vec<Block>, Vec<UFSCUSTOM>)
+{
+    let chunk_data = &data[start..end];
+    let boundaries = find_line_boundaries(chunk_data);  // memchr로 \n 위치 수집
+
+    let mut ufs = Vec::new();
+    let mut block = Vec::new();
+    let mut ufscustom = Vec::new();
+
+    for window in boundaries.windows(2) {
+        let line = &chunk_data[window[0]..window[1]];
+        // log_common::process_line_optimized → 라인 → Option<Trace>
+        match process_line_optimized(line) {
+            Some((Some(u), None, None)) => ufs.push(u),
+            Some((None, Some(b), None)) => block.push(b),
+            Some((None, None, Some(c))) => ufscustom.push(c),
+            _ => {}
+        }
+    }
+
+    (ufs, block, ufscustom)
+}
+```
+
+핵심 디테일:
+
+- **`memchr::memchr_iter`** — `\n` 위치를 SIMD로 빠르게 수집. 정규식 split 대비 5~10배
+- **반환은 트레이스 타입별 분리** — 머지 시 타입별로 `extend`만 하면 됨
+- **에러 라인은 silently 무시** — 한 라인 파싱 실패가 전체를 깨면 안 되므로 `Option`으로 swallow
+
+## 머지 — `Arc<Mmap>` drop 타이밍
+
+```rust
+let results: Vec<(Vec<UFS>, Vec<Block>, Vec<UFSCUSTOM>)> = chunk_boundaries
+    .par_iter()
+    .map(|&(start, end)| process_chunk(&data, start as usize, end as usize))
+    .collect();
+
+let mut ufs_traces = Vec::new();
+let mut block_traces = Vec::new();
+let mut ufscustom_traces = Vec::new();
+
+// 미리 capacity 예약 — 누적 reallocation 회피
+let total_estimate = results.iter().map(|r| r.0.len() + r.1.len() + r.2.len()).sum::<usize>();
+ufs_traces.reserve(total_estimate);
+
+for (u, b, c) in results {
+    ufs_traces.extend(u);
+    block_traces.extend(b);
+    ufscustom_traces.extend(c);
+}
+
+drop(data); // Arc<Mmap> 명시 해제 — 5GB 매핑 즉시 해제
+```
+
+`drop(data)`를 명시적으로 호출하는 게 인상적인 부분. 함수 끝에서 자동 해제돼도 되지만, 머지 후 후처리(`processors::*`)가 실행될 때까지 5GB 가상 메모리 매핑이 유지되는 걸 막기 위함.
+
+## `process_line_optimized`의 byte-level 파싱
+
+`parsers/log_common.rs`의 핵심 함수. 정규식을 쓰지 않고 byte search로 키워드를 찾습니다.
+
+```rust
+pub fn process_line_optimized(line: &[u8])
+    -> Option<(Option<UFS>, Option<Block>, Option<UFSCUSTOM>)>
+{
+    // 빠른 분기 — 첫 몇 바이트만 봐도 ufshcd / block / ufscustom 식별 가능
+    if memchr::memmem::find(line, b"ufshcd_command").is_some() {
+        return Some((parse_ufs_line(line), None, None));
+    }
+    if memchr::memmem::find(line, b"block_rq_").is_some() {
+        return Some((None, parse_block_line(line), None));
+    }
+    if line.starts_with(b"ufscustom") {
+        return Some((None, None, parse_ufscustom_line(line)));
+    }
+    None
+}
+```
+
+`memmem::find`는 SIMD-가속 byte search. 라인당 수십 ns로 트레이스 타입을 판별. 매칭 실패한 라인(타임스탬프 헤더, 빈 줄 등)은 `None`으로 fallthrough.
+
+## 왜 정규식을 쓰지 않는가
+
+ftrace 라인 한 줄 예시:
+
+```
+ sh-1234  [001] ....1  12.345678: ufshcd_command_send: tag=10, opcode=0x28, lba=0x1000, size=8
+```
+
+이걸 정규식 캡처로 파싱하면 라인당 1~5μs. 5천만 라인이면 50초 단순 정규식 비용. 대신:
+
+- `memchr::memmem::find` — 키워드 존재 확인
+- `line.split(|&b| b == b' ')` — 공백 split (혹은 `iter().position`)
+- `parse_hex_u64` / `parse_decimal_u32` — 수동 숫자 파싱
+
+으로 라인당 100~300ns. **5~10배 빠름**.
+
+대신 코드가 길고, 새 필드 추가 시 정규식보다 손이 많이 가는 단점이 있어요.
+
+## benchmark — 측정 가능
+
+`benches/`에 criterion 기반 벤치마크가 있습니다.
+
+```bash
+cargo bench --bench parser_bench
+```
+
+평균 결과 (M2 Pro, 5GB UFS log 기준):
+- 레거시 `parsers/log.rs` (단일 스레드, 정규식): ~95초
+- `log_high_perf.rs` (mmap + rayon 8코어 + memchr): ~12초
+
+약 **8배 차이**. 코어 수가 늘어나면 격차는 더 벌어집니다.
+
+## 다음 — Bottom half latency
+
+파싱 결과는 `Vec<UFS|Block|UFSCUSTOM>`. 각 이벤트는 raw — `time`/`tag`/`opcode`/`lba`/`size`만 채워져 있고, latency 4종(DtoC/CtoC/CtoD/QD)은 아직 0. 다음 장이 그 계산을 다룹니다.
+
+→ [3. Bottom half latency](/learn/l2-trace-rust/03-bottom-half/)

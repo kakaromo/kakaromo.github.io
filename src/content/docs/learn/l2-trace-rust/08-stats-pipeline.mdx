@@ -1,0 +1,318 @@
+---
+title: 8. Stats pipeline — 단일 scan + send 기준 정정 + DuckDB 검토
+description: GetTraceStats가 한 번의 RecordBatch 순회로 5~6가지 통계를 내는 구조와 continuous/QD를 send 기준으로 정정한 이유, 그리고 DuckDB 백엔드 검토
+sidebar:
+  order: 8
+---
+
+## 30초 요약
+
+`GetTraceStats`는 parquet 한 번 읽고 **단일 RecordBatch scan**으로:
+
+- `total_events` / `send_count` / `duration_seconds`
+- `continuous_count` / `aligned_count` (둘 다 send 기준)
+- `read/write/discard total bytes`
+- 4가지 latency 통계 (`dtoc/ctod/ctoc/qd`) — 정렬 + percentile
+- `cmd_stats` per-cmd
+- `latency_histograms` per-cmd × per-latency-type
+- `cmd_size_counts`
+
+를 동시에 산출합니다. proto 응답 페이로드는 수 KB 수준 (Arrow IPC 차트 데이터와 달리 카운트/요약 값들).
+
+## 데이터 흐름
+
+```
+parquet (MinIO)
+   ↓ filter_existing_columns (구버전 호환)
+   ↓ read_projected_parquet (필수 컬럼만 + 시간 row-filter)
+   ↓ apply_filters (FilterOptions: latency/QD/CPU)
+   ↓ build_chart_batch_<type> (공용 스키마로 정규화: opcode/io_type → cmd)
+   ↓ build_payload — 단일 scan
+   ↓ proto 변환
+   ↓ GetTraceStatsResponse
+```
+
+각 단계가 별도 함수라 단위 테스트가 쉬움.
+
+## 단일 scan 패턴 — 컬럼 downcast 후 한 번만
+
+```rust
+// 1. 루프 바깥에서 컬럼 미리 downcast (핫루프에서 as_any 비용 회피)
+let time   = col_f64(batch, "time")?;
+let action = col_str(batch, "action")?;
+let cmd    = col_str(batch, "cmd")?;
+let lba    = col_u64(batch, "lba")?;
+let size   = col_u32(batch, "size")?;
+let qd     = col_u32(batch, "qd")?;
+let dtoc   = col_f64(batch, "dtoc")?;
+let ctoc   = col_f64(batch, "ctoc")?;
+let ctod   = col_f64(batch, "ctod")?;
+let continuous = batch.schema().index_of("continuous").ok()
+    .and_then(|i| batch.column(i).as_any().downcast_ref::<BooleanArray>());
+
+// 2. trace_type별로 request/complete action 리터럴 결정
+let (request_action, complete_action) = action_pair(trace_type, action);
+
+// 3. 단일 loop — 모든 누적을 동시에
+for i in 0..n {
+    let act = action.value(i);
+
+    // send_count
+    if act == request_action { send_count += 1; }
+
+    // continuous + aligned (send 기준)
+    if act == target_action {  // target_action = request_action (또는 UFSCUSTOM은 complete)
+        target_total += 1;
+        let lba_v = lba.value(i);
+        let size_v = size.value(i) as u64;
+
+        // continuous: parquet 컬럼 우선, 없으면 fallback
+        if let Some(col) = continuous {
+            if col.value(i) { continuous_count += 1; }
+        } else {
+            // 이전 send의 lba+size == 현재 lba 비교
+        }
+
+        // aligned: 4KB 정렬
+        if lba_v % 8 == 0 && size_v > 0 && size_v % 8 == 0 {
+            aligned_count += 1;
+        }
+    }
+
+    // I/O bytes (complete 기준 — 실제로 완료된 양)
+    if act == complete_action {
+        let s = size.value(i) as u64 * sector_bytes;
+        match classify_cmd(cmd.value(i)) {
+            Read    => read_total_bytes    += s,
+            Write   => write_total_bytes   += s,
+            Discard => discard_total_bytes += s,
+            _ => {}
+        }
+    }
+}
+
+// 4. percentile은 별도 패스 (정렬 필수)
+let dtoc_stats = detailed_stats(&dtoc_vals);
+```
+
+**`O(n) + O(n log n)` 한 번**. 통계 종류별로 loop를 따로 돌리면 `O(k·n)`이 되는데 1M row면 체감되는 차이.
+
+## continuous/QD를 send 기준으로 정정 — 이번 세션의 변경
+
+기존 코드가 `complete` 기준으로 재계산하던 걸 발견하고 수정한 부분.
+
+### 왜 send 기준이어야 하는가
+
+continuous는 **"이전 요청의 끝 LBA + size == 현재 요청 시작 LBA"** 가 정의입니다. 그런데:
+
+- `block_rq_complete`는 OOO(out-of-order)로 끝날 수 있음
+- complete 순서로 비교하면 실제로는 순차였던 요청이 비순차로 보임
+- 파서/프로세서가 이미 send 시점에 정확히 계산해 `continuous` 컬럼에 저장해뒀음
+
+→ 통계는 그 컬럼을 **그대로 합산**하면 됨. 컬럼이 없는 구버전 parquet에서만 fallback으로 재계산.
+
+### QD도 마찬가지
+
+```rust
+// 기존 (틀림)
+let qd_vals: Vec<f64> = (0..n).map(|i| qd.value(i) as f64).collect();
+// → send/complete 모두 포함 → 같은 순간의 QD가 두 번 등장 → 분포 왜곡
+
+// 정정
+let qd_target = if use_request_basis { request_action } else { complete_action };
+let qd_vals: Vec<f64> = (0..n)
+    .filter(|&i| action.value(i) == qd_target)
+    .map(|i| qd.value(i) as f64)
+    .collect();
+```
+
+UFS는 `request_action="send_req"`만 집계, Block은 `"block_rq_issue"`만 집계. UFSCUSTOM만 request 이벤트가 없어서 `complete` 기준.
+
+## action_pair — sniff로 리터럴 결정
+
+Block은 **두 포맷이 공존**합니다:
+
+- ftrace: `block_rq_issue` / `block_rq_complete`
+- blktrace CSV: `Q` / `C`
+
+업로드 시 사용자가 포맷을 고정하면 UI 분기가 필요. 대신 **앞 1024개 row의 action 리터럴을 sniff**해 자동 결정:
+
+```rust
+fn action_pair<'a>(trace_type: &str, action: &'a StringArray) -> (&'a str, &'a str) {
+    let mut has_issue = false;
+    let mut has_q = false;
+    for i in 0..action.len().min(1024) {
+        match action.value(i) {
+            "block_rq_issue" => has_issue = true,
+            "Q" => has_q = true,
+            _ => {}
+        }
+    }
+    if trace_type == "ufs" { return ("send_req", "complete_rsp"); }
+    if trace_type == "ufscustom" { return ("", "complete"); }
+    if has_issue { return ("block_rq_issue", "block_rq_complete"); }
+    if has_q     { return ("Q", "C"); }
+    ("block_rq_issue", "block_rq_complete")  // default
+}
+```
+
+UFSCUSTOM의 `request_action = ""`은 의도적 — 이렇게 두면 어떤 action도 매칭 안 되어 `send_count = 0`이 자연스럽게 나옵니다 (UFSCUSTOM은 한 줄에 start/end가 모두 들어 있어 별도 send 이벤트가 없음).
+
+## detailed_stats — percentile 직접 구현
+
+```rust
+fn detailed_stats(values: &[f64]) -> DetailedLatencyStats {
+    if values.is_empty() { return DetailedLatencyStats::default(); }
+    let count = values.len() as u64;
+    let avg = values.iter().sum::<f64>() / count as f64;
+    let variance = values.iter().map(|v| (v - avg).powi(2)).sum::<f64>() / (count - 1) as f64;
+    let stddev = variance.sqrt();
+
+    let mut sorted: Vec<f64> = values.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Equal));
+    DetailedLatencyStats {
+        min: sorted[0], max: sorted[count - 1],
+        avg, stddev,
+        median:   percentile(&sorted, 50.0),
+        p99:      percentile(&sorted, 99.0),
+        p999:     percentile(&sorted, 99.9),
+        p9999:    percentile(&sorted, 99.99),
+        p99999:   percentile(&sorted, 99.999),
+        p999999:  percentile(&sorted, 99.9999),
+        count,
+    }
+}
+
+fn percentile(sorted: &[f64], p: f64) -> f64 {
+    let idx = (p / 100.0) * (sorted.len() - 1) as f64;
+    let lo = idx.floor() as usize;
+    let hi = idx.ceil() as usize;
+    if lo == hi { return sorted[lo]; }
+    let w = idx - lo as f64;
+    sorted[lo] * (1.0 - w) + sorted[hi] * w  // linear interpolation
+}
+```
+
+`tdigest` 같은 외부 크레이트 안 씀 — p999999까지 정확도가 필요한 유스케이스라 정확한 정렬 기반이 안전. 다만 **수천만 행 정렬은 수 초 비용** — 이게 통계 RPC의 가장 큰 latency 요인.
+
+## sector_bytes — UFS는 4KB, Block은 512B
+
+```rust
+let sector_bytes: u64 = if trace_type == "ufs" || trace_type == "ufscustom" {
+    4096  // UFS의 size 필드는 4KB 블록 수
+} else {
+    512   // Block은 sector(512B) 수
+};
+```
+
+이 매직 넘버를 잘못 넣으면 `read_total_bytes`가 8배 차이 납니다. 현재 trace의 model 정의 기준이라 **새 trace_type 추가 시 반드시 확인**.
+
+## DuckDB 백엔드 검토
+
+수백 MB ~ 수 GB parquet에서 현재 Rust 단일 스레드 scan + sort percentile이 **15~30초** 걸립니다. DuckDB로 옮기면:
+
+- 벡터화 + 멀티코어 + SIMD → **1~3초**
+- `approx_quantile` 사용 시 정렬 회피 (정확도 99%, 속도 10배)
+- 코드량 728줄 → ~200줄 (SQL CTE 한 덩어리)
+
+DuckDB 전환 SQL 초안:
+
+```sql
+WITH base AS (
+  SELECT * FROM read_parquet(?) WHERE time BETWEEN ? AND ?
+),
+overall AS (
+  SELECT
+    COUNT(*) AS total_events,
+    COUNT_IF(action = 'send_req') AS send_count,
+    (MAX(time) - MIN(time)) / 1000.0 AS duration_seconds,
+    COUNT_IF(continuous AND action = 'send_req') AS continuous_count,
+    COUNT_IF(action = 'send_req' AND lba % 8 = 0 AND size % 8 = 0 AND size > 0) AS aligned_count
+  FROM base
+),
+latency_dtoc AS (
+  SELECT
+    min(dtoc), max(dtoc), avg(dtoc), stddev(dtoc),
+    quantile_cont(dtoc, 0.5) AS median,
+    approx_quantile(dtoc, 0.99) AS p99,
+    approx_quantile(dtoc, 0.999) AS p999
+  FROM base WHERE action = 'complete_rsp' AND dtoc > 0
+)
+-- ...
+SELECT * FROM overall, latency_dtoc, ...;
+```
+
+다만 트레이드오프:
+
+| 항목 | Arrow scan (현재) | DuckDB |
+|---|---|---|
+| 코드량 | 728줄 | ~200줄 |
+| 큰 데이터 (1GB+) | 15~30초 | 1~3초 |
+| 작은 데이터 (수만 행) | < 100ms | 50~200ms (쿼리 플래닝 고정비) |
+| 바이너리 크기 | +0 | +30~40MB |
+| 빌드 시간 | 변화 없음 | +1~2분 (C++ 컴파일) |
+| 디버깅 | Rust 코드로 step | SQL 출력 inspect |
+
+당장 현재 latency가 견딜 만하면 그대로 두고, 큰 데이터 이슈가 자주 보고되면 그때 도입하는 게 안전. 단계적 도입 시:
+
+1. feature flag (`TRACE_STATS_BACKEND=duckdb`) 추가, 기본은 기존 경로
+2. `GetTraceStats`만 우선 DuckDB로 (차트는 Arrow IPC 그대로)
+3. 검증 후 기본값 전환, Arrow 경로는 1~2버전 더 유지
+
+## 결과 직렬화 — JSON proto
+
+응답은 proto 메시지 그대로:
+
+```rust
+let resp = GetTraceStatsResponse {
+    total_events: payload.total_events,
+    send_count: payload.send_count,
+    duration_seconds: payload.duration_seconds,
+    continuous_count: payload.continuous_count,
+    continuous_ratio: payload.continuous_ratio,
+    // ...
+    dtoc: Some(proto_detailed(&payload.dtoc)),
+    ctod: Some(proto_detailed(&payload.ctod)),
+    ctoc: Some(proto_detailed(&payload.ctoc)),
+    qd:   Some(proto_detailed(&payload.qd)),
+    cmd_stats: payload.cmd_stats.iter().map(into_proto).collect(),
+    latency_histograms: payload.latency_histograms.iter().map(into_proto).collect(),
+    cmd_size_counts: payload.cmd_size_counts.iter().map(into_proto).collect(),
+    schema_version: payload.schema_version.to_string(),
+};
+```
+
+차트 RPC와 달리 **Arrow IPC 페이로드 없음** — 모든 값이 작은 카운트/요약이라 protobuf 그대로가 충분. 페이로드 5~30KB.
+
+## 통계 RPC vs 차트 RPC 비교
+
+| 축 | `GetChartData` | `GetTraceStats` |
+|---|---|---|
+| 응답 형식 | Arrow IPC binary + 요약 | JSON proto |
+| 응답 크기 | 수 MB | 수 KB |
+| 다운샘플 | time bucket decimate | 없음 (전체 집계) |
+| 호출 빈도 | 사용자 인터랙션마다 (zoom, pan) | 페이지 진입 시 1회 |
+| 캐싱 | 클라이언트 타임 범위 키 | DB 캐시 검토 가치 있음 |
+| 핫스팟 | Arrow 직렬화 + WebGL 업로드 | 단일 scan + percentile sort |
+
+분석 작업의 두 절반: 차트(시각화)와 통계(요약). 둘이 같은 parquet을 읽지만 처리 패턴이 다름.
+
+## 모듈 끝 — 다음 단계
+
+이 모듈 8개 글로 trace 바이너리의 핵심을 다 봤습니다.
+
+- 파싱 (mmap + rayon, byte search)
+- bottom half (DtoC/CtoC/CtoD/QD, send/complete 매칭)
+- 실시간 (tail -f + 윈도우 + atomic write + merge)
+- 디버깅 (QD 150 스파이크 사례)
+- gRPC (9 RPC, 변환·실시간·분석)
+- Storage (sync vs async parquet reader)
+- 통계 (단일 scan, send 기준, DuckDB 검토)
+
+추후 다룰 만한 것들:
+
+- **migration** — `--migrate` 옵션으로 구 parquet 스키마 → 신 스키마 변환
+- **벤치마크** — `benches/`의 criterion 결과와 최적화 회고
+- **테스트 전략** — batch/realtime 결과 동등성 검증 (`tests/`에 추가할 가치)
+
+필요해지면 그때 글을 더 추가하면 됩니다.
