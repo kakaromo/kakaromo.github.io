@@ -106,76 +106,76 @@ mmap은:
 
 청크 경계가 라인 중간에 떨어지면 파싱이 깨지므로, 다음 `\n`까지 boundary를 늘려 잡습니다. 64MB 부근에서 한 라인이 어떻게 처리되는지 보면:
 
-<figure style="margin: 1.5rem 0;">
-<svg viewBox="0 0 760 280" role="img" aria-label="64MB 목표 지점에서 라인 중간이라 다음 \n까지 boundary를 늘려 chunk 0가 64MB+δ에서 끝나고 chunk 1이 같은 지점에서 시작" style="width: 100%; height: auto; font-family: var(--sl-font-mono, monospace); font-size: 12px;">
+<figure style="margin: 1.5rem 0; padding: 1rem; background: #ffffff; border: 1px solid #e0e0e0; border-radius: 8px;">
+<svg viewBox="0 0 760 280" role="img" aria-label="64MB 목표 지점에서 라인 중간이라 다음 \n까지 boundary를 늘려 chunk 0가 64MB+δ에서 끝나고 chunk 1이 같은 지점에서 시작" style="width: 100%; height: auto; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 13px;">
   <defs>
     <marker id="arrow-r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
-      <path d="M0,0 L10,5 L0,10 z" fill="#ffd43b" />
+      <path d="M0,0 L10,5 L0,10 z" fill="#e67e22" />
     </marker>
   </defs>
 
-  {/* === 위쪽: naive cut 라벨 (라인 위) === */}
-  <text x="324" y="22" text-anchor="middle" fill="#ff6b6b" font-size="12" font-weight="700">✗ naive cut</text>
-  <text x="324" y="38" text-anchor="middle" fill="#ff6b6b" font-size="11">목표 64MB — 라인 C 중간</text>
+  {/* === 위쪽: naive cut 라벨 === */}
+  <text x="324" y="22" text-anchor="middle" fill="#c0392b" font-size="13" font-weight="700">✗ naive cut</text>
+  <text x="324" y="38" text-anchor="middle" fill="#c0392b" font-size="11">목표 64MB — 라인 C 중간</text>
 
-  {/* === 위쪽: adjusted boundary 라벨 (라인 위, naive와 분리) === */}
-  <text x="500" y="22" text-anchor="middle" fill="#51cf66" font-size="12" font-weight="700">✓ adjusted boundary</text>
-  <text x="500" y="38" text-anchor="middle" fill="#51cf66" font-size="11">다음 \n 다음 바이트 = 64MB + δ</text>
+  {/* === 위쪽: adjusted boundary 라벨 === */}
+  <text x="500" y="22" text-anchor="middle" fill="#27ae60" font-size="13" font-weight="700">✓ adjusted boundary</text>
+  <text x="500" y="38" text-anchor="middle" fill="#27ae60" font-size="11">다음 \n 다음 바이트 = 64MB + δ</text>
 
-  {/* === naive cut 점선 (위 라벨 → 라인 중간) === */}
-  <line x1="324" y1="50" x2="324" y2="130" stroke="#ff6b6b" stroke-width="2" stroke-dasharray="4 3" />
+  {/* === naive cut 점선 === */}
+  <line x1="324" y1="50" x2="324" y2="130" stroke="#c0392b" stroke-width="2" stroke-dasharray="4 3" />
 
-  {/* === adjusted boundary 실선 (위 라벨 → 라인 끝) === */}
-  <line x1="406" y1="50" x2="406" y2="170" stroke="#51cf66" stroke-width="2.5" />
+  {/* === adjusted boundary 실선 === */}
+  <line x1="406" y1="50" x2="406" y2="170" stroke="#27ae60" stroke-width="3" />
 
-  {/* === naive → adjusted 화살표 (+δ) === */}
-  <path d="M 326 80 L 402 80" stroke="#ffd43b" stroke-width="1.5" fill="none" marker-end="url(#arrow-r)" />
-  <text x="364" y="74" text-anchor="middle" fill="#ffd43b" font-size="11" font-weight="700">+δ</text>
+  {/* === naive → adjusted 화살표 === */}
+  <path d="M 326 80 L 402 80" stroke="#e67e22" stroke-width="2" fill="none" marker-end="url(#arrow-r)" />
+  <text x="364" y="74" text-anchor="middle" fill="#d35400" font-size="12" font-weight="700">+δ</text>
 
   {/* === 파일 베이스라인 === */}
-  <line x1="20" y1="150" x2="740" y2="150" stroke="var(--sl-color-gray-4)" stroke-width="1" />
-  <text x="20" y="142" fill="var(--sl-color-gray-2)" font-size="10">0</text>
-  <text x="740" y="142" text-anchor="end" fill="var(--sl-color-gray-2)" font-size="10">EOF</text>
+  <line x1="20" y1="150" x2="740" y2="150" stroke="#bdc3c7" stroke-width="1" />
+  <text x="20" y="142" fill="#7f8c8d" font-size="11">0</text>
+  <text x="740" y="142" text-anchor="end" fill="#7f8c8d" font-size="11">EOF</text>
 
-  {/* === 라인 박스 (chunk 0 내부) === */}
-  <rect x="20"  y="130" width="120" height="40" fill="var(--sl-color-blue-low, #1e3a5f)" stroke="var(--sl-color-blue, #4a9eff)" stroke-width="1" rx="3" />
-  <text x="80" y="154" text-anchor="middle" fill="var(--sl-color-white)" font-size="10">line A</text>
+  {/* === 라인 박스 (chunk 0, 파스텔 파랑) === */}
+  <rect x="20"  y="130" width="120" height="40" fill="#d6eaf8" stroke="#2980b9" stroke-width="1.5" rx="4" />
+  <text x="80" y="155" text-anchor="middle" fill="#1b4f72" font-size="12" font-weight="600">line A</text>
 
-  <rect x="142" y="130" width="100" height="40" fill="var(--sl-color-blue-low, #1e3a5f)" stroke="var(--sl-color-blue, #4a9eff)" stroke-width="1" rx="3" />
-  <text x="192" y="154" text-anchor="middle" fill="var(--sl-color-white)" font-size="10">line B</text>
+  <rect x="142" y="130" width="100" height="40" fill="#d6eaf8" stroke="#2980b9" stroke-width="1.5" rx="4" />
+  <text x="192" y="155" text-anchor="middle" fill="#1b4f72" font-size="12" font-weight="600">line B</text>
 
-  <rect x="244" y="130" width="160" height="40" fill="var(--sl-color-blue-low, #1e3a5f)" stroke="var(--sl-color-blue, #4a9eff)" stroke-width="1" rx="3" />
-  <text x="324" y="154" text-anchor="middle" fill="var(--sl-color-white)" font-size="10">line C (64MB 걸침)</text>
+  <rect x="244" y="130" width="160" height="40" fill="#d6eaf8" stroke="#2980b9" stroke-width="1.5" rx="4" />
+  <text x="324" y="155" text-anchor="middle" fill="#1b4f72" font-size="12" font-weight="600">line C (64MB 걸침)</text>
 
-  {/* === 라인 박스 (chunk 1 시작) === */}
-  <rect x="406" y="130" width="120" height="40" fill="var(--sl-color-purple-low, #3a2a5f)" stroke="var(--sl-color-purple, #b58aff)" stroke-width="1" rx="3" />
-  <text x="466" y="154" text-anchor="middle" fill="var(--sl-color-white)" font-size="10">line D</text>
+  {/* === 라인 박스 (chunk 1, 파스텔 보라) === */}
+  <rect x="406" y="130" width="120" height="40" fill="#ebdef0" stroke="#8e44ad" stroke-width="1.5" rx="4" />
+  <text x="466" y="155" text-anchor="middle" fill="#4a235a" font-size="12" font-weight="600">line D</text>
 
-  <rect x="528" y="130" width="120" height="40" fill="var(--sl-color-purple-low, #3a2a5f)" stroke="var(--sl-color-purple, #b58aff)" stroke-width="1" rx="3" />
-  <text x="588" y="154" text-anchor="middle" fill="var(--sl-color-white)" font-size="10">line E</text>
+  <rect x="528" y="130" width="120" height="40" fill="#ebdef0" stroke="#8e44ad" stroke-width="1.5" rx="4" />
+  <text x="588" y="155" text-anchor="middle" fill="#4a235a" font-size="12" font-weight="600">line E</text>
 
-  <rect x="650" y="130" width="80" height="40" fill="var(--sl-color-purple-low, #3a2a5f)" stroke="var(--sl-color-purple, #b58aff)" stroke-width="1" rx="3" />
-  <text x="690" y="154" text-anchor="middle" fill="var(--sl-color-white)" font-size="10">...</text>
+  <rect x="650" y="130" width="80" height="40" fill="#ebdef0" stroke="#8e44ad" stroke-width="1.5" rx="4" />
+  <text x="690" y="155" text-anchor="middle" fill="#4a235a" font-size="12" font-weight="600">...</text>
 
-  {/* === \n 마커 (라인 끝마다) === */}
-  <text x="141" y="190" text-anchor="middle" fill="var(--sl-color-gray-3)" font-size="9">\n</text>
-  <text x="243" y="190" text-anchor="middle" fill="var(--sl-color-gray-3)" font-size="9">\n</text>
-  <text x="405" y="190" text-anchor="middle" fill="#51cf66" font-size="10" font-weight="700">\n</text>
-  <text x="527" y="190" text-anchor="middle" fill="var(--sl-color-gray-3)" font-size="9">\n</text>
-  <text x="649" y="190" text-anchor="middle" fill="var(--sl-color-gray-3)" font-size="9">\n</text>
+  {/* === \n 마커 === */}
+  <text x="141" y="190" text-anchor="middle" fill="#7f8c8d" font-size="11" font-family="monospace">\n</text>
+  <text x="243" y="190" text-anchor="middle" fill="#7f8c8d" font-size="11" font-family="monospace">\n</text>
+  <text x="405" y="190" text-anchor="middle" fill="#27ae60" font-size="13" font-weight="700" font-family="monospace">\n</text>
+  <text x="527" y="190" text-anchor="middle" fill="#7f8c8d" font-size="11" font-family="monospace">\n</text>
+  <text x="649" y="190" text-anchor="middle" fill="#7f8c8d" font-size="11" font-family="monospace">\n</text>
 
   {/* === chunk 영역 막대 === */}
-  <line x1="20"  y1="220" x2="405" y2="220" stroke="var(--sl-color-blue, #4a9eff)" stroke-width="4" />
-  <line x1="406" y1="220" x2="730" y2="220" stroke="var(--sl-color-purple, #b58aff)" stroke-width="4" />
+  <line x1="20"  y1="220" x2="405" y2="220" stroke="#2980b9" stroke-width="5" />
+  <line x1="406" y1="220" x2="730" y2="220" stroke="#8e44ad" stroke-width="5" />
 
   {/* === chunk 라벨 === */}
-  <text x="212" y="245" text-anchor="middle" fill="var(--sl-color-blue, #4a9eff)" font-size="11" font-weight="700">chunk 0 = [0, 64MB+δ)</text>
-  <text x="568" y="245" text-anchor="middle" fill="var(--sl-color-purple, #b58aff)" font-size="11" font-weight="700">chunk 1 = [64MB+δ, 128MB+δ')</text>
+  <text x="212" y="245" text-anchor="middle" fill="#1b4f72" font-size="12" font-weight="700">chunk 0 = [0, 64MB+δ)</text>
+  <text x="568" y="245" text-anchor="middle" fill="#4a235a" font-size="12" font-weight="700">chunk 1 = [64MB+δ, 128MB+δ')</text>
 
   {/* === 하단 메모 === */}
-  <text x="380" y="270" text-anchor="middle" fill="var(--sl-color-gray-2)" font-size="10">목표값(64MB)이 라인 C 중간에 떨어져도 boundary는 \n 다음으로 자동 확장</text>
+  <text x="380" y="270" text-anchor="middle" fill="#34495e" font-size="11">목표값(64MB)이 라인 C 중간에 떨어져도 boundary는 \n 다음으로 자동 확장</text>
 </svg>
-<figcaption style="text-align: center; color: var(--sl-color-gray-2); font-size: 0.8125rem;">
+<figcaption style="text-align: center; color: #555; font-size: 0.8125rem; margin-top: 0.5rem;">
 naive cut(64MB)이 line C 중간이면 다음 \n까지 boundary를 늘려 chunk 0를 64MB+δ에서 끝냄. chunk 1은 같은 지점에서 시작 — 라인이 두 청크에 걸치지 않음.
 </figcaption>
 </figure>

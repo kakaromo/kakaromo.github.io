@@ -150,54 +150,54 @@ trait이 `Range<u64>` (Rust 표준, end exclusive)를 주는데 rust-s3는 inclu
 
 가장 흥미로운 부분. **parquet footer 바이트 레이아웃**:
 
-<figure style="margin: 1.5rem 0;">
-<svg viewBox="0 0 760 200" role="img" aria-label="Parquet 파일 끝 8바이트는 metadata length(4) + PAR1 magic(4). length를 읽어야 metadata 시작 위치를 알 수 있음." style="width: 100%; height: auto; font-family: var(--sl-font-mono, monospace); font-size: 12px;">
-  {/* 파일 베이스라인 */}
-  <text x="20" y="40" fill="var(--sl-color-gray-2)" font-size="10">0</text>
-  <text x="20" y="55" fill="var(--sl-color-gray-2)" font-size="10">파일 시작 →</text>
+<figure style="margin: 1.5rem 0; padding: 1rem; background: #ffffff; border: 1px solid #e0e0e0; border-radius: 8px;">
+<svg viewBox="0 0 760 210" role="img" aria-label="Parquet 파일 끝 8바이트는 metadata length(4) + PAR1 magic(4). length를 읽어야 metadata 시작 위치를 알 수 있음." style="width: 100%; height: auto; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 13px;">
+  {/* 파일 시작 라벨 */}
+  <text x="20" y="40" fill="#7f8c8d" font-size="11">0</text>
+  <text x="20" y="55" fill="#7f8c8d" font-size="11">파일 시작 →</text>
 
-  {/* row groups (큰 영역) */}
-  <rect x="20" y="70" width="430" height="50" fill="var(--sl-color-gray-6, #2a2a2a)" stroke="var(--sl-color-gray-3)" stroke-width="1" rx="3" />
-  <text x="235" y="100" text-anchor="middle" fill="var(--sl-color-white)" font-size="11">row groups (대부분 차지 — 5GB)</text>
+  {/* row groups (큰 영역, 회색) */}
+  <rect x="20" y="70" width="430" height="50" fill="#ecf0f1" stroke="#7f8c8d" stroke-width="1.5" rx="4" />
+  <text x="235" y="100" text-anchor="middle" fill="#2c3e50" font-size="12" font-weight="600">row groups (대부분 차지 — 5GB)</text>
 
-  {/* metadata (가변 길이) */}
-  <rect x="450" y="70" width="180" height="50" fill="var(--sl-color-blue-low, #1e3a5f)" stroke="var(--sl-color-blue, #4a9eff)" stroke-width="1.5" rx="3" />
-  <text x="540" y="92" text-anchor="middle" fill="var(--sl-color-white)" font-size="11">metadata (encoded)</text>
-  <text x="540" y="108" text-anchor="middle" fill="#9ec5ff" font-size="10">길이 가변, 보통 수십 KB</text>
+  {/* metadata (파스텔 파랑) */}
+  <rect x="450" y="70" width="180" height="50" fill="#d6eaf8" stroke="#2980b9" stroke-width="1.5" rx="4" />
+  <text x="540" y="92" text-anchor="middle" fill="#1b4f72" font-size="12" font-weight="700">metadata (encoded)</text>
+  <text x="540" y="108" text-anchor="middle" fill="#1b4f72" font-size="11">길이 가변, 보통 수십 KB</text>
 
-  {/* length (4 bytes) */}
-  <rect x="630" y="70" width="60" height="50" fill="#5f4a1e" stroke="#ffd43b" stroke-width="1.5" rx="3" />
-  <text x="660" y="90" text-anchor="middle" fill="var(--sl-color-white)" font-size="10" font-weight="700">length</text>
-  <text x="660" y="103" text-anchor="middle" fill="#ffd43b" font-size="9">u32_le</text>
-  <text x="660" y="115" text-anchor="middle" fill="#ffd43b" font-size="9">4 byte</text>
+  {/* length 4 bytes (파스텔 노랑) */}
+  <rect x="630" y="70" width="60" height="50" fill="#fdebd0" stroke="#d35400" stroke-width="1.5" rx="4" />
+  <text x="660" y="89" text-anchor="middle" fill="#7e3d00" font-size="11" font-weight="700">length</text>
+  <text x="660" y="103" text-anchor="middle" fill="#7e3d00" font-size="10" font-family="monospace">u32_le</text>
+  <text x="660" y="115" text-anchor="middle" fill="#7e3d00" font-size="10">4 byte</text>
 
-  {/* PAR1 magic (4 bytes) */}
-  <rect x="690" y="70" width="50" height="50" fill="var(--sl-color-purple-low, #3a2a5f)" stroke="var(--sl-color-purple, #b58aff)" stroke-width="1.5" rx="3" />
-  <text x="715" y="92" text-anchor="middle" fill="var(--sl-color-white)" font-size="10" font-weight="700">PAR1</text>
-  <text x="715" y="106" text-anchor="middle" fill="#d4baff" font-size="9">magic 4B</text>
+  {/* PAR1 magic (파스텔 보라) */}
+  <rect x="690" y="70" width="50" height="50" fill="#ebdef0" stroke="#8e44ad" stroke-width="1.5" rx="4" />
+  <text x="715" y="92" text-anchor="middle" fill="#4a235a" font-size="11" font-weight="700">PAR1</text>
+  <text x="715" y="108" text-anchor="middle" fill="#4a235a" font-size="10">magic 4B</text>
 
   {/* EOF 라벨 */}
-  <text x="740" y="55" text-anchor="end" fill="var(--sl-color-gray-2)" font-size="10">← 파일 끝</text>
+  <text x="740" y="55" text-anchor="end" fill="#7f8c8d" font-size="11">← 파일 끝</text>
 
   {/* footer 시작 화살표 */}
-  <line x1="450" y1="135" x2="450" y2="125" stroke="var(--sl-color-blue, #4a9eff)" stroke-width="1.5" />
-  <polygon points="450,123 446,131 454,131" fill="var(--sl-color-blue, #4a9eff)" />
-  <text x="450" y="150" text-anchor="middle" fill="var(--sl-color-blue, #4a9eff)" font-size="10" font-weight="700">footer 시작</text>
-  <text x="450" y="165" text-anchor="middle" fill="var(--sl-color-gray-2)" font-size="10">(어디인지는 length를 봐야 앎)</text>
+  <line x1="450" y1="138" x2="450" y2="125" stroke="#2980b9" stroke-width="2" />
+  <polygon points="450,123 445,132 455,132" fill="#2980b9" />
+  <text x="450" y="155" text-anchor="middle" fill="#1b4f72" font-size="12" font-weight="700">footer 시작</text>
+  <text x="450" y="170" text-anchor="middle" fill="#34495e" font-size="11">(어디인지는 length를 봐야 앎)</text>
 
   {/* 끝에서 8바이트 묶음 */}
-  <line x1="630" y1="135" x2="630" y2="125" stroke="#ffd43b" stroke-width="1" />
-  <line x1="740" y1="135" x2="740" y2="125" stroke="#ffd43b" stroke-width="1" />
-  <line x1="630" y1="135" x2="740" y2="135" stroke="#ffd43b" stroke-width="1" />
-  <text x="685" y="150" text-anchor="middle" fill="#ffd43b" font-size="10" font-weight="700">끝에서 8 byte</text>
-  <text x="685" y="163" text-anchor="middle" fill="#ffd43b" font-size="9">고정 위치 — 무조건 여기</text>
+  <line x1="630" y1="138" x2="630" y2="125" stroke="#d35400" stroke-width="1.5" />
+  <line x1="740" y1="138" x2="740" y2="125" stroke="#d35400" stroke-width="1.5" />
+  <line x1="630" y1="138" x2="740" y2="138" stroke="#d35400" stroke-width="1.5" />
+  <text x="685" y="155" text-anchor="middle" fill="#7e3d00" font-size="12" font-weight="700">끝에서 8 byte</text>
+  <text x="685" y="170" text-anchor="middle" fill="#7e3d00" font-size="11">고정 위치 — 무조건 여기</text>
 
   {/* 핵심 메시지 */}
-  <text x="380" y="190" text-anchor="middle" fill="var(--sl-color-gray-2)" font-size="11">
+  <text x="380" y="200" text-anchor="middle" fill="#34495e" font-size="11">
     먼저 끝에서 8 byte를 읽어 length를 파악 → metadata 영역 시작 위치 결정
   </text>
 </svg>
-<figcaption style="text-align: center; color: var(--sl-color-gray-2); font-size: 0.8125rem;">
+<figcaption style="text-align: center; color: #555; font-size: 0.8125rem; margin-top: 0.5rem;">
 끝 8 byte는 항상 [length(4) + PAR1(4)]로 고정. metadata 길이는 가변이라 length를 먼저 읽어야 footer 시작 위치를 안다.
 </figcaption>
 </figure>
