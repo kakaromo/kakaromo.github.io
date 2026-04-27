@@ -9,31 +9,60 @@ description: UFS/Block/UFSCUSTOM I/O trace 파싱 · Arrow IPC 차트 · 상세 
 
 ### 컴포넌트 구조
 
-```
-┌─ Browser (SvelteKit + Svelte 5) ───────────────────────────┐
-│  /trace 페이지 (3-pane: Jobs | Chart/Stats)                 │
-│  ├─ ECharts scatter 렌더러 (기본)                             │
-│  ├─ Deck.gl WebGL 렌더러 (feature flag, 1M+ 포인트)           │
-│  └─ apache-arrow (Arrow IPC 디코더)                         │
-└────────────────────────┬───────────────────────────────────┘
-                         │ REST /api/trace/*
-┌────────────────────────▼───────────────────────────────────┐
-│  Portal (Spring Boot)                                      │
-│  ├─ TraceController, TraceJobController                    │
-│  ├─ TraceJobService (@Async 파싱 orchestration)              │
-│  └─ binmapper DB (portal_trace_jobs, portal_trace_parquets)│
-└───────┬──────────────────────────────────────────┬─────────┘
-        │ gRPC :50053                              │ MinIO :9000
-        │  ProcessLogs (stream)                    │  trace-uploads/ (원본)
-        │  GetChartData (Arrow IPC)                │  trace-parquet/ (parquet)
-        │  GetTraceStats (JSON)                    │
-┌───────▼───────────────────────────────┐          │
-│  Rust trace 서비스                      │          │
-│  ├─ log parser (ftrace / CSV / UFSCUSTOM)│          │
-│  ├─ processors (latency/continuous/aligned)│       │
-│  ├─ parquet sync reader (/tmp 전체 다운로드)◄──────┤
-│  └─ parquet async reader (MinIO range-GET)◄────────┘
-└─────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    subgraph Browser["Browser (SvelteKit + Svelte 5)"]
+        Page["/trace, /trace/[id]"]
+        Echarts["ECharts 렌더러 (기본)"]
+        Deckgl["Deck.gl WebGL 렌더러 (opt-in)"]
+        ArrowDec["apache-arrow IPC 디코더"]
+        UploadClient["uploadTrace()<br/>4-way 병렬 PUT + probe + fallback"]
+    end
+
+    subgraph Nginx["nginx (memo.samsungds.net)"]
+        NginxApi["/api/* → Spring 8080"]
+        NginxMinio["/minio-upload/* → MinIO 9000"]
+    end
+
+    subgraph Portal["Portal (Spring Boot)"]
+        Ctrl["TraceController<br/>TraceJobController"]
+        Svc["TraceJobService (@Async)"]
+        Presign["S3PresignService"]
+        Db["binmapper DB<br/>portal_trace_jobs / portal_trace_parquets"]
+    end
+
+    subgraph Rust["Rust trace 서비스 :50053"]
+        Parser["log parser<br/>ftrace / blktrace CSV / UFSCUSTOM"]
+        Proc["processors<br/>latency / qd / continuous / aligned"]
+        Async["parquet async reader<br/>MinIO range-GET"]
+        Duck["DuckDB stats engine<br/>(opt-in)"]
+    end
+
+    subgraph Minio["MinIO :9000"]
+        BucketUp["trace-uploads/ (원본)"]
+        BucketPq["trace-parquet/"]
+    end
+
+    Page --> UploadClient
+    UploadClient -.JSON init/complete/abort.-> NginxApi
+    UploadClient ==4-way 병렬 PUT==> NginxMinio
+    UploadClient -.fallback streaming.-> NginxApi
+    NginxApi --> Ctrl
+    NginxMinio --> BucketUp
+    Ctrl --> Svc
+    Ctrl --> Presign
+    Svc --> Db
+    Presign -.presigned URL 발급.-> UploadClient
+    Svc -.gRPC ProcessLogs (stream).-> Rust
+    Ctrl -.gRPC GetChartData / GetTraceStats.-> Rust
+    Async --> BucketUp
+    Async --> BucketPq
+    Duck --> BucketPq
+    Parser --> Proc
+    Proc --> BucketPq
+    Echarts --> Page
+    Deckgl --> Page
+    ArrowDec --> Page
 ```
 
 ### 핵심 설계 결정
@@ -50,14 +79,26 @@ description: UFS/Block/UFSCUSTOM I/O trace 파싱 · Arrow IPC 차트 · 상세 
 
 ## 2. 엔드포인트 요약
 
+### 2.1 업로드 4종 (현재 기본은 multipart, 환경에 따라 자동 선택)
+
+| Method | Path | 용도 | 비고 |
+|---|---|---|---|
+| `POST` | `/api/trace/upload/init` | Presigned multipart 시작 — Job INSERT + S3 multipart 시작 + part 별 presigned URL 응답 | **현재 기본 경로 1단계** |
+| `PUT` | `/minio-upload/...` (외부 nginx) | 각 part 를 64MB 단위로 4개 동시 PUT (브라우저 → nginx → MinIO 직행) | Spring JVM 우회 |
+| `POST` | `/api/trace/upload/complete` | ETag 모아 S3 complete + 파싱 트리거 | **현재 기본 경로 마무리** |
+| `POST` | `/api/trace/upload/abort` | 실패/취소 시 S3 abort + Job 삭제 | 자동 호출 |
+| `POST` | `/api/trace/upload-stream` | Spring 경유 raw streaming (X-File-Name 헤더 + body=파일) | **MinIO 직접 PUT 차단 시 자동 fallback** |
+| `POST` | `/api/trace/upload` | (legacy) Multipart form-data 전체 통과 | 호환용, 신규 사용 안 함 |
+
+### 2.2 조회 / 분석
+
 | Method | Path | 용도 | 응답 |
 |---|---|---|---|
-| `POST` | `/api/trace/upload` | 로그 파일 업로드 + 파싱 트리거 | JSON `{ success, jobId, status }` |
-| `GET` | `/api/trace/jobs` | 현재 사용자 Job 목록 | `TraceJob[]` |
+| `GET` | `/api/trace/jobs` | **모든 사용자** Job 목록 (owner 필드 포함) | `TraceJob[]` (with `ownerUsername` / `ownerDisplayName` / `mine` / `canModify`) |
 | `GET` | `/api/trace/jobs/{id}` | Job 상세 (parquets 포함) | `TraceJob` |
-| `DELETE` | `/api/trace/jobs/{id}` | Job + MinIO 파일 + parquet row 삭제 | `{ success }` |
-| `POST` | `/api/trace/jobs/{id}/reparse` | 기존 원본으로 재파싱 | `{ success, jobId, status }` |
-| `POST` | `/api/trace/chart` | Arrow IPC 차트 데이터 | `application/vnd.apache.arrow.stream` 바이트 + `X-Trace-*` 헤더 |
+| `DELETE` | `/api/trace/jobs/{id}` | Job + MinIO 파일 + parquet row 삭제 — **owner 또는 admin** | `{ success }` |
+| `POST` | `/api/trace/jobs/{id}/reparse` | 기존 원본으로 재파싱 — **owner 또는 admin** | `{ success, jobId, status }` |
+| `POST` | `/api/trace/chart` | Arrow IPC 차트 데이터 | `application/vnd.apache.arrow.stream` + `X-Trace-*` 헤더 |
 | `POST` | `/api/trace/stats` | 상세 통계 (Latency/CMD/Histogram/SizeCount) | JSON |
 
 ---
@@ -151,35 +192,123 @@ CREATE TABLE portal_trace_parquets (
 
 ## 4. 업로드 · 파싱 플로우
 
-```
-1. Browser → POST /api/trace/upload (multipart)
-2. TraceJobController.upload → TraceJobService.uploadAndParse(user, file)
-3. Service → DB INSERT (status=UPLOADED, progress=0) → jobId 획득
-4. Service → MinIO PUT trace-uploads/{user}/{date}/{jobId}/{file}
-5. Service → Browser 응답 { jobId, status: "UPLOADED" }
+### 4.1 클라이언트 측 분기 (probe → multipart / fallback)
 
-   ── 여기부터 @Async triggerParse(jobId) ──
+다이얼로그가 업로드를 시작하면 `lib/api/trace.ts::uploadTrace` 가 다음 순서로 동작:
 
-6. Service → DB status=PARSING
-7. Service → Rust ProcessLogs (gRPC streaming)
-8. Rust → MinIO GET trace-uploads/...
-9. Rust → parse + processors (latency/qd/continuous/aligned)
-10. Rust → MinIO PUT trace-parquet/{user}/{jobId}/{ufs,block,ufscustom}.parquet
-11. Rust → Service: ProcessLogsProgress (stage, progress_percent, …) 반복
-12. Service → DB currentStage, progressPercent 갱신 (매 메시지)
-13. Rust → Service: 완료 (output_files[])
-14. Service → DB INSERT portal_trace_parquets rows
-15. Service → DB status=PARSED, parsedAt=now
+```mermaid
+flowchart TD
+    Start(["사용자 파일 선택"]) --> Probe["GET /minio-upload/minio/health/live<br/>(3s timeout, sessionStorage 1h 캐시)"]
+    Probe -- "200 OK" --> Init["POST /api/trace/upload/init<br/>{filename, sizeBytes, contentType}"]
+    Probe -- "fail / timeout" --> Stream["POST /api/trace/upload-stream<br/>X-File-Name + body=파일"]
 
-   ── Browser 는 GET /api/trace/jobs/{id} 를 2초 간격으로 polling ──
+    Init --> Parts["64MB part 4개 동시 PUT<br/>(presigned URL, nginx → MinIO)"]
+    Parts -- "ok" --> Complete["POST /api/trace/upload/complete<br/>(ETag list)"]
+    Parts -- "502/504/network err" --> Abort["POST /upload/abort<br/>+ /upload-stream 으로 재시도"]
+    Parts -- "다른 4xx (서명 등)" --> Fail["onError"]
+
+    Abort --> Stream
+    Complete --> Done["jobId 반환 → 파싱 시작"]
+    Stream --> Done
 ```
 
-### 주요 포인트
+**핵심 의도**:
+
+- 정상 환경: presigned multipart **4-way 병렬** 으로 1GB 파일을 ~3-5배 빠르게 업로드
+- `/minio-upload/` 차단 환경: probe 가 **3초 안에 감지** 하고 곧장 `/upload-stream` 으로 직행
+- 정상이라 판단됐는데 첫 PUT 부터 502/504 인 경우: multipart abort + `/upload-stream` 으로 자동 폴백
+
+UploadStage 는 `'probing' → 'init' → 'uploading' → 'finalizing'` 또는 `'probing' → 'fallback'` 으로 흐른다. 다이얼로그가 단계 라벨과 progress 를 그대로 받아 표시.
+
+### 4.2 서버 측 — multipart 정상 경로
+
+```mermaid
+sequenceDiagram
+    participant Browser
+    participant Nginx as nginx
+    participant Spring as Spring (Portal)
+    participant DB as binmapper DB
+    participant MinIO
+    participant Rust as Rust trace svc
+
+    Browser->>Spring: POST /upload/init
+    Spring->>DB: INSERT job (status=UPLOADING, jobId 발급)
+    Spring->>MinIO: createMultipartUpload → uploadId
+    Spring->>Spring: presign part URLs (1..N)
+    Spring-->>Browser: {jobId, uploadId, parts[]}
+
+    par 4-way 병렬
+        Browser->>Nginx: PUT /minio-upload/.../partN
+        Nginx->>MinIO: PUT (proxy_request_buffering off)
+        MinIO-->>Browser: ETag (Access-Control-Expose-Headers)
+    end
+
+    Browser->>Spring: POST /upload/complete (ETag list)
+    Spring->>MinIO: completeMultipartUpload
+    Spring->>DB: status=UPLOADED, path 채움
+    Spring->>Spring: triggerParse(jobId) [@Async]
+    Spring-->>Browser: {jobId, status: UPLOADED}
+
+    Note over Spring,Rust: 파싱은 별도 스레드에서 진행
+    Spring->>DB: status=PARSING
+    Spring->>Rust: ProcessLogs (gRPC stream)
+    Rust->>MinIO: GET trace-uploads/...
+    loop ProcessLogsProgress
+        Rust-->>Spring: {stage, progress_percent}
+        Spring->>DB: currentStage, progressPercent 갱신
+    end
+    Rust->>MinIO: PUT trace-parquet/{jobId}/{ufs|block|ufscustom}.parquet
+    Rust-->>Spring: 완료 (output_files[])
+    Spring->>DB: INSERT portal_trace_parquets
+    Spring->>DB: status=PARSED, parsedAt=now
+
+    Note over Browser: GET /api/trace/jobs/{id} 2s polling 으로 진행 표시
+```
+
+### 4.3 fallback (`/upload-stream`)
+
+```mermaid
+sequenceDiagram
+    participant Browser
+    participant Spring
+    participant DB
+    participant MinIO
+
+    Browser->>Spring: POST /upload-stream<br/>X-File-Name, Content-Length, body=파일
+    Spring->>DB: INSERT job (status=UPLOADING)
+    Spring->>MinIO: PUT trace-uploads/{user}/{date}/{jobId}/{file}<br/>(스트림으로 직접 전달, Tomcat 디스크 spool 안 함)
+    Spring->>DB: status=UPLOADED
+    Spring-->>Browser: {jobId, status: UPLOADED}
+    Spring->>Spring: triggerParse(jobId) [@Async]
+```
+
+`/upload-stream` 은 multipart parser 를 우회해 `request.getInputStream()` 을 그대로 MinIO putObject 에 흘려보낸다. 4-way 병렬은 못 하지만 **Spring JVM heap 압박이 거의 없고** 모든 환경에서 동작.
+
+### 4.4 주요 포인트
 
 - **선 INSERT 후 업로드**: jobId 를 먼저 발급받아 MinIO 경로에 포함 → id 기반 고유성 보장
 - **@Async 파싱**: upload 요청은 즉시 응답 반환, 파싱은 백그라운드 스레드. Portal 재시작 시 PARSING 중이던 job 은 그대로 남아있으며, 복구는 수동 `POST /reparse` 로
 - **Rust ProcessLogs 스트리밍**: `stage` 값 (`DOWNLOADING` → `PARSING` → `CONVERTING` → `UPLOADING` → `COMPLETED`) 과 `progress_percent` (0~100) 를 DB 에 실시간 반영 → 프론트 2초 polling 으로 진행 단계 표시
-- **Reparse**: 기존 원본은 `trace-uploads` 에 남아있으므로 파서 로직 변경 시 재파싱만으로 새 parquet 생성. `status=UPLOADED` 로 되돌리고 `triggerParse` 재호출
+- **Reparse**: 기존 원본은 `trace-uploads` 에 남아있으므로 파서 로직 변경 시 재파싱만으로 새 parquet 생성. `status=UPLOADED` 로 되돌리고 `triggerParse` 재호출 (owner / admin 만)
+- **owner / admin 권한 분리**: 업로드한 본인 + admin 만 삭제/재파싱. 일반 사용자는 모든 Job 의 차트/통계 조회만 가능 (전체 공개)
+
+### 4.5 nginx 의존 (multipart 경로)
+
+`/minio-upload/` location 블록이 운영 nginx 에 추가되어 있어야 함:
+
+```nginx
+location /minio-upload/ {
+    proxy_pass http://10.227.161.124:9000/;
+    proxy_set_header Host $host;
+    proxy_request_buffering off;     # 필수 — 64MB part 를 메모리/디스크에 쌓지 않음
+    proxy_buffering off;
+    client_max_body_size 0;
+    proxy_read_timeout 3600s;
+    add_header Access-Control-Expose-Headers ETag always;
+}
+```
+
+자세한 운영 가이드: `portal/docs/nginx-trace-upload.md`
 
 ---
 
@@ -258,6 +387,27 @@ Browser: tableFromIPC (apache-arrow)
 ---
 
 ## 6. 상세 통계 파이프라인 (`/api/trace/stats`)
+
+### 6.0 stats 엔진 분기
+
+환경변수 `TRACE_STATS_ENGINE` 으로 두 구현체 중 선택:
+
+```mermaid
+flowchart LR
+    Req["POST /api/trace/stats"] --> Spring["TraceController"]
+    Spring -.gRPC GetTraceStats.-> Rust
+    Rust -- "TRACE_STATS_ENGINE=duckdb" --> Duck["DuckDB engine<br/>stats_rpc_duckdb.rs<br/>SQL 집계 + httpfs"]
+    Rust -- "기본 (rust 자체 집계)" --> Native["Rust engine<br/>stats_rpc.rs / stats_rpc_async.rs<br/>RecordBatch 단일 스캔"]
+    Duck --> Resp["JSON StatsResponse"]
+    Native --> Resp
+```
+
+| 엔진 | 강점 | 비고 |
+|---|---|---|
+| **rust (기본)** | 외부 의존 없음, async reader 와 통합 | UFS 600K 이벤트 cold 1.82s / warm 449ms |
+| **duckdb (opt-in)** | SQL 집계 표현력, 향후 스키마 확장 용이 | `httpfs` extension 으로 MinIO 직접 read, 동일 응답 구조 유지 |
+
+응답 proto 스키마는 두 엔진이 동일 — Portal/Frontend 무변경. 운영 전환은 Rust 서비스 환경변수만 토글.
 
 ### 6.1 계산 항목
 
@@ -400,11 +550,13 @@ interface Props {
 
 - 6 scatter (LBA / Queue Depth / CPU / DtoC / CtoD / CtoC)
 - 사이드바: Action 탭 (send / complete / all) + 차트 visible 토글
-- cmd 색상: `cmdColors.ts::createCmdColorAssigner` — SCSI opcode + 문자열 매칭
-  - Read (0x28/RA/R/…) → 파랑
-  - Write (0x2a/WA/W/…) → 주황·빨강
-  - Flush (0x35/FF/…) → 초록
-  - Discard (0x42/D/…) → 보라
+- cmd 색상: `cmdColors.ts::createCmdColorAssigner` — SCSI opcode + **prefix 우선 매칭**
+  - 전체 단어 매칭이 우선 (`discard`/`trim`/`unmap` → 보라, `flush`/`sync` → 초록, `write`/`read`)
+  - 그 외엔 첫 글자(prefix) 로 분류 — Rust block parser 가 `io_type` 첫 글자(R/W/D/F)로 분류하는 것과 동일 규칙
+  - Read (0x28 / R / RA / RM …) → 파랑
+  - Write (0x2a / W / WS / WSM / WSF …) → 주황·빨강
+  - Flush (0x35 / F / FF / FUA …) → 초록
+  - Discard (0x42 / D / DV …) → 보라
   - Other → 회색
 - Legend (우측 세로) 토글 → 모든 차트 동기화
 - Brush 드래그 (우클릭 → 영역선택 메뉴 → pointer drag → pixel→data 역변환) → `onBrushSelected` 상위 전파
@@ -499,13 +651,21 @@ Portal `buildFilterOptions(TraceFilterDto)` 가 `FilterOptions` proto 로 변환
 
 예: `OUT_OF_RANGE` → "차트 데이터가 너무 커요 · Samples 값을 줄이거나 시간 범위를 좁혀서 다시 시도해 주세요"
 
-### 10.4 Stats 탭 자동 로드
+### 10.4 Stats 탭 자동 로드 (병렬)
 
-사용자가 **Statistics 탭**을 클릭하면 `$effect` 에서 `!statsResult && !statsLoading` 인 경우 자동으로 `loadStats()` 호출. 별도 버튼 불필요. Brush 나 Filter 조회로 호출된 경우는 현재 탭 유지 (`switchTab` 옵션).
+Job 선택 시 차트(`/api/trace/chart`) + 통계(`/api/trace/stats`) 를 **동시에 시작** 한다. 사용자가 곧장 Statistics 탭을 클릭해도 이미 fetch in-flight → 즉시 표시. 차트 탭만 보면 stats 결과는 백그라운드에 캐시. Brush / Filter 변경 시에도 동일하게 두 요청이 동시에 나간다.
 
-### 10.5 단계 표시
+### 10.5 단계 표시 (업로드 + 파싱 양쪽)
 
-Job 리스트 하단에 `다운로드 45%` / `파싱 80%` 형태로 현재 `currentStage` + `progressPercent`. 상단 툴바에도 선택 Job 이 진행 중이면 스피너 + 단계 표시. 진행 중 재파싱 버튼 disabled.
+| 영역 | 표시 |
+|---|---|
+| **업로드 다이얼로그** | `probing` → `init` → `uploading (XX%)` → `finalizing` → 닫힘. fallback 시 `fallback (XX%)` |
+| **Job 리스트** | `다운로드 45%` / `파싱 80%` 등 `currentStage` + `progressPercent` |
+| **상단 툴바** | 선택 Job 이 진행 중이면 스피너 + 단계. 진행 중 재파싱/삭제 비활성 |
+
+### 10.6 Owner 필터
+
+Job 리스트 상단에 owner 필터 (전체 / 내 Job / 사용자별 dropdown). `ownerOptions` 는 현재 jobs 목록의 username + displayName 으로 자동 구성. `auth.username` 이 있을 때만 "내 Job" 활성. 필터 적용 시 카운트 표시는 `filtered / total` 형태.
 
 ---
 
@@ -541,23 +701,28 @@ Job 리스트 하단에 `다운로드 45%` / `파싱 80%` 형태로 현재 `curr
 ### Portal (Spring Boot)
 
 - `com.samsung.move.trace.controller.TraceController` — Chart / Stats REST
-- `com.samsung.move.trace.controller.TraceJobController` — Upload / List / Reparse
-- `com.samsung.move.trace.service.TraceJobService` — 파싱 오케스트레이션
+- `com.samsung.move.trace.controller.TraceJobController` — Upload (4종) / List / Reparse / Abort
+- `com.samsung.move.trace.service.TraceJobService` — 파싱 오케스트레이션 (`uploadAndParse`, `uploadAndParseStream`, `initMultipartUpload`, `completeMultipartUpload`, `abortMultipartUpload`)
+- `com.samsung.move.minio.service.S3PresignService` — presigned URL 발급
+- `com.samsung.move.minio.config.MinioProperties` — `public-endpoint` (브라우저용 presigned URL host)
 - `com.samsung.move.trace.TraceGrpcClient` — Rust 래퍼
 - `com.samsung.move.trace.entity.{TraceJob, TraceParquet}` — JPA
-- `com.samsung.move.trace.dto.{ChartRequestDto, StatsRequestDto, TraceFilterDto}` — API 입력
+- `com.samsung.move.trace.dto.{ChartRequestDto, StatsRequestDto, TraceFilterDto, TraceUploadDtos}` — API 입력
 - `src/main/proto/trace_service.proto` — Rust proto 미러
 - `sql/add-trace-jobs.sql` — DDL
+- `docs/nginx-trace-upload.md` — 운영팀 nginx 설정 가이드
 
 ### Frontend (SvelteKit)
 
-- `routes/trace/+page.svelte` — 페이지 전체
+- `routes/trace/+page.svelte` — 목록 페이지 (DataTable + 업로드 다이얼로그 + owner 필터)
+- `routes/trace/[jobId]/+page.svelte` — 분석 페이지 (차트 + 통계 + filter)
+- `routes/trace/TraceJobsTable.svelte` — Job 목록 테이블
 - `routes/trace/TraceChartView.svelte` — ECharts 렌더러
 - `routes/trace/TraceStatsView.svelte` — 통계 탭
-- `routes/trace/cmdColors.ts` — cmd 색상 매핑 (공용)
+- `routes/trace/cmdColors.ts` — cmd 색상 매핑 (공용, prefix 우선 매칭)
 - `routes/trace/friendlyError.ts` + `FriendlyErrorBox.svelte` — 에러 인간화
 - `routes/trace/deckgl/*` — Deck.gl 렌더러
-- `lib/api/trace.ts` — API 클라이언트
+- `lib/api/trace.ts` — 업로드 (probe + multipart + fallback) + Chart/Stats API 클라이언트
 - `lib/utils/arrow-decoder.ts` — Arrow IPC 디코더
 
 ### Rust trace 서비스
@@ -565,7 +730,8 @@ Job 리스트 하단에 `다운로드 45%` / `파싱 80%` 형태로 현재 `curr
 - `proto/log_processor.proto` — gRPC 스키마
 - `src/grpc/server.rs` — gRPC 핸들러 (ProcessLogs / GetChartData / GetTraceStats)
 - `src/output/chart_rpc.rs` / `chart_rpc_async.rs` — 차트 payload builder
-- `src/output/stats_rpc.rs` / `stats_rpc_async.rs` — 통계 payload builder
+- `src/output/stats_rpc.rs` / `stats_rpc_async.rs` — Rust 자체 통계 builder (기본 엔진)
+- `src/output/stats_rpc_duckdb.rs` — DuckDB 기반 통계 builder (`TRACE_STATS_ENGINE=duckdb`)
 - `src/output/parquet_async.rs` — MinIO range-GET AsyncFileReader
 - `src/utils/downsample.rs` — time-bucket decimation
 - `src/parsers/log_common.rs` — ftrace / blktrace CSV 파서 (`normalize_sector` 포함)
