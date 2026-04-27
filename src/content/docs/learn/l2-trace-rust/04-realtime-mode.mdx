@@ -11,23 +11,59 @@ import SequenceTimeline from '../../../../components/learn/SequenceTimeline.svel
 
 batch 모드(`parse_log_file_high_perf`)는 로그가 다 쌓인 뒤 일괄 처리. realtime 모드(`parsers/realtime.rs`)는 **로그가 자라는 동안** 처리합니다.
 
-```
-[adb trace_pipe] → trace.log (계속 append)
-                        ↓
-                [tail -f 폴링 50ms]
-                        ↓
-                [라인별 BottomHalfState 증분 처리]
-                        ↓
-                [윈도우(기본 1초) 경과 시 flush]
-                        ↓
-realtime_ufs_000001.parquet  (완료, atomic rename)
-realtime_ufs_000002.parquet
-realtime_block_000001.parquet
-...
-                        ↓
-            [stop 시 타입별로 머지]
-                        ↓
-            ufs.parquet, block.parquet, ufscustom.parquet
+```mermaid
+flowchart TB
+    SRC["adb trace_pipe<br/>(또는 다른 ftrace source)"]
+    LOG[("trace.log<br/>append-only<br/>계속 자람")]
+    POLL["tail -f 폴링<br/>50ms 간격"]
+    PARSE["라인별 BottomHalfState<br/>증분 처리<br/>(send↔complete 매칭)"]
+    WIN{"윈도우 경과?<br/>(기본 1초)"}
+    BUF["WindowBuffer<br/>(타입별 누적)"]
+    FLUSH["flush — 타입별 atomic write<br/>.tmp → rename"]
+
+    UFS_W["realtime_ufs_NNN.parquet<br/>윈도우 N개"]
+    BLK_W["realtime_block_NNN.parquet<br/>윈도우 N개"]
+    UFC_W["realtime_ufscustom_NNN.parquet<br/>윈도우 N개"]
+
+    STOP{"StopParsing?"}
+    MERGE["merge_realtime_parquets<br/>타입별 시간 정렬 머지"]
+
+    UFS_OUT[("ufs.parquet<br/>(단일)")]
+    BLK_OUT[("block.parquet<br/>(단일)")]
+    UFC_OUT[("ufscustom.parquet<br/>(단일)")]
+
+    SRC --> LOG
+    LOG --> POLL
+    POLL --> PARSE
+    PARSE --> BUF
+    BUF --> WIN
+    WIN -- "no" --> POLL
+    WIN -- "yes" --> FLUSH
+
+    FLUSH --> UFS_W
+    FLUSH --> BLK_W
+    FLUSH --> UFC_W
+
+    UFS_W --> STOP
+    BLK_W --> STOP
+    UFC_W --> STOP
+
+    STOP -- "no" --> POLL
+    STOP -- "yes" --> MERGE
+
+    MERGE --> UFS_OUT
+    MERGE --> BLK_OUT
+    MERGE --> UFC_OUT
+
+    classDef source fill:#1e3a5f,stroke:#4a9eff,color:#fff
+    classDef state fill:#3a2a5f,stroke:#b58aff,color:#fff
+    classDef out fill:#1e4f3a,stroke:#51cf66,color:#fff
+    classDef decision fill:#5f4a1e,stroke:#ffd43b,color:#fff
+
+    class SRC,LOG source
+    class PARSE,BUF,FLUSH,MERGE state
+    class UFS_W,BLK_W,UFC_W,UFS_OUT,BLK_OUT,UFC_OUT out
+    class WIN,STOP decision
 ```
 
 핵심:
