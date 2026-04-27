@@ -5,6 +5,8 @@ sidebar:
   order: 5
 ---
 
+import BeforeAfterSlider from '../../../../components/learn/BeforeAfterSlider.svelte';
+
 ## 증상
 
 `realtime` 모드로 받아 그린 QD 차트가 갑자기 **150까지 솟구쳤다가 안 내려옵니다**. 같은 로그를 batch 모드(`parse_log_file_high_perf` → `processors`)로 돌리면 정상 (피크 30~50). 둘 다 같은 코드 경로를 쓴다고 생각했는데 결과가 다름.
@@ -45,99 +47,100 @@ flowchart LR
 
 ## 1차 의심 — 이벤트 중복 read
 
-`tail -f` 폴링 루프를 다시 봤습니다.
+`tail -f` 폴링 루프를 다시 봤습니다. 문제는 `last_offset = current_size`로 갱신하는 부분 — **read_line이 도는 동안에도 파일이 자라고 있고**, `BufReader`가 64KB 청크로 미리 읽기 때문에 다음 iteration에서 `seek(current_size)`로 점프하면 이미 BufReader가 읽었던 일부를 **건너뛰지 않고 또 읽습니다**.
 
-```rust
-let current_size = fs::metadata(&log_source)?.len();
+→ send_req 중복 → pending HashMap에 같은 키 두 번 → 두 번째 insert가 첫 번째를 덮어씀 + QD는 +2 됐는데 -1만 됨 → **QD 누적 +1씩 새어나감**.
+
+<BeforeAfterSlider
+  client:visible
+  mode="split"
+  height={360}
+  caption="last_offset = current_size (file size 기반) → BufReader가 미리 읽은 영역 재read. 실제 완전히 읽은 byte만 누적해야 정확."
+  before={{
+    title: "before — current_size 기반 (버그)",
+    language: "rust",
+    highlight: [[8, 8]],
+    code: `let current_size = fs::metadata(&log_source)?.len();
 
 if current_size > last_offset {
     let mut file = File::open(&log_source)?;
     file.seek(SeekFrom::Start(last_offset))?;
     let mut reader = BufReader::new(file);
     // ... read_line 루프 ...
-    last_offset = current_size;  // ← 여기 수상
-}
-```
-
-문제: `last_offset = current_size`로 갱신하는데, **read_line이 도는 동안에도 파일이 자라고 있음**. `BufReader`가 64KB 청크로 미리 읽기 때문에, 다음 iteration에서 `seek(current_size)`로 점프하면 이미 BufReader가 읽었던 일부를 **건너뛰지 않고 또 읽습니다**.
-
-→ send_req 중복 → pending HashMap에 같은 키 두 번 → 두 번째 insert가 첫 번째를 덮어씀 + QD는 +2 됐는데 -1만 됨 → **QD 누적 +1씩 새어나감**.
-
-수정:
-```rust
-let mut bytes_read: u64 = 0;
+    last_offset = current_size;  // ✗ 파일 성장 중이라 다음에 중복 read
+}`,
+  }}
+  after={{
+    title: "after — bytes_read 누적 (수정)",
+    language: "rust",
+    highlight: [[1, 1], [9, 9], [16, 16]],
+    code: `let mut bytes_read: u64 = 0;
 loop {
     line_buf.clear();
     match reader.read_line(&mut line_buf) {
         Ok(0) => break,
         Ok(n) => {
-            if !line_buf.ends_with('\n') {
+            if !line_buf.ends_with('\\n') {
                 incomplete_line.push_str(&line_buf);
                 break;  // bytes_read에 포함하지 않음
             }
-            bytes_read += n as u64;  // 완전한 라인만 카운트
+            bytes_read += n as u64;  // ✓ 완전한 라인만 카운트
             // ...
         }
         Err(_) => break,
     }
 }
-last_offset += bytes_read;  // 실제 읽은 만큼만
-```
+last_offset += bytes_read;  // ✓ 실제 읽은 만큼만`,
+  }}
+/>
 
 빌드 후 다시 돌렸는데 **여전히 QD 100+**. 1차 가설은 틀린 게 아니지만 단독 원인은 아니었음.
 
 ## 2차 의심 — Block io_type 정규화 누락
 
-batch 모드의 `processors/block.rs`를 다시 봤습니다.
-
-```rust
-let io_op = if io_type.starts_with('R') { "read" }
-            else if io_type.starts_with('W') { "write" }
-            else if io_type.starts_with('D') { "discard" }
-            else { "other" };
-
-let key = (block.sector, io_op.clone(), block.size);
-processed_issues.insert(key);
-```
-
-issue/complete 매칭 키를 **정규화된 io_type**으로 만듭니다. 그런데 `realtime.rs`는:
-
-```rust
-let key = (block.sector, block.io_type.clone());  // 정규화 없음
-```
+batch 모드의 `processors/block.rs`는 issue/complete 매칭 키를 **정규화된 io_type**으로 만듭니다 (`"RA"` → `"read"`, `"WS"` → `"write"`). 그런데 realtime은 raw `io_type` 그대로 키에 넣고 있었음.
 
 ftrace는 `block_rq_issue`에 `io_type="RA"`(Read Ahead)를 찍는데 `block_rq_complete`에는 `"R"`만 찍힐 수 있어요. 정규화 안 하면 **매칭 실패** → pending에서 못 꺼냄 → QD가 -1 안 됨 → 영원히 누적.
 
-이게 진짜 주범이었습니다. `RA`/`WS`/`FS` 같은 다양한 변종이 traffic의 절반 이상이라 QD가 무한 증가. 같은 ftrace 라인이 batch 모드에선 정규화돼서 정상 매칭됐던 것.
+이게 진짜 주범이었습니다. `RA`/`WS`/`FS` 같은 다양한 변종이 traffic의 절반 이상이라 QD가 무한 증가.
 
-수정:
-```rust
-fn normalize_block_io_type(io_type: &str) -> Box<str> {
-    if io_type.starts_with('R') { "read".into() }
+<BeforeAfterSlider
+  client:visible
+  mode="split"
+  height={300}
+  caption="raw io_type을 키로 쓰면 RA(issue) vs R(complete) 매칭 실패. batch처럼 첫 글자로 normalize 후 키 생성."
+  before={{
+    title: "before — raw io_type (버그)",
+    language: "rust",
+    highlight: [[1, 1]],
+    code: `let key = (block.sector, block.io_type.clone());  // ✗ "RA" vs "R" 매칭 실패
+self.pending_block.insert(key, block);
+// ...
+let key = (block.sector, block.io_type.clone());
+if let Some(issue) = self.pending_block.remove(&key) {
+    // ✗ 거의 못 꺼냄 → QD -1 안 됨
+}`,
+  }}
+  after={{
+    title: "after — 정규화 후 키 (수정)",
+    language: "rust",
+    highlight: [[1, 8], [10, 10]],
+    code: `fn normalize_block_io_type(io_type: &str) -> Box<str> {
+    if io_type.starts_with('R')      { "read".into() }
     else if io_type.starts_with('W') { "write".into() }
     else if io_type.starts_with('D') { "discard".into() }
-    else { "other".into() }
+    else                             { "other".into() }
 }
 
 let io_op = Self::normalize_block_io_type(&block.io_type);
-let key = (block.sector, io_op);
-```
+let key = (block.sector, io_op);  // ✓ batch와 동일 키
+self.pending_block.insert(key, block);`,
+  }}
+/>
 
 수정 후 QD 피크 150 → 60. 정상 범위에 근접했지만 batch 모드(피크 35)와는 여전히 차이.
 
 ## 3차 의심 — Flush 유령 이벤트
-
-batch 모드의 block.rs를 더 읽었습니다.
-
-```rust
-} else if &*block.action == "block_rq_complete" {
-    // Flush(W size=0)는 두 번 로깅되므로 complete 단계에서 스킵
-    if block.io_type.starts_with('W') && block.size == 0 {
-        continue;
-    }
-    // ...
-}
-```
 
 ftrace의 Flush 처리 특성:
 - `block_rq_issue`: `FF`(Flush Flag), size=0
@@ -145,55 +148,102 @@ ftrace의 Flush 처리 특성:
 
 `FF`는 issue에서 정규화하면 "other"가 되고, `WS`는 complete에서 "write"가 됨. 키가 다르니 매칭 안 되고 → orphan complete로 들어가 QD `-1` → 정상 write 매칭이 망가짐.
 
-또 ftrace 자체가 같은 Flush complete를 두 번 찍는 케이스도 있어 더 복잡. **complete 단계에서 (W && size==0)이면 스킵**이 가장 안전한 처리.
+또 ftrace 자체가 같은 Flush complete를 두 번 찍는 케이스도 있어 더 복잡. **complete 단계에서 (W && size==0)이면 스킵**이 가장 안전한 처리 — batch 모드가 그렇게 처리합니다.
 
-수정:
-```rust
-"block_rq_complete" => {
+<BeforeAfterSlider
+  client:visible
+  mode="split"
+  height={280}
+  caption="Flush complete가 WS/size=0으로 위장해 들어와 정상 write 매칭을 망침. complete 진입 직후 (W && size=0)이면 스킵."
+  before={{
+    title: "before — 일반 complete처럼 처리 (버그)",
+    language: "rust",
+    code: `"block_rq_complete" => {
     block.continuous = false;
+
+    let key = (block.sector, io_op);
+    if let Some(issue) = self.pending_block.remove(&key) {
+        // ... DtoC 계산
+    } else {
+        // ✗ Flush의 WS가 여기로 → orphan으로 QD -1
+        self.block_current_qd =
+            self.block_current_qd.saturating_sub(1);
+    }
+}`,
+  }}
+  after={{
+    title: "after — Flush 스킵 (수정)",
+    language: "rust",
+    highlight: [[3, 6]],
+    code: `"block_rq_complete" => {
+    block.continuous = false;
+
+    // ✓ Flush(W size=0)은 같은 이벤트가 두 번 로깅되므로 complete 단계에서 스킵
     if block.io_type.starts_with('W') && block.size == 0 {
         return vec![];
     }
-    // ... 정상 처리
-}
-```
+
+    let key = (block.sector, io_op);
+    if let Some(issue) = self.pending_block.remove(&key) {
+        // ... DtoC 계산
+    }
+}`,
+  }}
+/>
 
 이제 batch 모드 결과와 거의 일치하기 시작.
 
 ## 4차 의심 — UFS/Block QD 공유
 
-마지막 한 끗. 같은 `BottomHalfState`에 `current_qd: u32` 하나만 있어서, **UFS/Block 두 트레이스가 섞여 있는 ftrace**에서 한 타입의 send가 다른 타입의 QD를 올렸다 내렸다 합니다.
+마지막 한 끗. 같은 `BottomHalfState`에 `current_qd: u32` 하나만 있어서, **UFS/Block 두 트레이스가 섞여 있는 ftrace**에서 한 타입의 send가 다른 타입의 QD를 올렸다 내렸다 합니다. UFS-only / Block-only 로그에선 안 드러나지만, `--log-type both`로 동시 수집하면 차트가 어이없는 모양이 됨.
 
-```rust
-pub struct BottomHalfState {
-    pub current_qd: u32,                    // 🚨 UFS/Block이 공유
-    pub last_complete_time: Option<f64>,    // 🚨 공유
-    // ...
-}
-```
-
-UFS-only / Block-only 로그에선 안 드러나지만, `--log-type both`로 동시 수집하면 차트가 어이없는 모양이 됨.
-
-수정 — 타입별로 상태 분리:
-```rust
-pub struct BottomHalfState {
-    // UFS 상태
+<BeforeAfterSlider
+  client:visible
+  mode="split"
+  height={360}
+  caption="QD/CtoC/CtoD 상태가 한 필드에 모이면 두 트레이스가 섞일 때 서로의 큐를 오염. 타입별 prefix로 분리."
+  before={{
+    title: "before — 단일 상태 공유 (버그)",
+    language: "rust",
+    highlight: [[3, 5]],
+    code: `pub struct BottomHalfState {
+    // ✗ UFS/Block이 같은 필드를 공유 → 한 타입이 다른 타입 QD 오염
     pub current_qd: u32,
     pub last_complete_time: Option<f64>,
     pub last_qd_zero_complete_time: Option<f64>,
     pub first_c: bool,
     pub first_complete_time: f64,
 
-    // Block 상태 (UFS와 분리)
+    pub pending_ufs: HashMap<(u32, Box<str>), UFS>,
+    pub pending_block: HashMap<(u64, Box<str>), Block>,
+    // UFSCUSTOM은 별도였음
+}`,
+  }}
+  after={{
+    title: "after — 타입별 prefix로 분리 (수정)",
+    language: "rust",
+    highlight: [[2, 7], [9, 14]],
+    code: `pub struct BottomHalfState {
+    // ✓ UFS 상태
+    pub current_qd: u32,
+    pub last_complete_time: Option<f64>,
+    pub last_qd_zero_complete_time: Option<f64>,
+    pub first_c: bool,
+    pub first_complete_time: f64,
+
+    // ✓ Block 상태 (UFS와 독립)
     pub block_current_qd: u32,
     pub block_last_complete_time: Option<f64>,
     pub block_last_qd_zero_complete_time: Option<f64>,
     pub block_first_c: bool,
     pub block_first_complete_time: f64,
 
-    // ... UFSCUSTOM도 마찬가지
-}
-```
+    pub pending_ufs: HashMap<(u32, Box<str>), UFS>,
+    pub pending_block: HashMap<(u64, Box<str>), Block>,
+    // UFSCUSTOM은 ufscustom_* prefix
+}`,
+  }}
+/>
 
 이제 UFS와 Block이 각자 독립적인 큐 깊이를 추적.
 

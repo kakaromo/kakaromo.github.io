@@ -63,6 +63,66 @@ ftrace에서 한 I/O 요청은 **두 이벤트**로 기록됩니다.
 - **CtoD**는 큐가 0→1로 차오를 때만 — 직전 complete가 큐를 0으로 만든 시각부터 다음 send까지의 idle gap
 - **QD**는 send/complete 모든 이벤트에 그 시점 값 기록 (parquet에 복원 가능)
 
+### 정적 sequence (인쇄/모바일용)
+
+위 인터랙티브 시퀀스의 정적 버전. `prefers-reduced-motion`이거나 인쇄 시 이쪽이 안전.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant E as ftrace 이벤트
+    participant P as pending HMap
+    participant Q as QD
+    participant O as parquet row
+
+    E->>P: send(tag=10,R) t=10
+    Note over P: insert((10,R), 10.0)
+    E->>Q: 0 → 1
+    E->>P: complete(tag=10,R) t=18
+    P-->>O: DtoC = 8 ms
+    E->>Q: 1 → 0
+    E->>P: send(tag=11,W) t=22
+    Note over P: 큐 0 → 1, first_c=true
+    P-->>O: CtoD = 4 ms (idle gap)
+    E->>Q: 0 → 1
+    E->>P: complete(tag=11,W) t=30
+    P-->>O: DtoC = 8 ms
+    P-->>O: CtoC = 8 ms (사이클 시작 기준)
+    E->>Q: 1 → 0
+```
+
+### 4가지 latency가 측정하는 시간 구간
+
+같은 시나리오를 **시간축 위 막대**로 보면 어느 latency가 어디를 재는지 한눈에 들어옵니다.
+
+```mermaid
+gantt
+    title 두 요청의 4가지 latency 측정 구간 (단위: ms)
+    dateFormat X
+    axisFormat %s
+
+    section 요청 1 (tag=10, R)
+    DtoC (send → complete)         :done, dtoc1, 10, 18
+    section 요청 2 (tag=11, W)
+    CtoD (이전 complete → 다음 send) :crit, ctod1, 18, 22
+    DtoC (send → complete)         :done, dtoc2, 22, 30
+    section 사이클별
+    CtoC (사이클 시작 → complete)   :active, ctoc1, 22, 30
+    section QD
+    QD = 1 (요청 1 진행)            :qd1, 10, 18
+    QD = 0 (idle)                   :qd0, 18, 22
+    QD = 1 (요청 2 진행)            :qd2, 22, 30
+```
+
+읽는 법:
+
+- **DtoC** (녹색) — 한 요청의 send에서 그 요청의 complete까지. 가장 직관적인 "응답 시간"
+- **CtoD** (적색) — 큐가 비었다(QD 0) 다시 차올라(QD 1) 가는 idle gap. 디바이스가 놀고 있던 시간
+- **CtoC** (파랑) — 직전 complete → 현재 complete. 단, **사이클 시작이면 직전 complete 대신 사이클 시작 send부터** (그래야 throughput 측정에서 idle gap 제외)
+- **QD** — 한 시점의 진행 중 요청 수. 차트에선 step function으로 표현
+
+CtoC와 DtoC가 두 번째 요청에서 같은 8ms인 게 우연이 아니라 **`first_c` 플래그** 때문 — 사이클 시작 send(t=22)부터 잡았기 때문에 자동으로 DtoC와 같은 구간이 됨.
+
 ## DtoC — 가장 직관적인 latency
 
 ```rust
