@@ -104,30 +104,82 @@ mmap은:
 
 ## chunk 경계 — 라인 보호
 
-청크 경계가 라인 중간에 떨어지면 파싱이 깨지므로, 다음 `\n`까지 boundary를 늘려 잡습니다. 바이트 레이아웃으로 보면:
+청크 경계가 라인 중간에 떨어지면 파싱이 깨지므로, 다음 `\n`까지 boundary를 늘려 잡습니다. 64MB 부근에서 한 라인이 어떻게 처리되는지 보면:
 
-```text
-파일 바이트 ────────────────────────────────────────────→
- 0                  64MB              128MB           ...
- │                   │                  │
- ▼                   ▼                  ▼
- ┌──────── line ────┐\n┌───── line ────────┐\n┌── line ─────┐\n┌─ line ─┐\n
- │                  │  │                   │  │             │  │        │
- └──────────────────┘  └───────────────────┘  └─────────────┘  └────────┘
- ↑                                       ↑                          ↑
- chunk 0 시작                            cut 지점 (64MB+δ)          최종 EOF
-                                         │
-                              naive cut (64MB) → 라인 중간 ✗
-                                         ↓
-                              \n 만나면 +1 → boundary = 64MB + δ ✓
-                              chunk 0 = [0, 64MB+δ)
-                              chunk 1 = [64MB+δ, 128MB+δ')
-                              ...
-```
+<figure style="margin: 1.5rem 0;">
+<svg viewBox="0 0 720 220" role="img" aria-label="64MB 목표 지점에서 라인 중간이라 다음 \n까지 boundary를 늘려 chunk 0가 64MB+δ에서 끝나고 chunk 1이 같은 지점에서 시작" style="width: 100%; height: auto; font-family: var(--sl-font-mono, monospace); font-size: 12px;">
+  <defs>
+    <marker id="arrow-r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="currentColor" />
+    </marker>
+  </defs>
+
+  {/* 파일 가로 막대 (베이스라인) */}
+  <line x1="20" y1="120" x2="700" y2="120" stroke="var(--sl-color-gray-4)" stroke-width="1" />
+  <text x="20" y="110" fill="var(--sl-color-gray-2)" font-size="10">0</text>
+  <text x="700" y="110" text-anchor="end" fill="var(--sl-color-gray-2)" font-size="10">EOF</text>
+
+  {/* 라인들 (chunk 0 내부) */}
+  <rect x="20"  y="100" width="120" height="40" fill="var(--sl-color-blue-low, #1e3a5f)" stroke="var(--sl-color-blue, #4a9eff)" stroke-width="1" rx="3" />
+  <text x="80" y="124" text-anchor="middle" fill="var(--sl-color-white)" font-size="10">line A</text>
+
+  <rect x="142" y="100" width="100" height="40" fill="var(--sl-color-blue-low, #1e3a5f)" stroke="var(--sl-color-blue, #4a9eff)" stroke-width="1" rx="3" />
+  <text x="192" y="124" text-anchor="middle" fill="var(--sl-color-white)" font-size="10">line B</text>
+
+  <rect x="244" y="100" width="160" height="40" fill="var(--sl-color-blue-low, #1e3a5f)" stroke="var(--sl-color-blue, #4a9eff)" stroke-width="1" rx="3" />
+  <text x="324" y="124" text-anchor="middle" fill="var(--sl-color-white)" font-size="10">line C (64MB 걸침)</text>
+
+  {/* 라인들 (chunk 1 시작) */}
+  <rect x="406" y="100" width="120" height="40" fill="var(--sl-color-purple-low, #3a2a5f)" stroke="var(--sl-color-purple, #b58aff)" stroke-width="1" rx="3" />
+  <text x="466" y="124" text-anchor="middle" fill="var(--sl-color-white)" font-size="10">line D</text>
+
+  <rect x="528" y="100" width="100" height="40" fill="var(--sl-color-purple-low, #3a2a5f)" stroke="var(--sl-color-purple, #b58aff)" stroke-width="1" rx="3" />
+  <text x="578" y="124" text-anchor="middle" fill="var(--sl-color-white)" font-size="10">line E</text>
+
+  <rect x="630" y="100" width="60" height="40" fill="var(--sl-color-purple-low, #3a2a5f)" stroke="var(--sl-color-purple, #b58aff)" stroke-width="1" rx="3" />
+  <text x="660" y="124" text-anchor="middle" fill="var(--sl-color-white)" font-size="10">...</text>
+
+  {/* \n 마커들 (라인 끝) */}
+  <text x="141" y="155" text-anchor="middle" fill="var(--sl-color-gray-3)" font-size="9">\n</text>
+  <text x="243" y="155" text-anchor="middle" fill="var(--sl-color-gray-3)" font-size="9">\n</text>
+  <text x="405" y="155" text-anchor="middle" fill="var(--sl-color-gray-3)" font-size="9">\n</text>
+  <text x="527" y="155" text-anchor="middle" fill="var(--sl-color-gray-3)" font-size="9">\n</text>
+  <text x="629" y="155" text-anchor="middle" fill="var(--sl-color-gray-3)" font-size="9">\n</text>
+
+  {/* naive cut 마커 (64MB) — 라인 C 중간 */}
+  <line x1="324" y1="60" x2="324" y2="100" stroke="#ff6b6b" stroke-width="2" stroke-dasharray="3 3" />
+  <text x="324" y="50" text-anchor="middle" fill="#ff6b6b" font-size="11" font-weight="700">✗ naive cut (64MB)</text>
+  <text x="324" y="35" text-anchor="middle" fill="#ff6b6b" font-size="10">라인 중간 → 파싱 깨짐</text>
+
+  {/* adjusted boundary — \n 다음 (line C 끝 + 1) */}
+  <line x1="406" y1="60" x2="406" y2="140" stroke="#51cf66" stroke-width="2.5" />
+  <polygon points="406,140 401,148 411,148" fill="#51cf66" />
+  <text x="406" y="50" text-anchor="middle" fill="#51cf66" font-size="11" font-weight="700">✓ boundary = 64MB + δ</text>
+  <text x="406" y="35" text-anchor="middle" fill="#51cf66" font-size="10">다음 \n 만난 다음 바이트</text>
+
+  {/* 화살표 — naive → adjusted */}
+  <path d="M 330 70 Q 365 70 395 70" stroke="#ffd43b" stroke-width="1.5" fill="none" marker-end="url(#arrow-r)" style="color: #ffd43b" />
+  <text x="362" y="65" text-anchor="middle" fill="#ffd43b" font-size="10">+δ</text>
+
+  {/* chunk 라벨 */}
+  <text x="232" y="185" text-anchor="middle" fill="var(--sl-color-blue, #4a9eff)" font-size="11" font-weight="700">chunk 0 = [0, 64MB+δ)</text>
+  <text x="548" y="185" text-anchor="middle" fill="var(--sl-color-purple, #b58aff)" font-size="11" font-weight="700">chunk 1 = [64MB+δ, 128MB+δ')</text>
+
+  {/* chunk 영역 표시 (베이스 라인 아래 막대) */}
+  <line x1="20"  y1="170" x2="405" y2="170" stroke="var(--sl-color-blue, #4a9eff)" stroke-width="3" />
+  <line x1="406" y1="170" x2="690" y2="170" stroke="var(--sl-color-purple, #b58aff)" stroke-width="3" />
+
+  {/* 64MB 마커 라벨 */}
+  <text x="324" y="210" text-anchor="middle" fill="var(--sl-color-gray-2)" font-size="10">목표값: 64MB</text>
+</svg>
+<figcaption style="text-align: center; color: var(--sl-color-gray-2); font-size: 0.8125rem;">
+naive cut(64MB)이 line C 중간이면 다음 \n까지 boundary를 늘려 chunk 0를 64MB+δ에서 끝냄. chunk 1은 같은 지점에서 시작 — 라인이 두 청크에 걸치지 않음.
+</figcaption>
+</figure>
 
 핵심:
 
-- **64MB는 목표값**, 실제 boundary는 그 이후 첫 `\n` 다음 바이트
+- **64MB는 목표값**, 실제 boundary는 그 이후 첫 `\n` 다음 바이트 (그림의 +δ)
 - **각 청크는 완전한 라인 N개로 끝남** — 라인이 절대 두 청크에 걸치지 않음
 - **다음 청크 시작도 자동으로 라인 시작점** — 이전 청크가 \n 다음에서 끝나므로
 
