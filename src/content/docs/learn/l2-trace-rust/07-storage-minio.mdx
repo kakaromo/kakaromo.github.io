@@ -150,12 +150,41 @@ trait이 `Range<u64>` (Rust 표준, end exclusive)를 주는데 rust-s3는 inclu
 
 가장 흥미로운 부분. parquet footer 구조:
 
-```
-[ ... row groups ... ][ metadata (encoded, 길이 가변) ][ length: 4 bytes ][ "PAR1": 4 bytes ]
-                                                       ↑ 여기에 metadata 길이가 있음
+```text
+파일 끝 →                                   끝에서 8 바이트
+                                            ┌──────────┬──────┐
+[ ... row groups (대부분) ... ][ metadata ][  length   │ PAR1 │
+                               ↑           │  u32_le   │ magic│
+                               footer 시작 │  (4 byte) │ (4)  │
+                                            └──────────┴──────┘
 ```
 
-length를 읽기 전엔 metadata가 어디부터 시작하는지 모릅니다. 그래서 두 단계:
+`length`를 읽기 전엔 metadata가 어디부터 시작하는지 모릅니다 (가변 길이). 그래서 두 단계:
+
+```text
+[Step 1] tail 64KB range-GET
+                                           ┌────── tail 64 KB ──────┐
+                                           ▼                        ▼
+[ ... row groups (5GB) ............ ][ metadata ][ len ][ PAR1 ]
+                                           │                  │
+                                           └─ 보통 여기 모두 들어옴 ┘
+                                           ↓
+                                      len = u32_le(tail[-8..-4])
+
+[Step 2A] footer가 64KB 안 → 그대로 슬라이스 (RTT 1번)
+                                           ┌── slice ──┐
+                                           [ metadata ][ len ][ PAR1 ]
+                                           ↑ 파싱 OK
+
+[Step 2B] footer > 64KB (큰 schema) → 한 번 더 range-GET (RTT 2번)
+                                  ┌─ 2nd GET ─┐    ┌── tail (이미 받음) ──┐
+                                  [ metadata ...]  [ ... metadata ][ len ][ PAR1 ]
+                                                ↑ 합쳐서 파싱 OK
+```
+
+**Step 1 한 번만으로 거의 모든 parquet의 footer를 회수**합니다. ftrace parquet 같이 컬럼 수십 개 수준이면 metadata가 수 KB라 64KB 안에 여유롭게 들어옴. Step 2B는 컬럼이 수백~수천개인 wide schema에서만 발동.
+
+이제 코드:
 
 ```rust
 fn get_metadata<'a>(&'a mut self, options: ...) -> BoxFuture<'a, ParquetResult<Arc<ParquetMetaData>>> {

@@ -34,6 +34,38 @@ parquet (MinIO)
 
 각 단계가 별도 함수라 단위 테스트가 쉬움.
 
+## 시각화 — 1억 행을 한 번 도는 동안 6갈래로 분기
+
+이 패턴이 stats RPC 속도의 핵심. 같은 `for i in 0..n` 안에서 누적 변수 6종이 **갈라지지 않고 동시에** 채워집니다.
+
+```mermaid
+flowchart LR
+    BATCH["RecordBatch<br/>(예: 1억 행)<br/>time · action · cmd ·<br/>lba · size · qd · dtoc · ctoc · ctod · continuous"]
+
+    BATCH --> LOOP["단일 for i in 0..n<br/>(O(n), 한 번만)"]
+
+    LOOP -- "action == request" --> A1["send_count += 1"]
+    LOOP -- "action == target_action" --> A2["continuous_count<br/>(parquet col 우선)"]
+    LOOP -- "action == target_action" --> A3["aligned_count<br/>(lba % 8 = 0,<br/>size % 8 = 0)"]
+    LOOP -- "action == complete" --> A4["read/write/discard<br/>_total_bytes<br/>(classify_cmd)"]
+    LOOP -- "always" --> A5["by_cmd<br/>HashMap&lt;cmd, Vec&lt;idx&gt;&gt;<br/>(cmd_stats용)"]
+    LOOP -- "complete or request" --> A6["dtoc_vals · ctoc_vals<br/>ctod_vals · qd_vals<br/>(latency용)"]
+
+    A6 --> SORT["별도 패스:<br/>sort + percentile<br/>(O(n log n))"]
+    A5 --> CMD["per-cmd 집계<br/>(by_cmd 순회)"]
+
+    A1 --> RESP["StatsPayload"]
+    A2 --> RESP
+    A3 --> RESP
+    A4 --> RESP
+    SORT --> RESP
+    CMD --> RESP
+```
+
+만약 통계 종류별로 loop을 따로 돌리면 **`O(k · n)`** (k = 통계 수). 1억 행이면 단일 scan 1초 vs 6번 scan 6초 차이. 또 모두가 같은 캐시 라인을 반복 hit하므로 CPU L1/L2 활용도까지 좋아집니다.
+
+percentile만 별도 패스인 이유는 정확한 quantile에 정렬이 불가피하기 때문 — 이게 stats RPC의 가장 큰 단일 비용 (약 30~50%). DuckDB로 옮길 때 `approx_quantile`로 줄일 수 있는 부분.
+
 ## 단일 scan 패턴 — 컬럼 downcast 후 한 번만
 
 ```rust
