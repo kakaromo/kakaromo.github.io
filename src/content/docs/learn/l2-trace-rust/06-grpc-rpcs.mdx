@@ -96,30 +96,46 @@ async fn process_logs(
 2. **job_id 발급** — `GetJobStatus`로 폴링 가능
 3. **mpsc channel** — 내부 task가 progress를 push, gRPC가 pull
 
-내부 단계:
+내부 단계는 6개의 step 함수로 분리돼 있음 (Phase A 리팩토링):
 
 ```rust
 async fn process_logs_internal(...) {
-    send_progress(DOWNLOADING, 0, "downloading log...").await;
-    let local_log = download_from_minio(...).await?;
+    let result: Result<(usize, Vec<String>), String> = async {
+        // 1단계: 다운로드 + (필요 시) 압축 해제
+        let (temp_log_path, actual_log_path) =
+            self.step_download_and_extract(&job_id, &request, &tx, &home_dir).await?;
 
-    send_progress(PARSING, 30, "parsing log file...").await;
-    let traces = parse_log_file_high_perf(&local_log)?;  // ← parsers/
+        // 2단계: 파싱 + 필터 + latency
+        let (ufs_traces, block_traces, ufscustom_traces, total_records) =
+            self.step_parse_filter_latency(&job_id, &request, &tx, &actual_log_path).await?;
 
-    send_progress(CONVERTING, 60, "computing latency...").await;
-    let processed = ufs_bottom_half_latency_process(traces.0);  // ← processors/
+        // 3단계: Parquet 저장
+        let temp_parquet_path = Self::step_save_parquet(...).await?;
 
-    send_progress(UPLOADING, 80, "uploading parquet...").await;
-    save_ufs_to_parquet(&processed, &temp_path, 50_000)?;       // ← output/
-    upload_to_minio(...).await?;
+        // 4단계: MinIO 업로드
+        let uploaded_files = self.step_upload(...).await?;
 
-    send_progress(COMPLETED, 100, "done").await;
+        // 정리
+        let _ = std::fs::remove_file(&temp_log_path);
+        Ok((total_records, uploaded_files))
+    }.await;
+
+    match result {
+        Ok((total_records, uploaded_files)) => {
+            self.finish_success(&job_id, &tx, total_records, uploaded_files).await;
+        }
+        Err(e) => self.finish_failure(&job_id, &tx, e).await,
+    }
 }
 ```
 
-이 흐름이 `ConvertToCsv`도 거의 동일. parquet → Arrow → CSV로 후반만 다름.
+각 step 함수가 자기 단계의 진행률 송신 (`send_progress` 헬퍼) + 실패 시 stack trace 가 어디서 끊겼는지 직접 드러남. 옛날엔 한 함수 396줄 인라인이라 어디서 실패했는지 추적 어려웠음.
 
-## GetChartData — Arrow IPC unary
+`ConvertToCsv` 도 비슷한 구조. parquet → CSV 부분만 다른 step 함수.
+
+## GetChartData — Arrow IPC unary + 3-way dispatch
+
+핸들러는 캐시 hit 검사 + dispatch 호출 + proto 변환만 (Phase A 리팩토링 결과):
 
 ```rust
 async fn get_chart_data(
@@ -128,42 +144,65 @@ async fn get_chart_data(
 ) -> Result<Response<GetChartDataResponse>, Status> {
     let req = request.into_inner();
 
-    // sync vs async reader 분기 (TRACE_PARQUET_READER 환경변수)
-    let payload = if is_async_reader_enabled() {
-        let reader = MinioParquetReader::new(config, req.parquet_path).await?;
-        match req.trace_type.as_str() {
-            "ufs"       => build_ufs_chart_payload_async(reader, ...).await?,
-            "block"     => build_block_chart_payload_async(reader, ...).await?,
-            "ufscustom" => build_ufscustom_chart_payload_async(reader, ...).await?,
-            _ => return Err(Status::invalid_argument("unknown trace_type")),
-        }
-    } else {
-        // sync — /tmp 다운로드 후 spawn_blocking으로 CPU-bound 작업 격리
-        download_parquet_to_temp(...).await?;
-        tokio::task::spawn_blocking(move || build_ufs_chart_payload(...)).await?
-    };
+    // 캐시 hit 시 즉시 반환 (parquet fingerprint + 요청 파라미터로 키)
+    let cache_key = ...;
+    if let Some(cached) = self.caches.chart.get(&cache_key).await {
+        return Ok(Response::new(cached.into()));
+    }
 
+    // dispatch — 3-way reader 분기 (duckdb / async / sync) 한 곳에서
+    let payload = dispatch::build_chart_payload(
+        req.trace_type, &req.source_bucket, &req.parquet_path,
+        time_range, target_points, filter.as_ref(), &req.actions,
+    ).await?;
+
+    // proto 변환
     Ok(Response::new(GetChartDataResponse {
         arrow_ipc: payload.arrow_ipc,
         total_events: payload.total_events,
         sampled_events: payload.sampled_events,
-        // latency 요약 (min/max/avg/median/p99)
-        dtoc: Some(payload.dtoc.into_proto()),
-        ctod: Some(payload.ctod.into_proto()),
-        ctoc: Some(payload.ctoc.into_proto()),
-        qd:   Some(payload.qd.into_proto()),
+        dtoc: Some(proto_stats(&payload.dtoc)),
+        ctod: Some(proto_stats(&payload.ctod)),
+        ctoc: Some(proto_stats(&payload.ctoc)),
+        qd:   Some(proto_stats(&payload.qd)),
         schema_version: payload.schema_version.to_string(),
     }))
 }
 ```
 
+`grpc::dispatch::build_chart_payload` 가 어떤 reader path 갈지 결정:
+
+```rust
+enum ReaderChoice { Duckdb, Async, Sync }
+
+fn select_reader() -> ReaderChoice {
+    #[cfg(feature = "stats-duckdb")]
+    if duckdb_pool::is_duckdb_engine_enabled() { return ReaderChoice::Duckdb; }
+    if std::env::var("TRACE_PARQUET_READER").as_deref() == Ok("async") {
+        return ReaderChoice::Async;
+    }
+    ReaderChoice::Sync
+}
+
+pub async fn build_chart_payload(...) -> Result<ChartPayload, ...> {
+    match select_reader() {
+        ReaderChoice::Duckdb => match trace_type { /* ufs/block/ufscustom */ },
+        ReaderChoice::Async  => match trace_type { /* ... */ },
+        ReaderChoice::Sync   => spawn_blocking(... build_chart_payload).await?,
+    }
+}
+```
+
 핵심:
 
-- **trace_type 디스패치** — proto의 `trace_type` 문자열로 ufs/block/ufscustom 분기
-- **sync는 spawn_blocking** — `parquet::ArrowReader`가 동기 + CPU-bound. tokio worker를 막으면 다른 RPC가 starve. 별도 blocking pool로 옮김
-- **async는 그대로 await** — `MinioParquetReader`가 자체 async, range-GET이 I/O bound라 worker 점유 시간 짧음
+- **3개 path 분기 한 곳** — `#[cfg(feature)]` 가 dispatch 함수 안에 갇혀 핸들러는 깔끔
+- **sync는 spawn_blocking** — `parquet::ArrowReader`가 동기 + CPU-bound. tokio worker 막으면 다른 RPC starve
+- **async는 그대로 await** — `MinioParquetReader`가 자체 async
+- **duckdb는 spawn_blocking + r2d2 pool** — DuckDB connection 은 sync API
 
-응답 페이로드는 [l2-trace의 03-chart-arrow-ipc](/learn/l2-trace/03-chart-arrow-ipc/)에서 자세히.
+`GetTraceStats` 도 동일 패턴 (`dispatch::build_stats_payload`).
+
+응답 페이로드는 [l2-trace의 03-chart-arrow-ipc](/learn/l2-trace/03-chart-arrow-ipc/) 와 [8. Stats pipeline](/learn/l2-trace-rust/08-stats-pipeline/) 에서 자세히.
 
 ## StartRealtimeParsing — server-streaming + Cancel
 

@@ -1,0 +1,210 @@
+---
+title: 9. DuckDB tuning — 1분+ → 17s 까지의 단계와 폐기한 카드들
+sidebar:
+  order: 9
+---
+
+## 30초 요약
+
+회사 환경 1억 row UFS parquet 기준, stats RPC 응답 시간 변화:
+
+| 단계 | 시간 | 핵심 변경 |
+|---|---|---|
+| sync (legacy) | 60s+ | parquet 다운로드 + 단일 스레드 scan/sort |
+| async (range-GET) | 60s+ | row group skip 만 빠름, Rust 처리는 동급 |
+| duckdb 도입 직후 | 60s+ | percentile 별 quantile_disc 호출 6회 = 정렬 6회 |
+| histogram MAP 통합 | 50s | size_counts 별도 SQL 제거 |
+| histogram 컬럼 통합 | 45s | cmd_stats SQL 안에 histogram 흡수 |
+| **quantile_disc LIST form** | 40s | 정렬 1회로 6 percentile — `MetricBuilder` |
+| parquet (action, cmd, time) 정렬 + ZSTD 3 | 38s | row group min/max statistics 활용 |
+| L5 cache 크기/TTL 확대 | 38s | 동시 사용자 hit 율 ↑ (cold 시간 변화 없음) |
+| **enable_object_cache + threads SET** | 23s | Config 무시되던 케이스, connection 단위 SET |
+| **TEMP TABLE 머티리얼라이즈** | **17s** | 두 SQL 이 메모리 위에서 동작 |
+
+이 페이지는 위 단계 각각의 측정 + 폐기한 카드들 (GROUPING SETS, reservoir_quantile) 의 회고입니다.
+
+## 측정 도구
+
+`TRACE_STATS_TIMING=1` 환경변수로 단계별 elapsed 출력:
+
+```
+[stats-timing] pool acquire: 0.00s
+[stats-timing] base materialize/view create: 9.21s
+[stats-timing] overview SQL (full scan #1): 2.34s (rows=100000000)
+[stats-timing] cmd_stats SQL (full scan #2): 2.18s (rows=8)
+[stats-timing] TOTAL: 17.04s
+```
+
+chart 도 `TRACE_CHART_TIMING=1`. 측정 코드는 항상 빌드되지만 환경변수 없으면 Instant::elapsed 한 번 + bool branch 만 (zero overhead).
+
+## 1단계: percentile LIST form (`quantile_disc`)
+
+문제: metric 당 percentile 6개 (p50/p99/p999/p9999/p99999/p999999) 를 별도로 호출하면 DuckDB 가 매 호출마다 정렬:
+
+```sql
+-- 잘못된 형태 (느림): 정렬 6회
+quantile_disc(dtoc, 0.5),
+quantile_disc(dtoc, 0.99),
+quantile_disc(dtoc, 0.999),
+...
+```
+
+해결: LIST form 으로 한 번에 — DuckDB 가 정렬 1회로 6 결과를 동시에:
+
+```sql
+COALESCE(quantile_disc(dtoc, [0.5, 0.99, 0.999, 0.9999, 0.99999, 0.999999]),
+         [0,0,0,0,0,0])
+-- 결과 LIST 를 [1], [2], ... 로 인덱싱해 컬럼 분리
+```
+
+`MetricBuilder` 가 이 패턴을 캡슐화. 4 metric × 정렬 6 → 4 metric × 정렬 1 = **정렬 횟수 6배 절감**.
+
+## 2단계: histogram + size MAP 통합
+
+기존엔 풀스캔 3회: overview + cmd_stats + (histograms + size_counts 각자):
+
+```rust
+let overview = compute_overview(&conn)?;
+let cmd_stats = build_cmd_stats(&conn)?;
+let histograms = build_histograms(&conn)?;     // ← 별도 풀스캔
+let size_counts = build_cmd_size_counts(&conn)?; // ← 별도 풀스캔
+```
+
+해결: histogram 은 cmd 별이라 cmd_stats SQL 의 GROUP BY cmd 안에 column 으로 추가. size_counts 는 `histogram(size) FILTER (WHERE action='complete')` MAP aggregate.
+
+```sql
+SELECT cmd,
+       count(*) AS cnt,
+       <metric cols ...>,
+       <count(*) FILTER (WHERE action='complete' AND dtoc > {lo} AND dtoc <= {hi}) AS h_dtoc_0, ...>,
+       histogram(size) FILTER (WHERE action='complete_rsp') AS size_map
+FROM base GROUP BY cmd
+```
+
+풀스캔 4회 → **2회**.
+
+## 3단계: parquet 정렬 + row group 200K + ZSTD 3
+
+`save_to_parquet` 에서 (action, cmd, time) 으로 정렬해 저장:
+
+- action 값별 row group 클러스터링 → DuckDB 가 row group min/max statistics 로 일부 prune
+- row_group_size 200K → 메타데이터 오버헤드/granularity 균형
+- ZSTD level 3 → snappy 보다 30% 작음, 압축 해제 비용 비슷
+
+stats SQL 의 FILTER 가 column expression 이라 row group skip 효과는 크지 않지만 (FILTER 는 row-level), **chunk fetch 양 자체는 줄어듦** (압축률 ↑). 1-2s 절감.
+
+## 4단계: L5 cache 크기/TTL 확대
+
+`output::cache::TraceCacheBundle` (moka) — chart/stats 응답을 parquet fingerprint 키로 캐시. cold 시간엔 무관, **동시 사용자 hit 율** 만 영향. portal 20-30 명 동시 접속 환경에 맞춰:
+
+- chart cache: 16 entries → 64, TTL 5min → 30min
+- stats cache: 16 → 64, TTL 30min
+- size-aware (entry 가 큰 chart payload 가 메모리 차지하면 LRU eviction)
+
+## 5단계: enable_object_cache + threads 명시 SET
+
+**가장 큰 단일 절감 (43s → 23s, -47%)**.
+
+DuckDB 의 object_cache 는 같은 row group 의 컬럼 chunk 를 메모리 캐시. base view 위에서 두 SQL (overview + cmd_stats) 이 풀스캔하면 두 번째는 캐시 hit 으로 압축 해제 비용 0.
+
+문제: `Config::default().enable_object_cache(true)` 가 **회사 환경에서 안 박힘** — `duckdb_settings()` 결과 false. r2d2 pool + in-memory db 조합에서 발생하는 케이스로 추정. threads 도 동일 패턴.
+
+해결: `SecretCustomizer.on_acquire` 에서 connection 단위로 명시 SET:
+
+```rust
+LOAD httpfs;
+LOAD parquet;
+SET enable_object_cache=true;
+SET threads={N};
+CREATE OR REPLACE SECRET trace_minio (...);
+```
+
+`duckdb_settings()` 로 검증해 둘 다 true/N 이면 OK. 없으면 두 SQL 둘 다 풀스캔이라 시간 정확히 2배.
+
+## 6단계: TEMP TABLE 머티리얼라이즈
+
+**두 번째로 큰 절감 (23s → 17s, -26%)**.
+
+object_cache 가 chunk 캐시는 해주지만 **압축 해제** 는 매번. TEMP TABLE 로 메모리 적재하면 두 SQL 모두 메모리 위 columnar 스캔 → 압축 해제 0.
+
+```rust
+let setup_sql = if materialize {
+    format!("DROP TABLE IF EXISTS base; CREATE TEMP TABLE base AS {base_sql};")
+} else {
+    format!("DROP VIEW IF EXISTS base; CREATE TEMP VIEW base AS {base_sql};")
+};
+```
+
+비용:
+- 메모리 ~10GB (1억 row × 11 컬럼, DuckDB columnar 압축)
+- 첫 풀스캔 = 머티리얼라이즈 (9-13s)
+
+대신 그 위 두 SQL 이 각 2-3s. 합계 17s.
+
+`TRACE_STATS_DUCKDB_MATERIALIZE=0` 으로 OFF 가능 (작은 RAM 환경 폴백).
+
+## 폐기한 카드 1: GROUPING SETS
+
+**시도**: cmd_stats SQL 에 `GROUP BY GROUPING SETS ((cmd), ())` 적용 — per-cmd N 행 + grand total 1 행을 단일 SQL 로. overview SQL 자체를 제거해 풀스캔 2 → 1.
+
+**결과**: 17s → **51s (3배 느려짐)**. 즉시 revert.
+
+원인: DuckDB 가 grouping set 별로 hash partition 분리. quantile_disc LIST form 정렬이 set 별로 두 번 (per-cmd + grand total). 풀스캔 한 번 줄어든 것보다 정렬 두 번 비용이 더 큼.
+
+교훈: **풀스캔 회피 vs 정렬 회피** — 메모리 위 풀스캔 (2-3s) 보다 1억 row 정렬 (수 초) 이 더 큰 비용. 머티리얼라이즈 후엔 풀스캔 합치는 게 의미 없음.
+
+## 폐기한 카드 2: reservoir_quantile 하이브리드
+
+**시도**: 자주 보는 p50/p99/p999 는 `reservoir_quantile` (sample 기반, 정렬 1만 row), 극단치 p9999/p99999/p999999 는 `quantile_disc` (정확). `MetricBuilder` 에 `fast_percentile_count` 필드 추가.
+
+**결과**: 17s → **38s (사실 chart 측 측정. stats 측은 더 빨라짐)**, 그러나 회사 측 응답 수치 차이 발생 → revert.
+
+reservoir 는 default 1024 sample 이라 1만~5만으로 키워도 1억 row 의 p999 에서 1% 미만 오차 — 통계적으로는 OK. 그러나 회사 검증 환경이 sync/async path 와 byte-equal 비교 중이라 어떤 차이도 거부.
+
+교훈: **정확성 vs 속도** — 통계 응답에 합산 회귀 검증이 걸려 있으면 정확도 손실 어떤 것도 허용 안 됨. reservoir 은 sample 시드 차이로도 매 호출마다 결과 변동 → 캐시 hit 검증 어려움.
+
+## 폐기한 카드 3: parquet 컬럼 분리
+
+**가설**: `_ufs.parquet` 한 파일에 모든 컬럼 — stats 가 11개만 읽는데 fetch 단위가 컬럼 단위라 효과 없음. dtoc/ctoc/ctod/qd 만 별도 parquet 으로 저장하면 SQL 마다 필요한 컬럼만.
+
+**결정**: 진행 안 함. 이유:
+
+- parquet 은 이미 column-major + page-level prune 지원 → 컬럼 분리 효과 미미
+- 파일 분리하면 같은 row 정렬 보장 어려움 (JOIN key 필요)
+- read_parquet 의 multi-file scan 오버헤드
+
+대신 base view 컬럼 prune (실제 쓰는 컬럼만 SELECT) 으로 비슷한 효과 — 이미 적용.
+
+## 폐기한 카드 4: chart 의 percentile 제거
+
+**시도 시점**: chart 30s 더 줄이려고 — overview SQL 의 quantile_disc × 4 metric 이 15s. UI hover/tooltip 용 percentile 이라 reservoir 로 대체 또는 응답에서 빼는 거 검토.
+
+**결정**: 사용자가 현 상태 유지 선택. 30s 가 견딜 만하고 응답 형태 변경 비용 큼.
+
+## 측정 시 주의 — cold vs warm
+
+DuckDB object_cache 가 connection 단위. 동일 connection 의 두 번째 호출은 chunk 캐시 hit 으로 빠름:
+
+| 호출 | base materialize | overview | cmd_stats | TOTAL |
+|---|---|---|---|---|
+| 1번째 (cold) | 13s | 3s | 3s | 17s |
+| 2번째 (warm, 같은 file) | `<1s` | 1s | 1s | `<3s` |
+
+L5 cache 가 응답 자체를 hit 하면 0.x s — `TRACE_STATS_TIMING` 출력 자체가 안 뜸 (cache layer 가 SQL 호출 전에 반환).
+
+회사 측 측정 시 cold 만 봐야 의미 있음.
+
+## 안 한 것 — DuckDB 외부 ANALYZE/INDEX
+
+DuckDB 는 RDBMS 가 아니라 OLAP 컬럼 스토어. 옵션 부재:
+
+- `ANALYZE` 로 컬럼 통계 만들기 — parquet 자체에 row group statistics 가 이미 있음
+- `CREATE INDEX` 로 cmd/action 인덱싱 — DuckDB 인덱싱은 zone map 만 지원, hash/btree 없음
+
+대신 parquet 정렬 + row group statistics 가 같은 역할. 이미 적용.
+
+## 다음 — Portable Linux 빌드
+
+회사 사내망에 배포할 때 glibc 호환성 이슈가 있어서 cargo-zigbuild 로 cross-link.
+
+→ [10. Portable Linux build](/learn/l2-trace-rust/10-portable-build/)
