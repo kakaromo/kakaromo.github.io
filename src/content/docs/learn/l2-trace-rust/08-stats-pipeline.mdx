@@ -26,6 +26,8 @@ sidebar:
 pub struct StatsPayload {
     pub total_events: u64,
     pub send_count: u64,
+    // 트레이스 관측 기간 = max(event_time) - min(event_time).
+    // RPC 응답 시간이 아니라 로그가 다룬 시간 범위.
     pub duration_seconds: f64,
     pub continuous_count: u64,
     pub continuous_ratio: f64,
@@ -48,6 +50,10 @@ pub struct StatsPayload {
     pub schema_version: &'static str,
 }
 ```
+
+`duration_seconds` 는 **트레이스 데이터의 관측 기간** — 첫 이벤트와 마지막 이벤트 사이 경과 시간(초).
+RPC 호출에 걸린 시간 (즉 응답 latency) 과 헷갈리기 쉬운데 **무관**합니다. UI 에선 보통
+"관측 기간 X.XXs (이 trace 가 다룬 시간 범위)" 처럼 표시.
 
 응답 자체는 작음 — 수십 KB. 무거운 건 **계산 비용**.
 
