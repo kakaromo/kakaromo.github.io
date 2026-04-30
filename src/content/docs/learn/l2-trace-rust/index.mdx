@@ -97,7 +97,7 @@ trace는 의도적으로 **여러 프로세스로 나누지 않습니다**:
 | 7 | Storage & MinIO — sync vs async reader | 코드 투어 | 12분 |
 | 8 | Stats pipeline — Arrow scan + DuckDB 듀얼 path | 코드 투어 | 15분 |
 | 9 | DuckDB tuning — 1분+ → 17s 최적화 회고 | 사례 | 12분 |
-| 10 | Portable Linux build — zigbuild + rustls | 가이드 | 8분 |
+| 10 | 빌드 스크립트 — 폐쇄망 친화 + rustls | 가이드 | 8분 |
 
 총 약 **130분**. `l2-trace`를 먼저 읽지 않아도 됩니다 (오히려 이 모듈이 더 기초). 다만 ftrace/blktrace 포맷에 익숙하지 않으면 [parquet 스키마](/learn/l2-trace/02-parquet-schema/)를 먼저 보면 좋습니다.
 
@@ -127,6 +127,6 @@ trace 바이너리 의존성 중 핵심:
 - **mmap + rayon 병렬 처리** — chunk 경계 탐색 + 스레드별 독립 파싱
 - **Bottom half latency** — Linux 커널 트레이스에서 send↔complete 매칭으로 4가지 latency 추출
 - **DuckDB OLAP 엔진** — `quantile_disc` LIST form, TEMP TABLE 머티리얼라이즈, object_cache, GROUPING SETS trade-off
-- **cargo-zigbuild** — glibc 버전 명시 cross-link, rustls 로 OpenSSL 의존 제거
+- **rustls 전환** — `rust-s3` 가 OpenSSL 동적 링크 안 함. 폐쇄망 머신 호환성 ↑
 
 이제 [1. Architecture](/learn/l2-trace-rust/01-architecture/)부터 시작합니다.

@@ -1,59 +1,33 @@
 ---
-title: 10. Portable Linux build — cargo-zigbuild + rustls
+title: 10. 빌드 스크립트 — 폐쇄망 친화 + rustls
 sidebar:
   order: 10
 ---
 
 ## 30초 요약
 
-Ubuntu 24.04 빌드 머신에서 만든 바이너리를 회사의 18.04/20.04/22.04 머신에서도 그대로 실행하려면 두 가지를 잡아야:
-
-1. **glibc 버전 호환** — 24.04 의 glibc 2.39 동적 링킹은 18.04 의 2.27 에서 실행 불가 (`GLIBC_2.32 not found`)
-2. **OpenSSL 의존 제거** — `rust-s3` 의 default `native-tls` 는 시스템 libssl 동적 링크. 버전/존재 여부 환경마다 다름
-
-해결:
-- **glibc**: `cargo-zigbuild` + `--target x86_64-unknown-linux-gnu.2.27` 로 cross-link
-- **OpenSSL**: `rust-s3` 를 `tokio-rustls-tls` feature 로 전환 → libssl 의존 0
-
-빌드 스크립트 `scripts/build-linux-portable.sh` 한 번 호출:
+trace 빌드 스크립트 `scripts/build.sh` 는 **외부 망 의존 없이** 호스트의 system rustc + linker 만으로 빌드하도록 만들어져 있습니다. 회사 사내망에서도 그대로 동작.
 
 ```bash
-./scripts/build-linux-portable.sh stats-duckdb
+./scripts/build.sh stats-duckdb
 ```
 
-결과: `target/x86_64-unknown-linux-gnu/release/trace` — 18.04 ~ 24.04 모두 실행 가능.
+결과: `target/release/trace`. 빌드 머신과 같은 OS/배포판/glibc 머신에 그대로 배포.
 
-## 왜 이게 문제인가
+추가 적용된 호환성 카드:
+- **rustls 전환** — `rust-s3` 가 OpenSSL(libssl) 동적 링크 안 함 → 사내 머신마다 다른 libssl 버전과 무관
+- **DuckDB bundled** — C++ 정적 링크라 `libduckdb.so` 같은 외부 의존 0
 
-리눅스 바이너리의 호환성은 **빌드 시점 glibc 버전 ≤ 실행 시점 glibc 버전** 일 때만 성립. forward-compatible (옛 → 새) 만 지원되고 backward 는 안 됨.
+## 왜 cross-compile 안 쓰나
 
-| Ubuntu | glibc |
-|---|---|
-| 18.04 | 2.27 |
-| 20.04 | 2.31 |
-| 22.04 | 2.35 |
-| 24.04 | 2.39 |
+Ubuntu 24.04 빌드 머신 → 18.04 target 같은 cross-compile 은 `cargo-zigbuild` + `zig` 가 표준이지만:
 
-24.04 에서 `cargo build --release` → glibc 2.39 동적 링크 → 18.04 에서 실행 시:
+- `cargo install cargo-zigbuild` → crates.io 접근 필요
+- `pip install ziglang` 또는 zig 바이너리 다운로드 → 외부 네트워크 필요
 
-```
-./trace: /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.32' not found
-```
+폐쇄망 빌드 머신에선 둘 다 **불가능**. 그래서 표준 `cargo build` 로 단순화하고, 호환성은 "**같은 OS 버전 머신에서 빌드해서 같은 OS 머신에 배포**" 로 풀기로 결정.
 
-OpenSSL 도 마찬가지 패턴. `libssl.so.3` (24.04) 는 `libssl.so.1.1` (18.04) 환경에서 안 보임.
-
-## 후보 3가지 비교
-
-| 방법 | 장점 | 단점 |
-|---|---|---|
-| musl static | glibc 의존 0, 어디서든 동작 | DuckDB bundled C++ 빌드 실패 가능 (libstdc++ static link 이슈) |
-| Docker 18.04 빌드 | 가장 단순, 실증된 호환 | DuckDB 1.4 가 C++17 필요 — 18.04 gcc 7.5 부족, gcc 9 PPA 추가 필요 |
-| **cargo-zigbuild** | 24.04 환경 그대로 + glibc 버전 명시 | zig 설치 필요 (한 번만) |
-
-zigbuild 를 선택한 이유:
-- 한 명령으로 cross-link
-- DuckDB bundled C++ 도 zig 의 clang 으로 잘 빌드 (musl 보다 안정)
-- glibc 버전을 target triple 에 명시 (`x86_64-unknown-linux-gnu.2.27`)
+배포 OS 가 여러 종 이라면 빌드 머신을 가장 옛 버전 (예: 18.04) 으로 두고 그 한 번 빌드 결과를 공통 사용. forward-compatible (옛 → 새) 만 지원되니까 18.04 빌드 산출물은 22.04/24.04 에서도 그대로 실행 가능.
 
 ## rust-s3 → rustls 전환
 
@@ -71,11 +45,11 @@ rust-s3 = { version = "0.35", default-features = false, features = ["tokio-rustl
 - 빠짐: `hyper-tls`, `native-tls`, `openssl-sys`, `openssl-probe`
 - 추가: `rustls`, `tokio-rustls`, `hyper-rustls`, `rustls-webpki`
 
-빌드 시간 거의 동일. 런타임 perf 도 비슷 (rustls 가 일부 cipher 에서 살짝 느릴 수 있지만 MinIO 호출 frequency 가 낮아 무관).
+이 변경의 의미: 사내 머신에 OpenSSL 이 없거나 (`libssl.so` 부재), 버전이 빌드 시점과 다르거나 해도 trace 가 정상 실행. 어떤 신원의 Linux 머신이든 glibc 만 호환되면 돌아감.
 
 ## 빌드 스크립트
 
-`scripts/build-linux-portable.sh`:
+`scripts/build.sh`:
 
 ```bash
 #!/usr/bin/env bash
@@ -83,62 +57,54 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 FEATURES="${1:-}"
-GLIBC="${GLIBC:-2.27}"
-TARGET="x86_64-unknown-linux-gnu.${GLIBC}"
+PROFILE="${PROFILE:-release}"
+PROFILE_FLAG=$([ "$PROFILE" = "release" ] && echo "--release" || echo "")
+OUT_DIR=$([ "$PROFILE" = "release" ] && echo "target/release" || echo "target/debug")
 
-# 도구 확인
-command -v cargo-zigbuild >/dev/null || { echo "cargo install cargo-zigbuild"; exit 1; }
-command -v zig >/dev/null || python3 -c "import ziglang" 2>/dev/null \
-    || { echo "pip install ziglang  또는  brew install zig"; exit 1; }
-
-# target 등록 (한 번만)
-rustup target list --installed | grep -q "^x86_64-unknown-linux-gnu$" \
-    || rustup target add x86_64-unknown-linux-gnu
-
-# 빌드
 if [ -n "$FEATURES" ]; then
-    cargo zigbuild --release --target "$TARGET" --features "$FEATURES"
+    cargo build $PROFILE_FLAG --features "$FEATURES"
 else
-    cargo zigbuild --release --target "$TARGET"
+    cargo build $PROFILE_FLAG
 fi
 
-ls -lh target/x86_64-unknown-linux-gnu/release/trace
-file target/x86_64-unknown-linux-gnu/release/trace
+BIN="$OUT_DIR/trace"
+[ "${STRIP:-0}" = "1" ] && strip "$BIN"
+ls -lh "$BIN"
+file "$BIN"
 ```
 
-## 사용법
+핵심:
+- system `cargo build` 외 의존 없음 — 폐쇄망에서도 동작
+- `STRIP=1` 옵션으로 빌드 후 디버그 심볼 제거 (배포 크기 절감)
+- `PROFILE=debug` 로 dev 빠른 빌드
 
-처음 한 번:
-
-```bash
-cargo install cargo-zigbuild
-pip install ziglang   # 또는: brew install zig
-```
-
-매 빌드:
+## 사용
 
 ```bash
-# default features
-./scripts/build-linux-portable.sh
+# 운영 빌드 (DuckDB stats 엔진 포함)
+./scripts/build.sh stats-duckdb
 
-# duckdb feature 포함 (운영 빌드)
-./scripts/build-linux-portable.sh stats-duckdb
+# DuckDB 없이 가벼운 빌드 (parser/processor 검증용)
+./scripts/build.sh
 
-# 더 옛날 OS (CentOS 7 등) 지원하려면 GLIBC 낮추기
-GLIBC=2.17 ./scripts/build-linux-portable.sh stats-duckdb
+# 빌드 + strip (배포 크기 ↓)
+STRIP=1 ./scripts/build.sh stats-duckdb
+
+# debug 빌드
+PROFILE=debug ./scripts/build.sh
 ```
 
 ## 검증 — target 머신에서
 
 ```bash
-# 1. 동적 링크된 라이브러리 — libssl/libcrypto 안 보여야 함
+# 동적 링크 라이브러리 — libssl/libcrypto 안 보여야 함
 ldd ./trace
 
-# 2. 요구하는 glibc 버전 — 최대값이 빌드 시 지정한 GLIBC 와 같거나 낮아야 함
-objdump -T ./trace | grep GLIBC_ | sort -u | tail -10
-
-# 3. 실제 실행
+# 실제 실행
 ./trace --help
+
+# 요구하는 glibc 심볼 (호환성 디버깅용)
+objdump -T ./trace | grep GLIBC_ | sort -u | tail -5
 ```
 
 예상 출력:
@@ -149,56 +115,48 @@ $ ldd ./trace
         libpthread.so.0 => /lib/x86_64-linux-gnu/libpthread.so.0
         libc.so.6 => /lib/x86_64-linux-gnu/libc.so.6
         /lib64/ld-linux-x86-64.so.2
-
-$ objdump -T ./trace | grep GLIBC_ | sort -u | tail
-GLIBC_2.18
-GLIBC_2.25
-GLIBC_2.27       # ← 이게 최대값. 빌드 시 지정한 2.27 이하면 OK
 ```
 
-`libssl.so.3` 이 보이면 → rust-s3 features 설정 확인 (rustls 로 안 바뀐 상태).
-`GLIBC_2.30` 같이 더 높은 게 보이면 → 의존 crate 가 더 새 syscall 호출. cargo tree 로 누가 쓰는지 추적 후 alternative 검토.
+`libssl.so` / `libcrypto.so` 가 보이면 → rustls 전환이 안 박힌 것. `Cargo.toml` 의 `rust-s3` features 확인.
 
 ## 트러블슈팅
 
-### `cargo zigbuild --target x86_64-unknown-linux-gnu.2.27` 가 long compile 후 link error
+### `GLIBC_2.XX not found`
 
-DuckDB 1.4 bundled 가 C++17 표준 라이브러리 의존. zig 의 clang 이 stdlib link 못 찾는 경우:
+빌드 머신의 glibc 버전이 target 머신보다 높음. 해결:
+
+1. 더 낮은 버전 OS 에서 빌드 (예: target 이 18.04 이면 빌드도 18.04)
+2. Docker 로 옛 OS 환경 재현:
+   ```bash
+   docker run --rm -v "$(pwd)":/work -w /work \
+       -v "$HOME/.cargo":/root/.cargo \
+       ubuntu:18.04 bash -c "
+       apt update && apt install -y curl build-essential pkg-config protobuf-compiler
+       curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+       source \$HOME/.cargo/env
+       ./scripts/build.sh stats-duckdb
+       "
+   ```
+   사내망에선 base image 와 apt 미러를 사내 mirror 로 (예: `apt-mirror.company.local`).
+
+### 빌드 시간이 느림 (DuckDB)
+
+`stats-duckdb` feature 빌드 시 DuckDB C++ 소스 전체 컴파일 = +30~60초. CI 에선 cache 활용:
 
 ```bash
-# zig 버전 업그레이드 (0.13.0 이상 권장)
-pip install -U ziglang
+# Cargo registry / target dir 캐시
+- target/
+- ~/.cargo/registry/
+- ~/.cargo/git/
 ```
 
-### symbol versioning 충돌
+## DuckDB 의존 (stats-duckdb feature)
 
-특정 crate (예: `ring`, `aws-lc`) 가 너무 최신 syscall 사용:
+- `duckdb = { features = ["bundled"] }` → C++ 코드 정적 링크. 외부 `libduckdb.so` 의존 0
+- `parquet` extension 도 bundled (libduckdb-sys feature) — 인터넷 LOAD 불필요
+- `httpfs` extension 만 별도 — 사내 미리 깐 `~/.duckdb/extensions/<ver>/<arch>/httpfs.duckdb_extension` 을 LOAD
 
-```bash
-# 어느 crate 가 GLIBC_2.30 요구하는지
-objdump -T ./trace | grep GLIBC_2.30 | awk '{print $7}' | sort -u
-# 그 함수 이름으로 cargo tree -i 검색
-```
-
-대안 crate 로 교체 또는 GLIBC target 을 그 함수 도입 버전 (예: 2.30) 으로 올림.
-
-### 빌드 머신에서만 테스트하고 싶을 때
-
-```bash
-# Linux container 안에서 검증
-docker run --rm -v "$(pwd)":/work -w /work ubuntu:18.04 ./target/x86_64-unknown-linux-gnu/release/trace --help
-```
-
-## 빌드 머신 OS 별 정리
-
-| 빌드 머신 | 기본 cargo build | zigbuild GLIBC=2.27 |
-|---|---|---|
-| macOS (M1/M2) | Mac 만 동작 | Linux 18.04+ 동작 |
-| Ubuntu 24.04 | 24.04 만 동작 | 18.04+ 동작 |
-| Ubuntu 20.04 | 20.04+ 동작 | 18.04+ 동작 |
-| Ubuntu 18.04 | 18.04+ 동작 | 변화 없음 (이미 호환) |
-
-회사 환경이 18.04 ~ 24.04 혼재면 어떤 빌드 머신에서든 zigbuild 로 통일.
+httpfs 는 한 번 사외 머신에서 받아 사내에 복사하는 패턴. 해당 절차는 [duckdb-pool](/learn/l2-trace-rust/08-stats-pipeline/) 참고.
 
 ## 모듈 끝
 
