@@ -17,7 +17,7 @@ MOVE는 이 작업을 한 곳에 모으고, 기계가 할 수 있는 일(반복 
 
 ## 핵심 사용자 여정 4가지
 
-아래 4가지 모두 L2 문서가 작성돼 있습니다. [L2 19종 비교](/learn/l2-compare/) 에서 전체 카탈로그를 한눈에 볼 수 있습니다.
+가장 자주 쓰이는 4 흐름입니다. 각각 [L2 모듈](/learn/l2-compare/)이 작성돼 있고, 4 모두 [주요 데이터 흐름 4선](/learn/l1-overview/key-flows/) 페이지에서 다이어그램으로 비교합니다.
 
 <div class="learn-path-cards">
   <a class="learn-path-card" href="/learn/l2-slots/">
@@ -44,6 +44,56 @@ MOVE는 이 작업을 한 곳에 모으고, 기계가 할 수 있는 일(반복 
     <p class="learn-path-card__desc">수 GB ftrace/blktrace/UFSCUSTOM 로그를 Rust 서비스가 parquet 으로 변환, Arrow IPC 로 차트·통계를 내려 받아 WebGL(Deck.gl)로 1M 포인트 60fps 렌더링. "데이터 규모가 한 단계 위" 서브축.</p>
   </a>
 </div>
+
+## L2 카탈로그 — 19 모듈
+
+19 L2를 **5 축**으로 나눠 한눈에 보여줍니다. 자기 업무에 가까운 모듈부터 골라 읽으면 됩니다. 모든 모듈은 같은 N단계 여정 템플릿을 따릅니다.
+
+### 기능 축 — 도메인별 완결 모듈 (11)
+
+<div class="learn-path-cards">
+  <a class="learn-path-card" href="/learn/l2-slots/"><span class="learn-path-card__tag">실시간</span><h3 class="learn-path-card__title">슬롯 모니터링</h3><p class="learn-path-card__desc">Head TCP → StateStore version → SSE 1초 diff push.</p></a>
+  <a class="learn-path-card" href="/learn/l2-benchmark/"><span class="learn-path-card__tag">Job</span><h3 class="learn-path-card__title">Agent 벤치마크</h3><p class="learn-path-card__desc">Go Agent gRPC 호출 → 진행률 스트림 → SSE 재중계.</p></a>
+  <a class="learn-path-card" href="/learn/l2-remote/"><span class="learn-path-card__tag">터미널</span><h3 class="learn-path-card__title">원격 터미널</h3><p class="learn-path-card__desc">WebSocket + guacd. 인증 후 BE 우회, 브라우저 ↔ guacd 직결.</p></a>
+  <a class="learn-path-card" href="/learn/l2-metadata/"><span class="learn-path-card__tag">실시간</span><h3 class="learn-path-card__title">UFS Metadata</h3><p class="learn-path-card__desc">TC running 감지 자동 수집. 7 command_type + f2fs 3 전용 뷰.</p></a>
+  <a class="learn-path-card" href="/learn/l2-t32/"><span class="learn-path-card__tag">절차</span><h3 class="learn-path-card__title">T32 Dump</h3><p class="learn-path-card__desc">SSH × 2 + 4-Step Stepper + 도메인 키워드 fail 감지.</p></a>
+  <a class="learn-path-card" href="/learn/l2-precmd/"><span class="learn-path-card__tag">절차</span><h3 class="learn-path-card__title">Pre-Command</h3><p class="learn-path-card__desc">StateStore 훅 + TC/Slot 우선순위 + 비동기 SSH.</p></a>
+  <a class="learn-path-card" href="/learn/l2-logbrowser/"><span class="learn-path-card__tag">재사용 레이어</span><h3 class="learn-path-card__title">Log Browser</h3><p class="learn-path-card__desc">SSH/Local 두 구현 + @ConditionalOnProperty 전략 패턴.</p></a>
+  <a class="learn-path-card" href="/learn/l2-excel/"><span class="learn-path-card__tag">데이터 통합</span><h3 class="learn-path-card__title">Excel Export</h3><p class="learn-path-card__desc">Go gRPC Unary로 xlsx byte[] 생성. 단일 진입점 DataService 공유.</p></a>
+  <a class="learn-path-card" href="/learn/l2-bitbucket/"><span class="learn-path-card__tag">재사용 레이어</span><h3 class="learn-path-card__title">Bitbucket 모니터</h3><p class="learn-path-card__desc">@Scheduled 5분 폴링 + PAT + Zip Slip 방어.</p></a>
+  <a class="learn-path-card" href="/learn/l2-minio/"><span class="learn-path-card__tag">재사용 레이어</span><h3 class="learn-path-card__title">MinIO 파일 스토리지</h3><p class="learn-path-card__desc">S3 호환 + multipart + 폴더 ZIP 스트리밍 + 2GB 압축.</p></a>
+  <a class="learn-path-card" href="/learn/l2-trace/"><span class="learn-path-card__tag">데이터 규모</span><h3 class="learn-path-card__title">🎯 Trace Analysis</h3><p class="learn-path-card__desc">Rust gRPC + Arrow IPC + WebGL 1M 60fps. 엔진 내부 deep-dive는 <a href="/learn/l2-trace-rust/">l2-trace-rust</a>.</p></a>
+</div>
+
+### 크로스-컷 축 — 가로지르는 관점 (2)
+
+<div class="learn-path-cards">
+  <a class="learn-path-card" href="/learn/l2-auth/"><span class="learn-path-card__tag">요청 축</span><h3 class="learn-path-card__title">🔐 인증·권한</h3><p class="learn-path-card__desc">ADFS Hybrid Flow + 17 권한 인터셉터 + UserHeadAccess. 모든 L2가 의존.</p></a>
+  <a class="learn-path-card" href="/learn/l2-testdb/"><span class="learn-path-card__tag">데이터 축</span><h3 class="learn-path-card__title">📊 TestDB</h3><p class="learn-path-card__desc">TR/TC/History 트리플 + DB 메타 + 원격 JSON 이원 저장. 6 L2가 공유.</p></a>
+</div>
+
+### 엔진 축 — 단방향 파이프라인 (3)
+
+<div class="learn-path-cards">
+  <a class="learn-path-card" href="/learn/l2-binmapper/"><span class="learn-path-card__tag">백엔드 · 순수</span><h3 class="learn-path-card__title">🧬 BinMapper</h3><p class="learn-path-card__desc">C struct 텍스트 → Lexer → Parser → ByteBuffer → 트리. 컴파일러 파이프라인.</p></a>
+  <a class="learn-path-card" href="/learn/l2-perfgen/"><span class="learn-path-card__tag">프론트 · 순수</span><h3 class="learn-path-card__title">⚙ Perf Generator</h3><p class="learn-path-card__desc">JSON → analyzeJson → generateCode → Svelte 소스. "코드를 만드는 코드".</p></a>
+  <a class="learn-path-card" href="/learn/l2-iotest/"><span class="learn-path-card__tag">분산 · 부작용</span><h3 class="learn-path-card__title">🔬 iotest</h3><p class="learn-path-card__desc">syscall DSL → Agent goroutine → 실제 Android 디바이스 syscall.</p></a>
+</div>
+
+### Orchestration 축 — DAG 편집·실행 (1, 개척)
+
+<div class="learn-path-cards">
+  <a class="learn-path-card" href="/learn/l2-scenario/"><span class="learn-path-card__tag">DAG</span><h3 class="learn-path-card__title">🕸 Scenario Canvas</h3><p class="learn-path-card__desc">@xyflow/svelte 편집 + Loop/Condition + Kahn 위상 정렬 + 전용 RunScenario RPC.</p></a>
+</div>
+
+### 관리 UI 패턴 — 운영 도구 (2, 축 유보)
+
+<div class="learn-path-cards">
+  <a class="learn-path-card" href="/learn/l2-admin/"><span class="learn-path-card__tag">운영</span><h3 class="learn-path-card__title">🛠 Admin 대시보드</h3><p class="learn-path-card__desc">단일 페이지 18 탭 + 비관적 락 승인 워크플로 + 17 권한 CRUD.</p></a>
+  <a class="learn-path-card" href="/learn/l2-serveradmin/"><span class="learn-path-card__tag">운영</span><h3 class="learn-path-card__title">🖥 Server Admin</h3><p class="learn-path-card__desc">portal_servers 10 컬럼 + 비트마스크 3 프로토콜 + 5 L2 공용 인프라.</p></a>
+</div>
+
+축 분류와 공통 원칙이 궁금하면 [**L2 19종 비교**](/learn/l2-compare/)를 보세요. 같은 패턴이 모듈마다 어떤 두께로 달라지는지 한 페이지로 정리됩니다.
 
 ## 주요 외부 연동
 
