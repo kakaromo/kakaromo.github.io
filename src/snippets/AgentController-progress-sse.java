@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/agent/controller/AgentController.java
 // @lines 248-307
 // @note GET /api/agent/benchmark/progress — gRPC stream → SSE 중계
-// @synced 2026-04-19T10:15:34.648Z
+// @synced 2026-05-01T01:05:23.614Z
 
     @GetMapping(value = "/benchmark/progress", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter subscribeJobProgress(@RequestParam Long serverId, @RequestParam String jobId) {

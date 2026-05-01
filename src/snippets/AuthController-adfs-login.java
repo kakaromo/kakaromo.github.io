@@ -1,7 +1,13 @@
 // @source src/main/java/com/samsung/move/auth/controller/AuthController.java
 // @lines 158-180
 // @note GET /adfs/login — nonce 생성 + authorize URL 조립 + redirect
-// @synced 2026-04-19T10:15:34.666Z
+// @synced 2026-05-01T01:05:23.635Z
+
+        userService.changePassword(user.getId(), newPassword);
+        return Map.of("success", true);
+    }
+
+    // ── ADFS SSO ──
 
     /**
      * ADFS 로그인 — authorize URL로 redirect
@@ -20,9 +26,3 @@
                 + "&redirect_uri=" + URLEncoder.encode(adfsProperties.getRedirectUrl(), StandardCharsets.UTF_8)
                 + "&response_mode=form_post"
                 + "&response_type=" + URLEncoder.encode("code id_token", StandardCharsets.UTF_8)
-                + "&scope=" + URLEncoder.encode(adfsProperties.getScope(), StandardCharsets.UTF_8)
-                + "&nonce=" + URLEncoder.encode(nonce, StandardCharsets.UTF_8);
-
-        response.sendRedirect(url);
-    }
-

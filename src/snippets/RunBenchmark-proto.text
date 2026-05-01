@@ -1,8 +1,14 @@
 // @source src/main/proto/device_agent.proto
 // @lines 96-164
 // @note BenchmarkTool enum(IOTEST=4) + RunBenchmarkRequest(params map) + JobProgress(stream용)
-// @synced 2026-04-19T10:15:34.675Z
+// @synced 2026-05-01T01:05:23.647Z
 
+  bool success = 1;
+}
+
+// ==================== Benchmark ====================
+
+enum BenchmarkTool {
   BENCHMARK_TOOL_UNSPECIFIED = 0;
   BENCHMARK_TOOL_FIO = 1;
   BENCHMARK_TOOL_IOZONE = 2;
@@ -66,9 +72,3 @@ message JobProgress {
   string device_id = 2;
   JobState state = 3;
   string message = 4;
-  int32 progress_percent = 5;
-  string error = 6;
-  map<string, double> metrics = 7;   // benchmark step 완료 시 결과 포함
-  string raw_output = 8;             // benchmark step의 raw output
-  int32 retry_attempt = 9;           // 현재 재시도 횟수 (0=첫 시도)
-}

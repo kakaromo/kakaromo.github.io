@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/auth/service/UserPermissionService.java
 // @lines 1-55
 // @note ALL_PERMISSIONS 17개 정의 (메뉴 8 + 액션 9)
-// @synced 2026-04-19T10:15:34.667Z
+// @synced 2026-05-01T01:05:23.636Z
 
 package com.samsung.move.auth.service;
 
@@ -36,6 +36,8 @@ public class UserPermissionService {
         ALL_PERMISSIONS.put("menu:binMapper", "Bin Mapper 메뉴");
         ALL_PERMISSIONS.put("menu:storage", "Storage 메뉴");
         ALL_PERMISSIONS.put("menu:agent", "Agent 메뉴");
+        ALL_PERMISSIONS.put("menu:trace", "Trace 메뉴");
+        ALL_PERMISSIONS.put("menu:bitbucket", "Bitbucket 메뉴");
 
         // 세부 기능 권한
         ALL_PERMISSIONS.put("action:performance:excel_export", "Performance Excel 내보내기");
@@ -47,14 +49,12 @@ public class UserPermissionService {
         ALL_PERMISSIONS.put("action:agent:scenario", "시나리오 실행");
         ALL_PERMISSIONS.put("action:agent:trace", "Trace 수집");
         ALL_PERMISSIONS.put("action:storage:run", "Storage 실행");
-    }
+        ALL_PERMISSIONS.put("action:bitbucket:create", "Bitbucket 저장소 생성");
+        ALL_PERMISSIONS.put("action:bitbucket:update", "Bitbucket 저장소 수정");
+        ALL_PERMISSIONS.put("action:bitbucket:delete", "Bitbucket 저장소 삭제");
+        ALL_PERMISSIONS.put("action:bitbucket:download", "Bitbucket 브랜치 다운로드");
+        ALL_PERMISSIONS.put("action:bitbucket:delete_files", "Bitbucket 브랜치 파일 삭제");
 
-    /**
-     * 사용자 권한 맵 조회 (key → granted)
-     */
-    public Map<String, Boolean> getPermissionMap(Long userId) {
-        List<UserPermission> perms = repository.findByUserId(userId);
-        Map<String, Boolean> map = new LinkedHashMap<>();
-        // 기본값: 모든 권한 false
-        for (String key : ALL_PERMISSIONS.keySet()) {
-            map.put(key, false);
+        // 글로벌 권한
+        ALL_PERMISSIONS.put("action:global:test-mode", "Test Instance 접근 (test-mode)");
+    }

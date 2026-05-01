@@ -1,7 +1,11 @@
 // @source src/main/java/com/samsung/move/metadata/service/MetadataMonitorService.java
 // @lines 134-234
 // @note @Scheduled checkSlotStateChanges + startMonitoring (TR 기반 제품→command 매핑 + 수집 주기)
-// @synced 2026-04-19T10:15:34.652Z
+// @synced 2026-05-01T01:05:23.620Z
+
+            return elapsedSeconds.get();
+        }
+    }
 
     @Scheduled(fixedDelayString = "${metadata.monitor.poll-interval-ms:5000}")
     public void checkSlotStateChanges() {
@@ -81,6 +85,17 @@
 
         SlotMonitorContext ctx = new SlotMonitorContext(slotKey, slot, commands);
 
+        // 디바이스별 동적 placeholder 조회 (1회) — f2fs 경로 등에서 {userdata}로 사용
+        try {
+            String userdataBlock = commandExecutor.resolveUserdataBlock(
+                    ctx.getTentacleName(), ctx.getSerial());
+            if (userdataBlock != null) {
+                ctx.getPlaceholders().put("userdata", userdataBlock);
+            }
+        } catch (Exception e) {
+            log.warn("Placeholder resolve failed for slot [{}]: {}", slotKey, e.getMessage());
+        }
+
         // Debug tool push (중복 방지)
         for (UfsMetadataCommand cmd : commands) {
             DebugTool tool = cmd.getDebugTool();
@@ -89,18 +104,3 @@
                     commandExecutor.pushDebugTool(ctx.getTentacleName(), ctx.getSerial(), tool);
                 } catch (Exception e) {
                     log.error("Failed to push tool for slot [{}]: {}", slotKey, e.getMessage());
-                }
-            }
-        }
-
-        // 즉시 첫 수집 + 주기적 수집 스케줄
-        int intervalSec = slotIntervalSeconds.getOrDefault(slotEnableKey,
-                props.getCollectionIntervalMin() * 60);
-        ScheduledFuture<?> future = executor.scheduleAtFixedRate(
-                () -> monitorOnce(ctx), 0, intervalSec, TimeUnit.SECONDS);
-        ctx.setFuture(future);
-
-        activeMonitors.put(slotKey, ctx);
-        log.info("Started metadata monitoring for slot [{}], {} commands, interval={}s",
-                slotKey, commands.size(), intervalSec);
-    }

@@ -1,7 +1,7 @@
 // @source frontend/src/lib/api/agent.ts
 // @lines 180-200
 // @note runBenchmark / getJobStatus 프론트 API
-// @synced 2026-04-19T10:15:34.650Z
+// @synced 2026-05-01T01:05:23.616Z
 
 }
 

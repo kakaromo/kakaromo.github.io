@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/minio/controller/MinioController.java
 // @lines 152-206
 // @note /download-folder (ZipOutputStream recursive) + /download (InputStreamResource + UTF-8 filename)
-// @synced 2026-04-19T10:15:34.665Z
+// @synced 2026-05-01T01:05:23.634Z
 
     @GetMapping("/buckets/{bucket}/download-folder")
     public void downloadFolder(

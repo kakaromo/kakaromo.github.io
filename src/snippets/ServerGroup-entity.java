@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/admin/entity/ServerGroup.java
 // @lines 1-49
 // @note portal_server_groups — name(unique) · description · sortOrder
-// @synced 2026-04-19T10:15:34.678Z
+// @synced 2026-05-01T01:05:23.652Z
 
 package com.samsung.move.admin.entity;
 

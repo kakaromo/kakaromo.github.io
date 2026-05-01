@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/binmapper/entity/PredefinedStruct.java
 // @lines 1-48
 // @note predefined_structs — name/category/structText(TEXT) 저장, 재사용 가능한 struct 사전
-// @synced 2026-04-19T10:15:34.670Z
+// @synced 2026-05-01T01:05:23.640Z
 
 package com.samsung.move.binmapper.entity;
 
@@ -30,6 +30,16 @@ public class PredefinedStruct {
 
     private String category;
 
+    /**
+     * 용도 구분:
+     *   "metadata" — Metadata binary command_type 전용
+     *   "dlm"      — DLM 바이너리 파싱 전용
+     *   "general"  — 범용 / devtools 수동 사용
+     */
+    @Column(length = 20, nullable = false)
+    @Builder.Default
+    private String kind = "general";
+
     @Column(columnDefinition = "TEXT", nullable = false)
     private String structText;
 
@@ -41,13 +51,3 @@ public class PredefinedStruct {
     private LocalDateTime updatedAt;
 
     @PrePersist
-    protected void onCreate() {
-        createdAt = LocalDateTime.now();
-        updatedAt = createdAt;
-    }
-
-    @PreUpdate
-    protected void onUpdate() {
-        updatedAt = LocalDateTime.now();
-    }
-}

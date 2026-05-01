@@ -1,0 +1,110 @@
+---
+title: T32 Admin — 관리 UI 패턴 3호 (축 확립)
+description: T32 Dump 가 동작하기 위한 19 컬럼 + many-to-many 매핑 + 비밀번호 마스킹 + 그룹 필터링을 다루는 Admin 탭. Admin 대시보드 / Server Admin 과 합쳐 관리 UI 가 정식 축으로 승격.
+sidebar:
+  order: 0
+---
+
+import ArchitectureDiagram from '../../../../components/learn/ArchitectureDiagram.svelte';
+
+## 이 모듈에서 배울 것
+
+[T32 Dump L2](/learn/l2-t32/) 가 **Stepper 실행 흐름**을 다뤘다면, 이 모듈은 **그 실행 전에 관리자가 미리 채워 놓아야 하는 설정**을 다룹니다.
+
+"3 그룹의 라즈베리파이 + Windows T32 PC 쌍을 관리자가 등록하고, JTAG/T32PC 별로 다른 SSH 계정과 4종의 명령 템플릿(JTAG/포트체크/Dump/성공 패턴)을 저장하고, 그 설정에 N개의 슬롯 서버를 매핑해서, T32 Dump 실행 시 슬롯 → 매핑 조회 → 설정 로드 → SSH 2회로 이어지게 한다."
+
+이 모듈은 **관리 UI 패턴 3호**입니다. Admin 대시보드(1호) · Server Admin(2호) 과 합쳐 **관리 UI 축이 정식 축으로 승격**됩니다.
+
+## 관리 UI 축 승격 — 3 사례 비교
+
+| 축 | 🛠 Admin 대시보드 | 🖥 Server Admin | **🔧 T32 Admin (3호)** |
+|---|---|---|---|
+| 영역 | 18 탭 통합 운영 | 인프라 (서버·그룹) | **T32 Dump 인프라** |
+| 엔티티 | 권한·요청·이력 | portal_servers · server_groups | **portal_t32_configs · portal_t32_config_servers** |
+| 컬럼 수 | 다수 | 10 컬럼 | **19 컬럼** (지금까지 가장 많음) |
+| 매핑 | 1:1 (사용자 → 권한) | 1:N (group → server) | **N:M (config ↔ server)** |
+| 트리거 | 운영자 | 운영자 | **운영자 (T32 사용 전 1회 등록)** |
+| 보안 | 17 권한 검사 | Auth 인터셉터 경유 | **비밀번호 마스킹 + 빈 값이면 기존 유지** |
+| 형태 | `+page.svelte` 단일 18 탭 | `+page.svelte` 안의 1 탭 | **`AdminT32Tab.svelte` (Admin 안의 1 탭)** |
+
+3 사례 공통 패턴 (축 정의):
+
+1. **운영자 전용 CRUD UI** — 일반 사용자 화면이 아닌 관리자 페이지
+2. **다른 L2 의 인프라 데이터** — 자기 자신을 위한 게 아니라 다른 L2(Dump 실행 · 슬롯 모니터링 · 권한 인터셉터) 가 사용
+3. **운영 중 변경 가능** — yaml 이 아닌 DB 에 저장 (SLA: 재배포 없이 운영자가 바꿀 수 있어야 함)
+4. **권한 게이트 필요** — 검증된 운영자만 접근 (Auth 크로스컷 의존)
+5. **외부 상태 미러** — 실제 외부 자원(서버·계정·라이센스)의 디지털 트윈
+
+이 5 항목 모두 충족 → 관리 UI 가 **단순 패턴이 아니라 축**으로 정식 승격.
+
+## 여정 한눈에
+
+<ArchitectureDiagram
+  client:visible
+  height={300}
+  caption="3 페이지: 엔티티 → CRUD 컨트롤러 → AdminT32Tab UI. 이 설정이 채워져야 T32 Dump L2 가 실행 가능."
+  altText="T32 Admin 은 portal_t32_configs(19 컬럼) + portal_t32_config_servers(N:M 매핑) 두 엔티티를 T32ConfigController CRUD 로 관리하고, AdminT32Tab UI 에서 그룹별 서버 필터링과 비밀번호 마스킹 폼을 제공합니다. 저장된 설정은 T32DumpService 가 슬롯에서 역참조하여 SSH × 2 실행에 사용합니다."
+  nodes={[
+    { id: 'e1', label: '01. Entity 2종',     sublabel: 'portal_t32_configs + N:M', layer: 'state', x: 0,   y: 60,  href: '/learn/l2-t32admin/01-entity/' },
+    { id: 'e2', label: '02. CRUD 컨트롤러',   sublabel: '비밀번호 마스킹 + 매핑 동기화', layer: 'be',    x: 220, y: 60,  href: '/learn/l2-t32admin/02-controller/' },
+    { id: 'e3', label: '03. Admin UI',        sublabel: '그룹 필터 + 다중 선택', layer: 'fe',    x: 440, y: 60,  href: '/learn/l2-t32admin/03-ui/' },
+    { id: 't32', label: 'T32 Dump 실행',     sublabel: '슬롯 → 설정 → SSH × 2', layer: 'tx',    x: 220, y: 200, href: '/learn/l2-t32/' },
+  ]}
+  edges={[
+    { from: 'e1', to: 'e2', label: 'JPA',       kind: 'sync' },
+    { from: 'e2', to: 'e3', label: 'REST',      kind: 'sync' },
+    { from: 'e3', to: 't32', label: '설정 사용', kind: 'async' },
+  ]}
+/>
+
+## 왜 Server Admin 으로 흡수하지 않았나
+
+T32 설정의 절반(JTAG 서버 ID · T32 PC ID)은 `portal_servers` 의 외래키입니다. **"왜 portal_servers 에 t32 컬럼을 추가하지 않고 별도 테이블로 갔는가"** — 다음 4가지 이유:
+
+| 이유 | 설명 |
+|---|---|
+| **1. 한 서버가 여러 T32 설정에 참여** | T32 PC 한 대가 여러 그룹의 Dump 작업에 쓰일 수 있음 — `portal_servers` 1:N 으로는 표현 불가 |
+| **2. 명령 템플릿은 서버 속성이 아닌 "설정 속성"** | jtagCommand 등 4 명령은 같은 서버라도 어느 설정에서 쓰이느냐에 따라 달라짐 |
+| **3. 전용 계정** | jtagUsername/Password 는 서버 자체의 SSH 계정이 아닌 **JTAG 동작용 별도 계정** — `portal_servers.username` 과 충돌 |
+| **4. T32 가 옵션 기능** | T32 를 안 쓰는 슬롯에 T32 컬럼 19개가 NULL 로 박히는 건 낭비 |
+
+**4번이 결정적**: Server Admin 을 일반화하면 슬롯·원격·Log Browser·Pre-Command 도 각자 NULL 컬럼이 늘어남. 분리 후 N:M 매핑이 정답.
+
+## 엔티티 ER
+
+```
+portal_servers ────┬───────── (jtagServerId)
+                   │
+portal_t32_configs ┴───────── (t32PcId)
+       │
+       ├─── (id) ──── portal_t32_config_servers ──── (serverId) ──── portal_servers
+       │                  ↑ N:M
+       └─── 19 컬럼: ServerGroupId · jtagUsername/Password · t32PcUsername/Password
+                     · jtagCommand · jtagSuccessPattern · t32PortCheckCommand · dumpCommand
+                     · fwCodeLinuxBase/WindowsBase · resultBasePath/WindowsBasePath
+                     · description · enabled · createdAt · updatedAt
+```
+
+`portal_t32_configs` 한 행이:
+
+- **2 외래키** (JTAG 서버 + T32 PC) — 1:1 으로 직접 참조
+- **N 외래키** (assigned servers) — N:M 으로 별도 테이블 경유
+- **2 계정 쌍** (JTAG 용 · T32 PC 용) — 각각 username/password
+- **4 명령** (시작 · 검증 · 포트체크 · Dump)
+- **4 경로 baseline** (Linux · Windows × FW코드 · result) — Bitbucket → 로컬 → SSH 경로 매핑용
+- **운영 메타** (description · enabled · 타임스탬프)
+
+19 컬럼이 되는 이유: **"같은 인프라라도 그룹마다 다른 절차"**. NAND 그룹과 SoC 그룹은 같은 T32 PC 를 쓰지만 명령 템플릿이 다름.
+
+## 다음 페이지
+
+- [01. Entity 2종 — N:M 매핑과 19 컬럼의 정당화](/learn/l2-t32admin/01-entity/)
+- [02. CRUD 컨트롤러 — 비밀번호 마스킹 + 매핑 동기화](/learn/l2-t32admin/02-controller/)
+- [03. Admin UI — 그룹 필터링 + 다중 선택 + dialog 모드](/learn/l2-t32admin/03-ui/)
+
+## 다른 L2 와의 관계
+
+- [T32 Dump L2](/learn/l2-t32/) — 이 설정을 **소비** 하는 실행 흐름
+- [Admin 대시보드 L2](/learn/l2-admin/) — 이 탭이 **속한 컨테이너** (관리 UI 1호)
+- [Server Admin L2](/learn/l2-serveradmin/) — 이 탭이 **참조** 하는 인프라 (관리 UI 2호)
+- [Auth L2](/learn/l2-auth/) — Admin 탭 접근 권한 게이트 (크로스컷)

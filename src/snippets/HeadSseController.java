@@ -1,7 +1,8 @@
 // @source src/main/java/com/samsung/move/head/controller/HeadSseController.java
 // @lines 31-168
 // @note EmitterWrapper + stream + @Scheduled pushUpdates + buildPayload
-// @synced 2026-04-19T10:15:34.646Z
+// @synced 2026-05-01T01:05:23.611Z
+
 
 @RestController
 @RequestMapping("/api/head")
@@ -16,6 +17,7 @@ public class HeadSseController {
     private final HeadConnectionService connectionService;
     private final SlotInfoMerger slotInfoMerger;
     private final UserHeadAccessRepository userHeadAccessRepository;
+    private final AdminNotificationService adminNotificationService;
 
     @Value("${portal.test-instance:false}")
     private boolean testInstance;
@@ -27,6 +29,7 @@ public class HeadSseController {
         final SseEmitter emitter;
         final String source; // null = all sources
         long lastVersion = -1;
+        int lastPayloadHash = 0;
 
         EmitterWrapper(SseEmitter emitter, String source) {
             this.emitter = emitter;
@@ -99,7 +102,23 @@ public class HeadSseController {
                     allowedNames.add(conn.getName());
                 }
             }
+            List<String> deniedNames = new ArrayList<>();
+            for (Map<String, Object> s : statuses) {
+                Object name = s.get("name");
+                if (name != null && !allowedNames.contains(name)) {
+                    deniedNames.add(String.valueOf(name));
+                }
+            }
             statuses.removeIf(s -> !allowedNames.contains(s.get("name")));
+            if (!deniedNames.isEmpty()) {
+                log.info("[Head 접근 차단] user={}, denied={}", user.getUsername(), deniedNames);
+                for (String denied : deniedNames) {
+                    try {
+                        adminNotificationService.notifyHeadAccessDenied(
+                                user.getUsername(), user.getDisplayName(), denied);
+                    } catch (Exception ignored) {}
+                }
+            }
         } catch (Exception e) {
             log.debug("Failed to filter head access: {}", e.getMessage());
         }
@@ -112,32 +131,13 @@ public class HeadSseController {
         long currentVersion = stateStore.getVersion();
 
         for (EmitterWrapper wrapper : emitters) {
-            if (wrapper.lastVersion >= currentVersion) continue;
-
             try {
+                // payload를 항상 만들어 해시로 변화 감지.
+                // version이 그대로라도 SlotInfomation(DB) 병합 결과가 바뀌었으면 push.
+                // 평가 완료 시 HEAD TCP가 재전송 없이 DB만 갱신되는 케이스를 커버.
                 String json = objectMapper.writeValueAsString(buildPayload(wrapper.source));
+                int hash = json.hashCode();
+                if (wrapper.lastVersion >= currentVersion && wrapper.lastPayloadHash == hash) continue;
+
                 wrapper.emitter.send(SseEmitter.event()
                         .name("update")
-                        .data(json, MediaType.APPLICATION_JSON));
-                wrapper.lastVersion = currentVersion;
-            } catch (Exception e) {
-                try { wrapper.emitter.completeWithError(e); } catch (Exception ignored) {}
-                emitters.remove(wrapper);
-            }
-        }
-    }
-
-    private Map<String, Object> buildPayload(String source) {
-        List<HeadSlotData> slots = (source != null)
-                ? stateStore.getSlotsBySource(source)
-                : stateStore.getAllSlots();
-
-        // DB SlotInfomation에서 testCaseIds/testCaseStatus/testTrId 등 merge
-        slotInfoMerger.merge(slots);
-
-        Map<String, Object> payload = new HashMap<>();
-        payload.put("slots", slots);
-        payload.put("version", stateStore.getVersion());
-        payload.put("connections", getConnectionStatuses());
-        return payload;
-    }

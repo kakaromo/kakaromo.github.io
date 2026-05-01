@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/head/precmd/entity/SlotPreCommand.java
 // @lines 1-55
 // @note portal_slot_pre_commands — setLocation(UK) + preCommand + tcPreCommandIds CSV
-// @synced 2026-04-19T10:15:34.655Z
+// @synced 2026-05-01T01:05:23.623Z
 
 package com.samsung.move.head.precmd.entity;
 

@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/binmapper/model/CppType.java
 // @lines 160-197
 // @note enum 13종 + fromString(alias map 100+) + readValue(ByteBuffer) switch 분기
-// @synced 2026-04-19T10:15:34.670Z
+// @synced 2026-05-01T01:05:23.641Z
 
     CppType(String cName, int size) {
         this.cName = cName;

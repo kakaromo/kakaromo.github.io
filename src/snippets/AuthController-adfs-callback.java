@@ -1,7 +1,13 @@
 // @source src/main/java/com/samsung/move/auth/controller/AuthController.java
 // @lines 181-252
 // @note POST /adfs/callback — id_token 파싱 + claims 추출 + PortalUser 생성/갱신 + 세션 저장
-// @synced 2026-04-19T10:15:34.666Z
+// @synced 2026-05-01T01:05:23.635Z
+
+                + "&scope=" + URLEncoder.encode(adfsProperties.getScope(), StandardCharsets.UTF_8)
+                + "&nonce=" + URLEncoder.encode(nonce, StandardCharsets.UTF_8);
+
+        response.sendRedirect(url);
+    }
 
     /**
      * ADFS callback — form_post로 id_token 수신, claims 파싱, 세션 생성 후 SPA로 redirect
@@ -58,12 +64,10 @@
 
         log.info("[ADFS] login: adfsUserId={}, loginId={}, displayName={}", adfsUserId, loginId, displayName);
 
-        // portal_users에 자동 등록/업데이트 + 권한 부여
+        // portal_users에 자동 등록/업데이트 (신규는 disabled=true, 관리자 승인 전까지 접근 불가)
         PortalUser portalUser = userService.createOrUpdateFromAdfs(adfsUserId, loginId, displayName, email);
-        if (permissionService.getPermissionMap(portalUser.getId()).values().stream().noneMatch(v -> v)) {
-            permissionService.grantAllPermissions(portalUser.getId());
-        }
 
+        // disabled 여부와 무관하게 세션은 저장 — /me에서 disabled 사용자에게 접근 요청 화면 노출
         session.setAttribute(SESSION_USER, portalUser);
         applySessionTimeout(session);
 
@@ -71,7 +75,3 @@
         String redirectTarget = (baseUrl != null && !baseUrl.isBlank()) ? baseUrl + "/" : "/";
         response.setContentType("text/html;charset=UTF-8");
         response.getWriter().write(
-                "<!DOCTYPE html><html><head><meta charset=\"UTF-8\">" +
-                "<script>window.location.replace('" + redirectTarget + "');</script>" +
-                "</head><body>Redirecting...</body></html>");
-    }

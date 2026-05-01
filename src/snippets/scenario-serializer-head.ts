@@ -1,7 +1,7 @@
 // @source frontend/src/routes/agent/scenario-canvas/serializer.ts
 // @lines 1-70
 // @note canvasToProto — Y좌표 정렬 vs 위상 정렬 분기 + hasCondition 판정 + nodeToIndex 매핑
-// @synced 2026-04-19T10:15:34.676Z
+// @synced 2026-05-01T01:05:23.648Z
 
 import type { Edge } from '@xyflow/svelte';
 import type { StepForm } from '../AgentStepEditDialog.svelte';

@@ -1,7 +1,7 @@
 // @source frontend/src/routes/agent/iotest/presets.ts
 // @lines 1-68
 // @note IOTEST_PRESETS 배열 + 3 예시 (Offset Write · Offset R/W · Misaligned R/W) — {{i}} 템플릿 사용
-// @synced 2026-04-19T10:15:34.675Z
+// @synced 2026-05-01T01:05:23.647Z
 
 /** Preset command sequences for common I/O test patterns */
 

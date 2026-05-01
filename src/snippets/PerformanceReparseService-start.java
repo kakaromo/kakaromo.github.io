@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/testdb/reparse/PerformanceReparseService.java
 // @lines 28-132
 // @note FixedThreadPool(4) + jobs Map + historyJobMap 중복 방어 + startReparse
-// @synced 2026-04-19T10:15:34.669Z
+// @synced 2026-05-01T01:05:23.639Z
 
 public class PerformanceReparseService {
 
@@ -93,7 +93,7 @@ public class PerformanceReparseService {
             logDir = headLogPath + "/NAS/" + dirPath;
             isNas = true;
         } else {
-            tentacleName = slotLocation != null ? slotLocation.replaceAll("^(T\\d+).*", "$1") : "HEAD";
+            tentacleName = slotLocation != null ? slotLocation.replaceAll("^([A-Za-z]+\\d*).*", "$1") : "HEAD";
             logDir = logPrefix + "/history/" + dirPath;
             isNas = false;
         }

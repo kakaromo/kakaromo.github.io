@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/testdb/service/PerformanceResultDataService.java
 // @lines 1-161
 // @note fetchResultData — history→TC→parser 경로 해석 + COLLECTING + ResultData record
-// @synced 2026-04-19T10:15:34.668Z
+// @synced 2026-05-01T01:05:23.638Z
 
 package com.samsung.move.testdb.service;
 
@@ -80,15 +80,15 @@ public class PerformanceResultDataService {
                 tentacleName = "HEAD";
                 remotePath = headLogPath + "/NAS/" + dirPath + "/" + parser.getName() + ".json";
             } else {
-                tentacleName = slotLocation.replaceAll("^(T\\d+).*", "$1");
+                tentacleName = slotLocation.replaceAll("^([A-Za-z]+\\d*).*", "$1");
                 remotePath = logPrefix + "/history/" + dirPath + "/" + parser.getName() + ".json";
             }
         } else {
             // Running 중인 TC: slotLocation 기반 경로
-            // slotLocation = "T10-4" → tentacle "T10", slot "4"
-            // 경로: /home/octo/tentacle/slot4/log/{parser}.json
-            tentacleName = slotLocation.replaceAll("^(T\\d+).*", "$1");
-            String slotNum = slotLocation.replaceAll("^T\\d+-", "");
+            // slotLocation = "T10-4" / "DT-0" → tentacle prefix / slot 번호
+            // 경로: /home/octo/tentacle/slot{n}/log/{parser}.json
+            tentacleName = slotLocation.replaceAll("^([A-Za-z]+\\d*).*", "$1");
+            String slotNum = slotLocation.replaceAll("^[A-Za-z]+\\d*-", "");
             remotePath = logPrefix + "/slot" + slotNum + "/log/" + parser.getName() + ".json";
         }
 

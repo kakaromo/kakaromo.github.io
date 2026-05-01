@@ -1,7 +1,8 @@
 // @source frontend/src/lib/components/PerfGenerator.svelte
 // @lines 304-395
 // @note generateObjectOfArrays — interface 조립 + tabDefs + chartOption 문자열 템플릿 조립
-// @synced 2026-04-19T10:15:34.673Z
+// @synced 2026-05-01T01:05:23.645Z
+
 
 	function generateObjectOfArrays(hasDataFields: boolean, cyclePath: string[]): string {
 		const sample = mergedTabs[0];
@@ -38,10 +39,22 @@
 
 		const chartImport = hasDataFields ? `\n\timport { PerfChart } from '$lib/components/perf-chart';` : '';
 		const echartsImport = hasDataFields ? `\n\timport type { EChartsOption } from 'echarts';` : '';
-		const perfChartTypeImport = hasDataFields ? `\n\timport type { PerfChart as PerfChartType } from '$lib/components/perf-chart';` : '';
+		const perfChartTypeImport = hasDataFields && includeExcelExport
+			? `\n\timport type { PerfChart as PerfChartType } from '$lib/components/perf-chart';`
+			: '';
+		const baseChartOptImport = hasDataFields
+			? `\n\timport { baseChartOption } from './perfChartUtils';`
+			: '';
+		const perfStylesImport = `\n\timport { btnBase, btnActive, btnInactive${hasTabs ? ', btnDisabled' : ''}, groupClass } from './perfStyles';`;
+		const emptyStateImport = hasDataFields
+			? `\n\timport { emptyState } from '$lib/styles/common.js';`
+			: '';
+		const downloadIconImport = hasDataFields && includeExcelExport
+			? `\n\timport Download from '@lucide/svelte/icons/download';`
+			: '';
 
 		const chartStateVars = hasDataFields
-			? `\n\tlet chartRef: ReturnType<typeof PerfChartType> | undefined = $state();\n\tlet chartType = $state<'line' | 'scatter'>('line');\n\tlet showRawData = $state(true);`
+			? `\n\t${includeExcelExport ? 'let chartRef: ReturnType<typeof PerfChartType> | undefined = $state();\n\t' : ''}let chartType = $state<'line' | 'scatter'>('line');\n\tlet showRawData = $state(true);`
 			: `\n\tlet showRawData = $state(true);`;
 
 		const hasValidDataFn = hasDataFields
@@ -61,17 +74,7 @@
 
 		const chartOption = hasDataFields
 			? `\n\n\tconst chartOption: EChartsOption = $derived({
-\t\ttitle: {
-\t\t\ttext: chartTitle,
-\t\t\tsubtext: fw ?? '',
-\t\t\tleft: 'center',
-\t\t\ttextStyle: { fontSize: 14 },
-\t\t\tsubtextStyle: { fontSize: 11 }
-\t\t},
-\t\ttooltip: { trigger: 'axis' },
-\t\tlegend: { bottom: 0, left: 'center', type: 'scroll' },
-\t\tgrid: { top: fw ? 60 : 45, bottom: 60, left: 90, right: 20 },
-\t\tdataZoom: [{ type: 'inside' }],
+\t\t...baseChartOption(chartTitle, fw, { left: 90 }),
 \t\txAxis: {
 \t\t\ttype: 'category',
 \t\t\tdata: indices().map(String),
@@ -92,6 +95,3 @@
 \t\t\tsymbolSize: chartType === 'scatter' ? 4 : undefined,
 \t\t\tsmooth: false
 \t\t}))
-\t});`
-			: '';
-

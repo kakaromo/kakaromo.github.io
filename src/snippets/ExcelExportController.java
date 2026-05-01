@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/testdb/controller/ExcelExportController.java
 // @lines 1-34
 // @note GET /{historyId}/excel — data fetch + gRPC call + ResponseEntity<byte[]>
-// @synced 2026-04-19T10:15:34.660Z
+// @synced 2026-05-01T01:05:23.629Z
 
 package com.samsung.move.testdb.controller;
 

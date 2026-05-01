@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/testdb/reparse/ReparseJob.java
 // @lines 1-56
 // @note 비동기 리파싱 Job 상태 머신 — preparing/running/completed/failed
-// @synced 2026-04-19T10:15:34.669Z
+// @synced 2026-05-01T01:05:23.639Z
 
 package com.samsung.move.testdb.reparse;
 

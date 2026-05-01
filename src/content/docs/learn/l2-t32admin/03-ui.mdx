@@ -1,0 +1,93 @@
+---
+title: 03. Admin UI — 그룹 필터링 + 다중 선택 + dialog 모드
+description: AdminT32Tab.svelte 의 state 14개 + Promise.all 병렬 fetch + groupServers $derived 필터링
+sidebar:
+  order: 3
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import stateCode from '../../../../snippets/AdminT32Tab-state.svelte?raw';
+
+## 30초 요약
+
+499줄짜리 `AdminT32Tab.svelte` 의 핵심은 **상태 14개 + 1개 derived**. 데이터 로드는 3종(configs · servers · groups)을 `Promise.all` 로 병렬, 폼은 create/edit 양쪽 모드를 한 dialog 로 처리, 매핑 후보는 `serverGroupId` 가 바뀔 때마다 `$derived` 로 자동 필터링.
+
+이 패턴은 **Admin 18 탭 모두 거의 동일**. T32Tab 을 읽으면 다른 17 탭도 빠르게 읽힙니다.
+
+## state + derived + load 패턴
+
+<CodeTour
+  client:visible
+  language="svelte"
+  filename="AdminT32Tab.svelte (state · derived · load)"
+  code={stateCode}
+  startLine={25}
+  steps={[
+    { id: 's1', title: '주 데이터 3종', body: '<p>configs(메인) · servers(외래키 후보) · serverGroups(필터). loading/saving 으로 UI lock 표시.</p>', lines: [25, 31] },
+    { id: 's2', title: 'Dialog 상태 5개', body: '<p>open · mode(create|edit) · editingId · form(부분 객체) · selectedGroupId. <strong>create 와 edit 가 같은 dialog</strong> — mode 로 구분.</p>', lines: [32, 38] },
+    { id: 's3', title: 'Confirm 상태 3개', body: '<p>delete 시 별도 ConfirmDialog. 이름까지 보여주려고 deleteName 도 보관.</p>', lines: [40, 43] },
+    { id: 's4', title: '⚡ groupServers $derived', body: '<p><strong>이 한 줄이 UX 의 핵심.</strong> 사용자가 그룹을 선택하면 매핑 후보가 자동으로 그 그룹 서버로 제한됨. 모든 서버 보여주면 잘못 매핑할 위험.</p><p>Svelte 5 runes 의 진가 — selectedGroupId 가 바뀔 때마다 자동 재계산.</p>', lines: [45, 49] },
+    { id: 's5', title: 'Promise.all 병렬 로드', body: '<p>3 fetch 를 병렬로. 직렬이면 ~600ms (200ms × 3), 병렬은 ~250ms (가장 느린 것 + 약간). <strong>관리 UI 는 데이터 양이 적어 직렬도 크게 안 느리지만, 병렬이 default 가 됐어야 함</strong>.</p>', lines: [52, 65] },
+    { id: 's6', title: 'try/finally 로 loading 보장', body: '<p>에러가 나도 loading=false 로 복귀. <strong>finally 안 쓰면 에러 시 spinner 영원히 도는 버그</strong> — Admin 18 탭에서 반복되는 실수.</p>', lines: [53, 64] },
+    { id: 's7', title: '컴포넌트 마운트 시 1회 호출', body: '<p>Svelte 5 에서 <code>$effect</code> 안에서 호출하는 게 더 정석이지만, 모듈 톱레벨 호출도 동작 (lazy 평가됨).</p>', lines: [67, 67] },
+  ]}
+/>
+
+## 18 탭 공통 패턴 일반화
+
+T32Tab 의 패턴이 다른 탭에서 어떻게 반복되는지:
+
+| 탭 | 메인 엔티티 | 외래키 후보 | derived 필터링 | dialog 모드 |
+|---|---|---|---|---|
+| **T32** | t32_configs | servers · groups | groupServers (그룹별) | create/edit 통합 |
+| Slots | head_connections | servers | (없음) | create/edit 통합 |
+| Sets | sets | products | (없음) | create/edit 통합 |
+| Ufs Info | ufs_info | products | (없음) | create/edit 통합 |
+| Metadata | metadata_commands | products | productCommands (제품별) | create/edit 통합 |
+| Debug | debug_types | (없음) | (없음) | create/edit 통합 |
+
+T32 와 Metadata 만 `$derived` 필터링이 있는 이유: **다대다 또는 다대일 관계가 명시적**이기 때문. Slots/Sets/UfsInfo 는 외래키 후보가 단순 (모든 서버/제품에서 고를 수 있음).
+
+## 왜 dialog 1개로 create/edit 둘 다
+
+대안 (별도 dialog):
+
+```
++ AddT32ConfigDialog.svelte
++ EditT32ConfigDialog.svelte
+```
+
+90% 같은 폼이라 **같은 코드를 두 번** 유지해야 함. 폼 필드 추가 시 두 곳 동시 수정 — 정합성 깨질 위험.
+
+현재 (mode 로 구분):
+
+```
+let dialogMode = $state<'create' | 'edit'>('create');
+// 저장 시:
+if (dialogMode === 'create') createConfig(form);
+else updateConfig(editingId, form);
+```
+
+차이는 **저장 분기 1줄 + 초기값 분기**. 폼 자체는 1번만 작성.
+
+## 직접 해보기
+
+- 그룹 변경 → 매핑 후보가 자동 줄어드는지 확인
+- 비밀번호 빈 채로 저장 → 다른 필드만 수정되는지 확인
+- 저장 후 dialog 닫고 다시 edit → 비밀번호 칸이 빈 채로 보이는지 확인 (보안)
+
+## 18 탭 = 18 회 같은 패턴
+
+**관리 UI 축의 핵심 통찰**: 18 탭이 거의 같은 패턴 → 추상화 가능? 그러나 [Admin L2](/learn/l2-admin/) 에서 봤듯 **God Controller + 단일 페이지 + 탭 컴포넌트**가 정답. 탭마다 미묘한 차이(필드 수·필터링·dialog 흐름)가 있어 일반화 시 파라미터 폭증.
+
+**현재 정답**: 패턴은 **머리에 두고**, 코드는 **복사 후 수정**. 18 탭 × 90% 동일 코드 → 일반화 비용 > 중복 비용.
+
+## 다른 L2 와의 관계
+
+- [T32 Dump L2](/learn/l2-t32/) — 이 설정을 SSH 2회로 실행
+- [Admin 대시보드 L2 03-approval](/learn/l2-admin/03-approval/) — 같은 dialog 패턴이 Permission 승인에서도 반복
+- [Server Admin L2](/learn/l2-serveradmin/) — JTAG 서버 · T32 PC 의 외래키 출처
+
+---
+
+[← 02. CRUD 컨트롤러](/learn/l2-t32admin/02-controller/) · [모듈 시작](/learn/l2-t32admin/)

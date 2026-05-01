@@ -1,7 +1,7 @@
 // @source src/main/proto/device_agent.proto
 // @lines 1-50
 // @note DeviceAgent service RPC 목록
-// @synced 2026-04-19T10:15:34.649Z
+// @synced 2026-05-01T01:05:23.615Z
 
 syntax = "proto3";
 package agent;
@@ -36,6 +36,12 @@ service DeviceAgent {
   rpc UploadTraceToMinio(UploadTraceRequest) returns (UploadTraceResponse);
   rpc UploadBenchmarkToMinio(UploadBenchmarkRequest) returns (UploadBenchmarkResponse);
 
+  // Trace Archive — presigned URL 받아 nginx 경유 PUT (raw + realtime parquet)
+  rpc UploadTraceArchive(UploadTraceArchiveRequest) returns (stream UploadTraceArchiveProgress);
+
+  // Archive 대상 파일 메타 조회 — portal 이 init 시 정확한 file size/count 를 알고 presign 발급
+  rpc GetArchiveFilesInfo(GetArchiveFilesInfoRequest) returns (GetArchiveFilesInfoResponse);
+
   // Monitoring
   rpc MonitorDevices(MonitorDevicesRequest) returns (stream DeviceMetrics);
 
@@ -46,10 +52,4 @@ service DeviceAgent {
   rpc ReplayMacro(ReplayMacroRequest) returns (ReplayMacroResponse);
   rpc TakeScreenshot(TakeScreenshotRequest) returns (TakeScreenshotResponse);
   rpc ScreenshotOcr(ScreenshotOcrRequest) returns (ScreenshotOcrResponse);
-
-  // Trace Reparse
-  rpc ReparseTrace(ReparseTraceRequest) returns (ReparseTraceResponse);
-}
-
-// ==================== Device ====================
 

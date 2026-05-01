@@ -1,12 +1,13 @@
 // @source frontend/src/lib/components/PerfGenerator.svelte
 // @lines 17-79
 // @note $state 정의 · guessYAxisUnit/capitalize · flattenFields 재귀 (4 분기 + role 휴리스틱)
-// @synced 2026-04-19T10:15:34.672Z
+// @synced 2026-05-01T01:05:23.644Z
 
 	// --- State ---
 	let jsonInput = $state('');
 	let componentName = $state('MyPerf');
 	let xAxisUnit = $state('GB');
+	let includeExcelExport = $state(false);
 	let copied = $state(false);
 	let rightPanelTab = $state<'code' | 'preview'>('code');
 	let jsonPanelTab = $state<'text' | 'tree'>('text');
@@ -65,4 +66,3 @@
 			}
 		}
 		return nodes;
-	}

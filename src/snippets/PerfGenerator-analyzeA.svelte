@@ -1,7 +1,8 @@
 // @source frontend/src/lib/components/PerfGenerator.svelte
 // @lines 81-133
 // @note analyzeJson Case 1 — object-of-arrays 분기 (arrayKeys 수집 → tabs · cycleField)
-// @synced 2026-04-19T10:15:34.672Z
+// @synced 2026-05-01T01:05:23.644Z
+
 
 	// --- Top-level JSON Analysis ---
 	function analyzeJson(input: string): AnalysisResult {
@@ -55,4 +56,3 @@
 			}
 
 			return { shape: 'object-of-arrays', tabs, cycleField, allFields };
-		}

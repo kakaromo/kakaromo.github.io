@@ -1,6 +1,6 @@
 ---
-title: L2 19종 비교 — 공통 패턴과 갈림길
-description: 기능 11 + 크로스-컷 2 + 엔진 3 + Orchestration 1 + 관리 UI 2 — 열아홉 모듈을 한 화면에서 대조
+title: L2 20종 비교 — 공통 패턴과 갈림길
+description: 기능 11 + 크로스-컷 2 + 엔진 3 + Orchestration 1 + 관리 UI 3 — 스무 모듈을 한 화면에서 대조 (T32 Admin 추가로 관리 UI 축 정식 승격)
 sidebar:
   order: 0
 ---
@@ -279,9 +279,11 @@ L2 19종을 읽으며 반복되는 판단 기준:
 - [🎯 Trace Analysis L2](/learn/l2-trace/) — 기능 축 11호 · 데이터 규모 서브축. Rust gRPC + Arrow IPC + parquet projection + WebGL binary attribute + MinIO range-GET async reader. 4 신규 L3 개념 도입([Apache Arrow](/learn/l3-concepts/data/apache-arrow/) · [Parquet ProjectionMask/RowFilter](/learn/l3-concepts/data/parquet-projection/) · [AsyncFileReader trait](/learn/l3-concepts/rust/async-file-reader/) · [Deck.gl OrthographicView + binary attribute](/learn/l3-concepts/webgl/deckgl-orthographic/)).
 - [UFS Metadata 모니터링 L2](/learn/l2-metadata/) — 기능 축 (재작성). TC running 감지 자동 수집 + 7 command_type(tool/sysfs/keyvalue/raw/table/bitmap/binary) + BinMapper 재사용(binary) + f2fs 3 전용 뷰(Iostat/Heatmap/Bitmap) + `{userdata}` placeholder. "감지자 + 작업자 분리" 패턴의 모범.
 
-> **참고**: 위 "축별 대조" 표 3종(트리거·전송·영속)에는 Orchestration(Scenario)·관리 UI(Admin·Server Admin) 3 모듈은 컬럼 수 제약으로 포함하지 않았습니다. 각 모듈의 상세는 위 "한 줄 요약 열아홉 줄"과 해당 L2 페이지를 참고하세요.
+> **참고**: 위 "축별 대조" 표 3종(트리거·전송·영속)에는 Orchestration(Scenario)·관리 UI(Admin·Server Admin·T32 Admin) 4 모듈은 컬럼 수 제약으로 포함하지 않았습니다. 각 모듈의 상세는 위 "한 줄 요약"과 해당 L2 페이지를 참고하세요.
 
-> **Trace 엔진 deep-dive**: `🎯 Trace Analysis`는 **portal 관점**에서 호출 흐름을 다루고, [`🦀 l2-trace-rust`](/learn/l2-trace-rust/) 10장은 **Rust 바이너리 내부**(mmap+rayon · bottom half · realtime · DuckDB stats · portable build)를 다루는 보조 모듈입니다. 19 L2 카운트에는 Trace 1개로 들어가지만, 사이드바에서는 별도 섹션으로 노출됩니다.
+> **Trace 엔진 deep-dive**: `🎯 Trace Analysis`는 **portal 관점**에서 호출 흐름을 다루고, [`🦀 l2-trace-rust`](/learn/l2-trace-rust/) 10장은 **Rust 바이너리 내부**(mmap+rayon · bottom half · realtime · DuckDB stats · portable build)를 다루는 보조 모듈입니다. 20 L2 카운트에는 Trace 1개로 들어가지만, 사이드바에서는 별도 섹션으로 노출됩니다.
+
+> **🔧 T32 Admin 추가 (Phase 26)**: [T32 Admin L2](/learn/l2-t32admin/) 가 추가되어 **관리 UI 가 정식 축으로 승격**됐습니다 (3 사례: Admin · Server Admin · T32 Admin). 5 축 후보 중 **4 축 확정 + 1 개척**: 기능 11 / 크로스컷 2 / 엔진 3 / 관리 UI 3 / Orchestration 1 (개척).
 
 ---
 

@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/head/tcp/HeadTcpClient.java
 // @lines 109-141
 // @note connect() — listen bind + outSocket + connect 커맨드
-// @synced 2026-04-19T10:15:34.645Z
+// @synced 2026-05-01T01:05:23.608Z
 
     private void connect() throws Exception {
         localIp = resolveLocalIp();
@@ -24,7 +24,7 @@
         // 3. connect command 전송
         int listenSuffixNum = listenPort % 100;
         int headSuffixNum = headPort % 100;
-        String connectCmd = localIp + ":" + listenSuffixNum + ":" + headHost + "[" + headSuffixNum + "] connection!!\n";
+        String connectCmd = localIp + ":" + listenSuffixNum + ":" + headHost + "[" + headSuffixNum + "] connection!!";
         sendCommand(outSocket, connectCmd);
         log.info("[{}] Sent connect command: {}", name, connectCmd.trim());
 

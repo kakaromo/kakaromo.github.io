@@ -1,7 +1,6 @@
 // @source src/main/java/com/samsung/move/t32/entity/T32Config.java
-// @lines 1-88
-// @note portal_t32_configs — 서버 그룹·JTAG/T32PC·명령 템플릿·경로 매핑
-// @synced 2026-04-19T10:15:34.653Z
+// @note portal_t32_configs — 19 컬럼: 2 서버 ID(JTAG·T32PC) + 전용 계정 + 4 명령 + 4 경로 baseline
+// @synced 2026-05-01T01:05:23.652Z
 
 package com.samsung.move.t32.entity;
 
@@ -91,3 +90,4 @@ public class T32Config {
         updatedAt = LocalDateTime.now();
     }
 }
+

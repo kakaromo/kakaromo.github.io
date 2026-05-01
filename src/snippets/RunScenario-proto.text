@@ -1,7 +1,13 @@
 // @source src/main/proto/device_agent.proto
 // @lines 215-285
 // @note ScenarioStep/ScenarioLoop/ConditionalBranch + RunScenarioRequest (has_branching + edges[])
-// @synced 2026-04-19T10:15:34.677Z
+// @synced 2026-05-01T01:05:23.649Z
+
+  bool success = 1;
+  string message = 2;
+}
+
+// ==================== Scenario ====================
 
 message ScenarioStep {
   string type = 1;                    // "benchmark", "shell", "cleanup", "sleep", "trace_start", "trace_stop", "condition", "app_macro"
@@ -68,9 +74,3 @@ message RunScenarioRequest {
   int32 retry_delay_seconds = 8;    // 재시도 간격 (기본 60초)
   bool has_branching = 9;            // true면 DAG 실행 모드 (edges 사용)
   repeated StepEdge edges = 10;      // DAG 모드용 엣지 목록
-}
-
-message RunScenarioResponse {
-  string job_id = 1;
-}
-

@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/admin/controller/AdminController.java
 // @lines 1-58
 // @note AdminController 의존 15개 (health/cache/info/menu/vm/user/server/head/debug/permission/session/request 등)
-// @synced 2026-04-19T10:15:34.677Z
+// @synced 2026-05-01T01:05:23.650Z
 
 package com.samsung.move.admin.controller;
 
@@ -19,6 +19,7 @@ import com.samsung.move.auth.entity.PortalUser;
 import com.samsung.move.auth.entity.UserHeadAccess;
 import com.samsung.move.auth.repository.PermissionRequestRepository;
 import com.samsung.move.auth.repository.UserHeadAccessRepository;
+import com.samsung.move.auth.service.AdminNotificationService;
 import com.samsung.move.auth.service.PortalUserService;
 import com.samsung.move.auth.service.SessionConfigService;
 import com.samsung.move.auth.service.UserPermissionService;
@@ -60,4 +61,3 @@ public class AdminController {
     private final UserHeadAccessRepository userHeadAccessRepository;
     private final SessionConfigService sessionConfigService;
     private final PermissionRequestRepository permissionRequestRepository;
-

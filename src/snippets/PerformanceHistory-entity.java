@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/testdb/entity/PerformanceHistory.java
 // @lines 1-68
 // @note 실행 결과 스냅샷 — logPath(원격 JSON 포인터) + result + ManyToOne TR/TC
-// @synced 2026-04-19T10:15:34.668Z
+// @synced 2026-05-01T01:05:23.637Z
 
 package com.samsung.move.testdb.entity;
 

@@ -1,7 +1,22 @@
 // @source src/main/java/com/samsung/move/metadata/service/MetadataMonitorService.java
 // @lines 290-351
 // @note monitorOnce — commandType 분기 + JSON 파싱 + 인메모리 + 파일 저장
-// @synced 2026-04-19T10:15:34.653Z
+// @synced 2026-05-01T01:05:23.620Z
+
+        }
+
+        // 최종 수집 (lock으로 동시 실행 방지)
+        try {
+            monitorOnce(ctx);
+        } catch (Exception e) {
+            log.error("Final monitoring failed for slot [{}]: {}", slotKey, e.getMessage());
+        }
+
+        log.info("Stopped metadata monitoring for slot [{}], total entries per type: {}",
+                slotKey, ctx.getMonitoredData().entrySet().stream()
+                        .collect(java.util.stream.Collectors.toMap(
+                                Map.Entry::getKey, e -> e.getValue().size())));
+    }
 
     private void monitorOnce(SlotMonitorContext ctx) {
         // Lock으로 동시 실행 방지 (scheduled task + stopMonitoring 최종 수집)
@@ -13,55 +28,40 @@
             for (UfsMetadataCommand cmd : ctx.getCommands()) {
                 String typeKey = cmd.getMetadataType().getTypeKey();
                 try {
+                    String template = resolvePlaceholders(cmd.getCommandTemplate(), ctx);
+                    if (template == null) {
+                        // placeholder 미해석 → 명령 skip (warn 은 resolvePlaceholders 에서 1회만)
+                        continue;
+                    }
                     String rawJson;
                     if ("sysfs".equals(cmd.getCommandType())) {
                         rawJson = commandExecutor.executeSysfsRead(
-                                ctx.getTentacleName(), ctx.getSerial(), cmd.getCommandTemplate());
+                                ctx.getTentacleName(), ctx.getSerial(), template);
                     } else if ("raw".equals(cmd.getCommandType())) {
                         rawJson = commandExecutor.executeRaw(
-                                ctx.getTentacleName(), ctx.getSerial(), cmd.getCommandTemplate());
+                                ctx.getTentacleName(), ctx.getSerial(), template);
                     } else if ("keyvalue".equals(cmd.getCommandType())) {
                         rawJson = commandExecutor.executeKeyValue(
-                                ctx.getTentacleName(), ctx.getSerial(), cmd.getCommandTemplate());
+                                ctx.getTentacleName(), ctx.getSerial(), template);
+                    } else if ("table".equals(cmd.getCommandType())) {
+                        rawJson = commandExecutor.executeTable(
+                                ctx.getTentacleName(), ctx.getSerial(), template);
+                    } else if ("bitmap".equals(cmd.getCommandType())) {
+                        rawJson = commandExecutor.executeBitmap(
+                                ctx.getTentacleName(), ctx.getSerial(), template);
+                    } else if ("binary".equals(cmd.getCommandType())) {
+                        if (cmd.getPredefinedStruct() == null) {
+                            log.warn("binary command [id={}] missing predefinedStruct — skip", cmd.getId());
+                            continue;
+                        }
+                        String outputPath = resolvePlaceholders(cmd.getBinaryOutputPath(), ctx);
+                        if (outputPath == null) continue;
+                        rawJson = commandExecutor.executeBinary(
+                                ctx.getTentacleName(), ctx.getSerial(), template,
+                                outputPath,
+                                cmd.getPredefinedStruct().getId(),
+                                cmd.getBinaryEndianness());
                     } else {
                         rawJson = commandExecutor.executeCommand(
-                                ctx.getTentacleName(), ctx.getSerial(), cmd.getCommandTemplate());
+                                ctx.getTentacleName(), ctx.getSerial(), template);
                     }
-
-                    // JSON 파싱 — non-JSON 출력이면 skip
-                    String trimmed = rawJson.trim();
-                    if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) {
-                        log.warn("Non-JSON output for slot [{}] type [{}]: {}",
-                                ctx.getSlotKey(), typeKey, trimmed.substring(0, Math.min(100, trimmed.length())));
-                        continue;
-                    }
-
-                    Map<String, Object> parsed = objectMapper.readValue(
-                            trimmed, new TypeReference<>() {});
-
-                    // time 필드 추가
-                    parsed.put("time", ctx.getElapsedSeconds().get());
-
-                    // 누적 (CopyOnWriteArrayList — thread-safe)
-                    ctx.getMonitoredData().get(typeKey).add(parsed);
-
-                    // 파일 저장
-                    String filePath = String.format("%s/slot%d/log/debug_%s.json",
-                            props.getOutputBaseDir(), ctx.getSlotNumber(), typeKey);
-                    String jsonArray = objectMapper.writerWithDefaultPrettyPrinter()
-                            .writeValueAsString(ctx.getMonitoredData().get(typeKey));
-                    commandExecutor.writeJsonToFile(ctx.getTentacleName(), filePath, jsonArray);
-
-                } catch (Exception e) {
-                    log.error("Monitoring failed for slot [{}] type [{}]: {}",
-                            ctx.getSlotKey(), typeKey, e.getMessage());
-                }
-            }
-            String enableKey = ctx.getTentacleName() + ":" + ctx.getSlotNumber();
-            int intervalSec = slotIntervalSeconds.getOrDefault(enableKey,
-                    props.getCollectionIntervalMin() * 60);
-            ctx.getElapsedSeconds().addAndGet(intervalSec);
-        } finally {
-            ctx.getMonitorLock().unlock();
-        }
-    }

@@ -1,7 +1,8 @@
 // @source frontend/src/lib/components/PerfGenerator.svelte
 // @lines 222-274
 // @note $derived analysis · $effect tabOverrides 동기화 · uniqueFields 중복 제거 · setFieldRole
-// @synced 2026-04-19T10:15:34.673Z
+// @synced 2026-05-01T01:05:23.644Z
+
 
 	const analysis: AnalysisResult = $derived.by(() => analyzeJson(jsonInput));
 
@@ -55,4 +56,3 @@
 		fieldRoleOverrides[ps] = role;
 		// Force re-analysis by triggering reactivity
 		fieldRoleOverrides = { ...fieldRoleOverrides };
-	}

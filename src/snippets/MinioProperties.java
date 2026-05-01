@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/minio/config/MinioProperties.java
 // @lines 1-17
 // @note @ConfigurationProperties minio — endpoint / port / credentials
-// @synced 2026-04-19T10:15:34.664Z
+// @synced 2026-05-01T01:05:23.632Z
 
 package com.samsung.move.minio.config;
 
@@ -18,5 +18,5 @@ public class MinioProperties {
     private boolean useSsl = false;
     private String accessKey = "admin";
     private String secretKey = "changeme";
-}
 
+    /**

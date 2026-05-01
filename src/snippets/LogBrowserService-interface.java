@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/logbrowser/service/LogBrowserService.java
 // @lines 1-33
 // @note 공통 인터페이스 + FileEntry/FileContent/SearchResult record
-// @synced 2026-04-19T10:15:34.657Z
+// @synced 2026-05-01T01:05:23.625Z
 
 package com.samsung.move.logbrowser.service;
 

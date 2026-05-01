@@ -1,7 +1,17 @@
 # @source src/main/resources/application.yaml
 # @lines 10-30
 # @note head.* + tentacle.* 설정
-# @synced 2026-04-19T10:15:34.642Z
+# @synced 2026-05-01T01:05:23.604Z
+
+# Tomcat 응답 gzip 압축
+# 특히 /api/trace/chart 의 Arrow IPC 바이너리(수십 MB) 가 사내망에서 다운로드만으로
+# 5~10초 걸리던 문제. Arrow IPC 는 columnar 라 같은 cmd 문자열/정렬된 숫자가 많아
+# 50~70% 압축됨. 4KB 이하 응답은 압축 비용 > 효과 라 min-response-size 로 제외.
+server:
+  compression:
+    enabled: true
+    mime-types: application/json,application/xml,text/html,text/plain,text/css,text/javascript,application/javascript,application/vnd.apache.arrow.stream
+    min-response-size: 4096
 
 head:
   reconnect-delay-ms: 5000
@@ -14,13 +24,3 @@ tentacle:
   log-prefix: /home/octo/tentacle
   ssh:
     username: samsung
-    password: tentacle
-    port: 22
-  mount-path: /mnt
-  head:
-    host: ""
-    home-path: /home/octo
-    log-path: ${tentacle.head.home-path}/nas
-    local-home-path: /mnt/head
-    mount-path: ${tentacle.head.local-home-path}/nas
-

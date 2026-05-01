@@ -1,7 +1,9 @@
 // @source src/main/java/com/samsung/move/admin/controller/AdminController.java
 // @lines 173-216
 // @note /users/{id}/permissions GET/PUT + /permissions/defaults + /users/{id}/head-access GET/PUT
-// @synced 2026-04-19T10:15:34.677Z
+// @synced 2026-05-01T01:05:23.650Z
+
+    // ── User permissions ────────────────────────────────────────────
 
     @GetMapping("/users/{id}/permissions")
     public Map<String, Boolean> getUserPermissions(@PathVariable Long id) {
@@ -45,5 +47,3 @@
     @GetMapping("/session-config")
     public Map<String, Integer> getSessionConfig() {
         return sessionConfigService.getConfig();
-    }
-

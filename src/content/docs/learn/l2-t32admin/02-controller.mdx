@@ -1,0 +1,76 @@
+---
+title: 02. CRUD 컨트롤러 — 비밀번호 마스킹 + 매핑 동기화
+description: T32ConfigController 의 update 흐름 — 빈 비밀번호는 기존 유지, N:M 매핑은 deleteAll → saveAll
+sidebar:
+  order: 2
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import updateCode from '../../../../snippets/T32ConfigController-update.java?raw';
+import helpersCode from '../../../../snippets/T32ConfigController-helpers.java?raw';
+
+## 30초 요약
+
+CRUD 4 엔드포인트는 평범하지만 두 패턴이 다른 L2 와 다릅니다.
+
+1. **비밀번호 마스킹** — 프론트가 빈 문자열을 보내면 기존 값 유지 (수정 시 매번 비밀번호를 다시 입력하지 않게)
+2. **N:M 매핑 동기화** — 매번 `deleteByT32ConfigId` → `saveAll` (diff 계산 안 함)
+
+두 패턴 모두 운영 UI 에서 자주 보이는 트레이드오프 — **단순함을 위한 의도적 비효율**.
+
+## updateConfig 7 step
+
+<CodeTour
+  client:visible
+  language="java"
+  filename="T32ConfigController.java (updateConfig)"
+  code={updateCode}
+  startLine={77}
+  steps={[
+    { id: 's1', title: '존재 여부 → Optional 패턴', body: '<p><code>findById(id).map(...)</code> 로 not found 분기를 자연스럽게. <code>orElse(ResponseEntity.notFound())</code> 한 줄로 끝.</p>', lines: [78, 80] },
+    { id: 's2', title: '평범한 setter 갱신 (1)', body: '<p>대부분 필드는 그대로 덮어씀. 비밀번호 외에는 빈 값도 유효한 의도된 변경 (예: jtagUsername 을 빈 문자열로 의도적으로 비울 수도).</p>', lines: [81, 84] },
+    { id: 's3', title: '⚡ 비밀번호 마스킹 패턴', body: '<p><strong>이 패턴이 핵심.</strong> 프론트는 GET 응답에 비밀번호를 안 받음 (보안). 수정 시 빈 채로 보내면 <strong>기존 값 유지</strong>. 새 비밀번호 입력 시에만 변경.</p><p>프론트 영향: 폼이 빈 비밀번호를 default 로 보여줌 → 사용자는 입력 안 해도 다른 필드 수정 가능.</p>', lines: [85, 88] },
+    { id: 's4', title: 'T32 PC 비밀번호도 같은 패턴', body: '<p>JTAG 와 T32 PC 양쪽이 같은 패턴 적용. 4가지 비밀번호 시나리오 (변경 안 함 / JTAG 만 / T32PC 만 / 둘 다) 모두 자연스럽게 처리.</p>', lines: [89, 93] },
+    { id: 's5', title: '명령·경로·enabled 갱신', body: '<p>나머지 14 필드는 평범한 setter. 부분 업데이트가 아닌 <strong>전체 덮어쓰기</strong> — PATCH 가 아닌 PUT 의미.</p>', lines: [94, 103] },
+    { id: 's6', title: 'N:M 매핑 동기화 호출', body: '<p>본 컨트롤러의 책임은 마스터 행 갱신까지. 매핑 동기화는 헬퍼로 위임.</p>', lines: [104, 105] },
+    { id: 's7', title: 'DTO 재로드해서 응답', body: '<p>저장 후 <code>loadDto(id)</code> 로 fresh 데이터를 다시 조회해서 응답. <strong>save 의 반환값은 못 믿음</strong> — 매핑 변경 후 join 결과가 달라지므로.</p>', lines: [106, 109] },
+  ]}
+/>
+
+## saveAssignedServers — 매핑 동기화 패턴
+
+<CodeTour
+  client:visible
+  language="java"
+  filename="T32ConfigController.java (helpers)"
+  code={helpersCode}
+  startLine={123}
+  steps={[
+    { id: 's1', title: 'deleteByT32ConfigId 로 전부 삭제', body: '<p>diff 계산 (어떤 매핑이 추가됐고 어떤 게 삭제됐는지) 안 함. <strong>전부 지우고 새로 INSERT</strong>.</p><p>왜 이게 정답인가: 매핑 행은 가벼움(2 외래키 + id), 한 설정의 매핑이 보통 10개 이하, diff 코드의 복잡도 > 약간의 INSERT 비용.</p>', lines: [125, 126] },
+    { id: 's2', title: 'null guard', body: '<p>프론트가 매핑을 보내지 않으면 (빈 배열도 아닌 null) 모든 매핑을 지운 채 종료.</p>', lines: [127, 127] },
+    { id: 's3', title: 'saveAll 로 일괄 INSERT', body: '<p>JPA 가 batch insert 로 묶어줌. 트랜잭션 1개 안에서 완결.</p>', lines: [128, 132] },
+    { id: 's4', title: 'loadDto — 재조회 패턴', body: '<p>Save 후 응답 만들 때 <strong>모든 서버·그룹을 한 번에 fetch</strong> 후 Map 으로 인덱싱. N+1 회피 + DTO 조립.</p>', lines: [136, 144] },
+  ]}
+/>
+
+## 왜 비밀번호 마스킹을 백엔드에서 처리하나
+
+대안 두 가지:
+
+| 방법 | 단점 |
+|---|---|
+| 프론트가 GET 응답에서 비밀번호 받기 + 수정 시 그대로 다시 보내기 | 비밀번호가 응답으로 노출 — 브라우저 캐시·로그·DevTools 에 남음 |
+| 별도 "비밀번호만 수정" 엔드포인트 | UX 가 나빠짐 (비밀번호 외 필드 수정해도 비밀번호 입력해야 한다는 인상) |
+| **현재: 빈 문자열은 무시** | 프론트는 비밀번호 모르는 채로 다른 필드 수정 가능 + 새 비밀번호 입력 시 변경 |
+
+3번이 **운영 UI 에서 가장 흔한 패턴**. Auth · Server Admin · 외부 API 키 관리 등에서도 같은 패턴.
+
+## 직접 해보기
+
+- 설정 1개 만든 후 `description` 만 수정 — 비밀번호가 그대로 유지되는지 확인
+- 비밀번호 칸에 새 값 입력 후 저장 — 변경 됐는지 SSH 시도로 확인
+- 매핑 5개 저장 후 매핑 3개로 줄여서 저장 — 줄어든 2개가 DB 에서 삭제됐는지 확인
+
+## 다음
+
+[03. Admin UI — 그룹 필터링 + 다중 선택 + dialog 모드 →](/learn/l2-t32admin/03-ui/)

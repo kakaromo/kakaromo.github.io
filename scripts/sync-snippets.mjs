@@ -883,6 +883,41 @@ const manifest = [
     language: 'java',
     note: 'portal_server_groups — name(unique) · description · sortOrder',
   },
+
+  // ── T32 Admin (Phase 26) ──
+  {
+    id: 'T32Config-entity',
+    source: 'src/main/java/com/samsung/move/t32/entity/T32Config.java',
+    language: 'java',
+    note: 'portal_t32_configs — 19 컬럼: 2 서버 ID(JTAG·T32PC) + 전용 계정 + 4 명령 + 4 경로 baseline',
+  },
+  {
+    id: 'T32ConfigServer-entity',
+    source: 'src/main/java/com/samsung/move/t32/entity/T32ConfigServer.java',
+    language: 'java',
+    note: 'portal_t32_config_servers — many-to-many (config ↔ portal_servers) + 복합 unique',
+  },
+  {
+    id: 'T32ConfigController-update',
+    source: 'src/main/java/com/samsung/move/t32/controller/T32ConfigController.java',
+    lines: [77, 110],
+    language: 'java',
+    note: 'updateConfig — 비밀번호 마스킹 패턴(공백이면 기존 값 유지)',
+  },
+  {
+    id: 'T32ConfigController-helpers',
+    source: 'src/main/java/com/samsung/move/t32/controller/T32ConfigController.java',
+    lines: [123, 145],
+    language: 'java',
+    note: 'saveAssignedServers + loadDto — 매핑 deleteAll → saveAll 패턴',
+  },
+  {
+    id: 'AdminT32Tab-state',
+    source: 'frontend/src/routes/admin/AdminT32Tab.svelte',
+    lines: [25, 67],
+    language: 'svelte',
+    note: 'state · derived(groupServers) · loadAll(Promise.all) — 3 fetch 병렬',
+  },
 ];
 
 async function extractLines(text, lines) {

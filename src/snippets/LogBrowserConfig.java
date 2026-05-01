@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/logbrowser/config/LogBrowserConfig.java
 // @lines 1-39
 // @note @ConditionalOnProperty tentacle.access-mode로 Local vs SSH 빈 선택
-// @synced 2026-04-19T10:15:34.657Z
+// @synced 2026-05-01T01:05:23.625Z
 
 package com.samsung.move.logbrowser.config;
 

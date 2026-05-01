@@ -1,10 +1,11 @@
 // @source frontend/src/routes/agent/scenario-canvas/types.ts
 // @lines 1-84
 // @note StepNodeData/ConditionNodeData/LoopGroupData + ScenarioNode 유니온 + STEP_TYPE_COLORS 8종 + stepSummary
-// @synced 2026-04-19T10:15:34.675Z
+// @synced 2026-05-01T01:05:23.648Z
 
 import type { Node, Edge } from '@xyflow/svelte';
 import type { StepForm } from '../AgentStepEditDialog.svelte';
+import type { ThreadProgress } from '../iotest/types.js';
 
 export interface StepNodeData {
 	stepForm: StepForm;
@@ -15,6 +16,9 @@ export interface StepNodeData {
 	execLoopCurrent?: number;
 	execLoopTotal?: number;
 	execProgress?: number;
+	// iotest stepType 일 때 thread별 진행률 — Go agent 의 stderr JSONL → SSE 로 forward 되는
+	// 데이터를 ScenarioCanvas 가 채워준다. 데이터가 없으면 노드는 기존대로 렌더.
+	threadProgresses?: ThreadProgress[];
 }
 
 export interface ConditionRule {
@@ -83,7 +87,3 @@ export function stepSummary(form: StepForm): string {
 		case 'sleep': return `${form.extraText.replace('seconds=', '')}s`;
 		case 'trace_start': return `${form.formParams.trace_type ?? 'ufs'} trace`;
 		case 'trace_stop': return 'stop';
-		case 'app_macro': return form.macroName ?? `Macro #${form.macroId ?? '?'}`;
-		default: return form.type;
-	}
-}

@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/metadata/service/MetadataMonitorService.java
 // @lines 40-133
 // @note 슬롯별 활성 모니터 · excluded types · 8개 스레드풀 + SlotMonitorContext
-// @synced 2026-04-19T10:15:34.652Z
+// @synced 2026-05-01T01:05:23.619Z
 
     private final UfsMetadataCommandRepository commandRepo;
     private final UfsProductMetadataRepository productMetadataRepo;
@@ -61,6 +61,10 @@
         private final AtomicInteger elapsedSeconds = new AtomicInteger(0);
         private final ReentrantLock monitorLock = new ReentrantLock();
         private volatile ScheduledFuture<?> future;
+        /** {userdata} 등 디바이스별 동적 placeholder → 실제 값 매핑. startMonitoring 시 1회 조회. */
+        private final Map<String, String> placeholders = new ConcurrentHashMap<>();
+        /** placeholder 해석 실패 키 — 같은 키로 매 사이클마다 warn 로그가 폭주하지 않도록 1회만 기록. */
+        private final Set<String> warnedUnresolvedKeys = ConcurrentHashMap.newKeySet();
 
         SlotMonitorContext(String slotKey, HeadSlotData slot, List<UfsMetadataCommand> commands) {
             this.slotKey = slotKey;
@@ -93,7 +97,3 @@
         }
 
         public int getElapsedSecondsValue() {
-            return elapsedSeconds.get();
-        }
-    }
-

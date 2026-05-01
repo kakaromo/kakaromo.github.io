@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/minio/service/MinioStorageService.java
 // @lines 1-150
 // @note 버킷/오브젝트 CRUD — list/listRecursive/upload/download/stat/createFolder/delete
-// @synced 2026-04-19T10:15:34.665Z
+// @synced 2026-05-01T01:05:23.633Z
 
 package com.samsung.move.minio.service;
 
@@ -143,13 +143,13 @@ public class MinioStorageService {
                         .build());
     }
 
+    /**
+     * 파일 크기를 아는 경우의 PUT. partSize 64MB 로 RTT/요청 횟수 감소.
+     * size>0 이면 .stream(s, size, partSize) — SDK 가 size/partSize 로 part 수 결정.
+     */
     public void uploadObject(String bucket, String objectName, InputStream stream, long size, String contentType) throws Exception {
+        long partSize = size >= 0 ? PART_SIZE_BYTES : -1;
         minioClient.putObject(
                 PutObjectArgs.builder()
                         .bucket(bucket)
                         .object(objectName)
-                        .stream(stream, size, -1)
-                        .contentType(contentType != null ? contentType : "application/octet-stream")
-                        .build());
-    }
-}

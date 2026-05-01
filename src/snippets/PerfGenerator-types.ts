@@ -1,7 +1,7 @@
 // @source frontend/src/lib/components/PerfGenerator.types.ts
 // @lines 1-26
 // @note FieldRole · FieldType · TopLevelShape · FieldNode · TabInfo · AnalysisResult 공유 타입
-// @synced 2026-04-19T10:15:34.672Z
+// @synced 2026-05-01T01:05:23.643Z
 
 export type FieldRole = 'tab' | 'cycle' | 'data' | 'stat' | 'ignore';
 export type FieldType = 'number' | 'number[]' | 'string' | 'null' | 'object';

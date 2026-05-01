@@ -1,8 +1,19 @@
 // @source src/main/java/com/samsung/move/head/precmd/service/PreCommandService.java
 // @lines 190-250
 // @note executeSync + parseCommands + resolveCommand(adb -s usbId) + extractVmName
-// @synced 2026-04-19T10:15:34.656Z
+// @synced 2026-05-01T01:05:23.624Z
 
+            } catch (Exception e) {
+                // error handled via SSE
+                try {
+                    sendEvent(emitter, "error", Map.of("message", e.getMessage()));
+                } catch (Exception ignored) {}
+                emitter.completeWithError(e);
+            }
+        });
+
+        return emitter;
+    }
 
     /**
      * 자동 실행용 동기 메서드 (SSE 없이). PreCommandAutoExecutor에서 호출.
@@ -23,12 +34,13 @@
 
             String usbId = slotData.getUsbId();
             String vmName = extractVmName(slotData.getSetLocation());
-            if (vmName == null) continue;
+            String tentacleIp = slotData.getTentacleIp();
+            if (vmName == null && (tentacleIp == null || tentacleIp.isBlank())) continue;
 
             for (String rawCmd : commands) {
                 String resolvedCmd = resolveCommand(rawCmd, usbId);
                 try {
-                    CommandResult result = executeSshCommand(vmName, resolvedCmd);
+                    CommandResult result = executeSshCommand(vmName, tentacleIp, resolvedCmd);
                     if (result.exitCode != 0) break;
                 } catch (Exception e) {
                     break;
@@ -52,15 +64,3 @@
         Matcher m = ADB_PREFIX.matcher(command);
         if (m.find()) {
             return "adb -s " + usbId + " " + command.substring(m.end());
-        }
-        return command;
-    }
-
-    private String extractVmName(String setLocation) {
-        if (setLocation == null) return null;
-        java.util.regex.Matcher m = Pattern.compile("^(T\\d+)").matcher(setLocation);
-        return m.find() ? m.group(1) : null;
-    }
-
-    private record CommandResult(int exitCode, String output) {}
-

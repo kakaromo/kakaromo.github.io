@@ -1,7 +1,8 @@
 // @source frontend/src/lib/components/PerfGenerator.svelte
 // @lines 135-220
 // @note analyzeJson Case 2 — array-of-objects 분기 (top fields + nested tabs + 빈 tabKeys fallback)
-// @synced 2026-04-19T10:15:34.673Z
+// @synced 2026-05-01T01:05:23.644Z
+
 
 		// Case 2: Top-level array → each item's object-valued keys become tabs
 		if (Array.isArray(parsed)) {
@@ -88,4 +89,3 @@
 		}
 
 		return { shape: 'other', tabs: [], cycleField: null, allFields: [], error: 'Expected a top-level object or array' };
-	}

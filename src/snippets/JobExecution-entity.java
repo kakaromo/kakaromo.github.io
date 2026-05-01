@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/agent/entity/JobExecution.java
 // @lines 1-81
 // @note portal_job_executions — job 이력 (벤치마크/시나리오/Trace 공용)
-// @synced 2026-04-19T10:15:34.648Z
+// @synced 2026-05-01T01:05:23.613Z
 
 package com.samsung.move.agent.entity;
 
@@ -78,9 +78,9 @@ public class JobExecution implements Serializable {
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;
 
-    @PrePersist
-    protected void onCreate() {
-        createdAt = LocalDateTime.now();
-        if (startedAt == null) startedAt = createdAt;
-    }
-}
+    // ── Trace Archive (옵션 A — agent 종료 후에도 trace 결과 영속 조회) ──
+    // 모두 nullable: 기존 row 와 archive 미사용 row 는 모두 null
+
+    @Column(name = "trace_raw_key", length = 500)
+    private String traceRawKey;                  // e.g. "agent-trace-uploads/{serverId}/{jobId}/trace.log"
+
