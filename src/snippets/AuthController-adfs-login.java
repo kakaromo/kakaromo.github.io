@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/auth/controller/AuthController.java
 // @lines 158-180
 // @note GET /adfs/login — nonce 생성 + authorize URL 조립 + redirect
-// @synced 2026-05-01T01:05:23.635Z
+// @synced 2026-05-01T01:10:31.177Z
 
         userService.changePassword(user.getId(), newPassword);
         return Map.of("success", true);

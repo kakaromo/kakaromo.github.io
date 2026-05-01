@@ -1,6 +1,6 @@
 // @source src/main/java/com/samsung/move/t32/entity/T32Config.java
 // @note portal_t32_configs — 19 컬럼: 2 서버 ID(JTAG·T32PC) + 전용 계정 + 4 명령 + 4 경로 baseline
-// @synced 2026-05-01T01:05:23.652Z
+// @synced 2026-05-01T01:10:31.194Z
 
 package com.samsung.move.t32.entity;
 

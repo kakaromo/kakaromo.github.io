@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/logbrowser/service/SshLogBrowserService.java
 // @lines 191-211
 // @note SSH searchInFile — rg -n --no-heading --encoding auto + shellEscape + iconv pipe
-// @synced 2026-05-01T01:05:23.626Z
+// @synced 2026-05-01T01:10:31.168Z
 
     @Override
     public List<SearchResult> searchInFile(String tentacleName, String path, String pattern) {

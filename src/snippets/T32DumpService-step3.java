@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/t32/service/T32DumpService.java
 // @lines 284-326
 // @note Step 3 Dump — {result_path}/{branch_path} 치환 + fail 키워드 감지
-// @synced 2026-05-01T01:05:23.622Z
+// @synced 2026-05-01T01:10:31.164Z
 
     // ── Step 3: Dump 실행 (실시간 스트리밍) ──
 

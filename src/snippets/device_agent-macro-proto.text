@@ -1,0 +1,24 @@
+// @source src/main/proto/device_agent.proto
+// @lines 42-60
+// @note 6 RPC: ListInstalledApps · StartRecording · StopRecording · ReplayMacro · TakeScreenshot · ScreenshotOcr
+// @synced 2026-05-01T01:10:31.193Z
+
+
+  // App Macro (이벤트 녹화/재생 + OCR)
+  rpc ListInstalledApps(ListInstalledAppsRequest) returns (ListInstalledAppsResponse);
+  rpc StartRecording(StartRecordingRequest) returns (StartRecordingResponse);
+  rpc StopRecording(StopRecordingRequest) returns (StopRecordingResponse);
+  rpc ReplayMacro(ReplayMacroRequest) returns (ReplayMacroResponse);
+  rpc TakeScreenshot(TakeScreenshotRequest) returns (TakeScreenshotResponse);
+  rpc ScreenshotOcr(ScreenshotOcrRequest) returns (ScreenshotOcrResponse);
+
+  // Trace Reparse
+  rpc ReparseTrace(ReparseTraceRequest) returns (ReparseTraceResponse);
+}
+
+// ==================== Device ====================
+
+enum DeviceState {
+  DEVICE_STATE_UNKNOWN = 0;
+  DEVICE_STATE_ONLINE = 1;
+  DEVICE_STATE_OFFLINE = 2;

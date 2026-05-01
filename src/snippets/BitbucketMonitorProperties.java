@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/bitbucket/config/BitbucketMonitorProperties.java
 // @lines 1-13
 // @note @ConfigurationProperties bitbucket.monitor — enabled + defaultTargetPath
-// @synced 2026-05-01T01:05:23.629Z
+// @synced 2026-05-01T01:10:31.171Z
 
 package com.samsung.move.bitbucket.config;
 

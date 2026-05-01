@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/agent/grpc/AgentConnectionManager.java
 // @lines 14-82
 // @note serverId별 gRPC client 캐싱 + host:port 변경 시 재연결
-// @synced 2026-05-01T01:05:23.615Z
+// @synced 2026-05-01T01:10:31.156Z
 
 @Component
 public class AgentConnectionManager {

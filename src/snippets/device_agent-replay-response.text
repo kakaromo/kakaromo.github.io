@@ -1,0 +1,43 @@
+// @source src/main/proto/device_agent.proto
+// @lines 626-663
+// @note ReplayMacro/Screenshot — ocr_results map(스크린샷 이름 → 텍스트), metrics map(정규식 → 숫자)
+// @synced 2026-05-01T01:10:31.194Z
+
+message ReplayMacroRequest {
+  string device_id = 1;
+  repeated MacroEvent events = 2;
+  int32 source_width = 3;              // 녹화 시 해상도
+  int32 source_height = 4;
+  string job_id = 5;                   // 시나리오 job ID (진행 상황 보고용)
+}
+
+message ReplayMacroResponse {
+  bool success = 1;
+  string message = 2;
+  map<string, string> ocr_results = 3; // screenshot name → OCR 텍스트
+  map<string, double> metrics = 4;     // 추출된 숫자 메트릭 (OCR 정규식 매칭)
+}
+
+message TakeScreenshotRequest {
+  string device_id = 1;
+}
+
+message TakeScreenshotResponse {
+  bool success = 1;
+  bytes image_data = 2;                // PNG 이미지 바이트
+  int32 width = 3;
+  int32 height = 4;
+}
+
+message ScreenshotOcrRequest {
+  string device_id = 1;
+  OcrRegion region = 2;                // null이면 전체 화면
+  string extract_pattern = 3;          // 정규식 (빈 문자열이면 전체 텍스트)
+}
+
+message ScreenshotOcrResponse {
+  bool success = 1;
+  string full_text = 2;               // 전체 OCR 텍스트
+  string extracted_value = 3;          // 정규식 매칭 결과
+  bytes image_data = 4;               // 스크린샷 PNG
+}

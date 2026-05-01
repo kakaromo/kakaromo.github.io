@@ -1,7 +1,7 @@
 // @source frontend/src/lib/components/PerfGenerator.svelte
 // @lines 17-79
 // @note $state 정의 · guessYAxisUnit/capitalize · flattenFields 재귀 (4 분기 + role 휴리스틱)
-// @synced 2026-05-01T01:05:23.644Z
+// @synced 2026-05-01T01:10:31.186Z
 
 	// --- State ---
 	let jsonInput = $state('');

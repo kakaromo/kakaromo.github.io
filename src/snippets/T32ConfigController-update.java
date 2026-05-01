@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/t32/controller/T32ConfigController.java
 // @lines 77-110
 // @note updateConfig — 비밀번호 마스킹 패턴(공백이면 기존 값 유지)
-// @synced 2026-05-01T01:05:23.653Z
+// @synced 2026-05-01T01:10:31.194Z
 
     @PutMapping("/configs/{id}")
     public ResponseEntity<T32ConfigDto> updateConfig(@PathVariable Long id, @RequestBody CreateRequest request) {

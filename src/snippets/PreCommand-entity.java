@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/head/precmd/entity/PreCommand.java
 // @lines 1-50
 // @note portal_pre_commands — 명령 템플릿 (name + commands JSON array)
-// @synced 2026-05-01T01:05:23.622Z
+// @synced 2026-05-01T01:10:31.164Z
 
 package com.samsung.move.head.precmd.entity;
 

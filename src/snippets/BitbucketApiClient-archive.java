@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/bitbucket/service/BitbucketApiClient.java
 // @lines 121-195
 // @note downloadArchive (at=%2f encoded ref, InputStream) + getCommitTimestamp fallback
-// @synced 2026-05-01T01:05:23.631Z
+// @synced 2026-05-01T01:10:31.174Z
 
     /**
      * Bitbucket Server REST API로 ZIP 아카이브 다운로드.

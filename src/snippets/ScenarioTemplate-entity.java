@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/agent/entity/ScenarioTemplate.java
 // @lines 1-58
 // @note portal_scenario_templates — name/description/repeatCount + stepsJson/loopsJson(TEXT) 이원 JSON
-// @synced 2026-05-01T01:05:23.648Z
+// @synced 2026-05-01T01:10:31.189Z
 
 package com.samsung.move.agent.entity;
 

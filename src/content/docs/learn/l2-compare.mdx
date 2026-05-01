@@ -1,6 +1,6 @@
 ---
-title: L2 20종 비교 — 공통 패턴과 갈림길
-description: 기능 11 + 크로스-컷 2 + 엔진 3 + Orchestration 1 + 관리 UI 3 — 스무 모듈을 한 화면에서 대조 (T32 Admin 추가로 관리 UI 축 정식 승격)
+title: L2 21종 비교 — 공통 패턴과 갈림길
+description: 기능 12 + 크로스-컷 2 + 엔진 3 + Orchestration 1 + 관리 UI 3 — 스물한 모듈을 한 화면에서 대조 (App Macro 추가로 Android UI 자동화 도메인 진입)
 sidebar:
   order: 0
 ---
@@ -283,7 +283,9 @@ L2 19종을 읽으며 반복되는 판단 기준:
 
 > **Trace 엔진 deep-dive**: `🎯 Trace Analysis`는 **portal 관점**에서 호출 흐름을 다루고, [`🦀 l2-trace-rust`](/learn/l2-trace-rust/) 10장은 **Rust 바이너리 내부**(mmap+rayon · bottom half · realtime · DuckDB stats · portable build)를 다루는 보조 모듈입니다. 20 L2 카운트에는 Trace 1개로 들어가지만, 사이드바에서는 별도 섹션으로 노출됩니다.
 
-> **🔧 T32 Admin 추가 (Phase 26)**: [T32 Admin L2](/learn/l2-t32admin/) 가 추가되어 **관리 UI 가 정식 축으로 승격**됐습니다 (3 사례: Admin · Server Admin · T32 Admin). 5 축 후보 중 **4 축 확정 + 1 개척**: 기능 11 / 크로스컷 2 / 엔진 3 / 관리 UI 3 / Orchestration 1 (개척).
+> **🔧 T32 Admin 추가 (Phase 26)**: [T32 Admin L2](/learn/l2-t32admin/) 가 추가되어 **관리 UI 가 정식 축으로 승격**됐습니다 (3 사례: Admin · Server Admin · T32 Admin).
+
+> **🤖 App Macro 추가 (Phase 27)**: [App Macro L2](/learn/l2-app-macro/) 가 추가되어 **Android UI 자동화 도메인** 신규 진입. Tesseract OCR + 이벤트 녹화/재생 + 해상도 비례 변환 3 신규 L3 개념. Scenario Canvas step type 8개로 확장 (app_macro 추가) → Orchestration 축이 5종 다른 엔진을 조합. 5 축 분류: **기능 12 / 크로스컷 2 / 엔진 3 / 관리 UI 3 / Orchestration 1 (개척)**.
 
 ---
 

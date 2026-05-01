@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/admin/controller/AdminController.java
 // @lines 173-216
 // @note /users/{id}/permissions GET/PUT + /permissions/defaults + /users/{id}/head-access GET/PUT
-// @synced 2026-05-01T01:05:23.650Z
+// @synced 2026-05-01T01:10:31.191Z
 
     // ── User permissions ────────────────────────────────────────────
 

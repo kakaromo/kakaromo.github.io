@@ -1,7 +1,7 @@
 // @source frontend/src/lib/api/headSlotStore.svelte.ts
 // @lines 55-177
 // @note createHeadSlotStore — $state + EventSource + dedup + retry
-// @synced 2026-05-01T01:05:23.611Z
+// @synced 2026-05-01T01:10:31.153Z
 
 interface HeadSsePayload {
 	slots: HeadSlotData[];

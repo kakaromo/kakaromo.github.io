@@ -1,7 +1,7 @@
 // @source frontend/src/routes/agent/scenario-canvas/types.ts
 // @lines 1-84
 // @note StepNodeData/ConditionNodeData/LoopGroupData + ScenarioNode 유니온 + STEP_TYPE_COLORS 8종 + stepSummary
-// @synced 2026-05-01T01:05:23.648Z
+// @synced 2026-05-01T01:10:31.190Z
 
 import type { Node, Edge } from '@xyflow/svelte';
 import type { StepForm } from '../AgentStepEditDialog.svelte';

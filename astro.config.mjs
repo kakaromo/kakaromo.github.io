@@ -73,7 +73,7 @@ export default defineConfig({
               label: 'L2 — 기능 모듈',
               collapsed: true,
               items: [
-                { label: '🔎 L2 20종 비교', slug: 'learn/l2-compare' },
+                { label: '🔎 L2 21종 비교', slug: 'learn/l2-compare' },
                 {
                   label: '슬롯 모니터링 (Head TCP + SSE)',
                   autogenerate: { directory: 'learn/l2-slots' },
@@ -157,6 +157,10 @@ export default defineConfig({
                 {
                   label: '🔧 T32 Admin (관리 UI 패턴 3호 · N:M 매핑)',
                   autogenerate: { directory: 'learn/l2-t32admin' },
+                },
+                {
+                  label: '🤖 App Macro (Android 녹화·재생 + Tesseract OCR)',
+                  autogenerate: { directory: 'learn/l2-app-macro' },
                 },
               ],
             },

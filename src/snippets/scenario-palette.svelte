@@ -1,7 +1,7 @@
 // @source frontend/src/routes/agent/scenario-canvas/NodePalette.svelte
 // @lines 1-76
 // @note 8 step types + 2 control(Loop/Condition) 드래그 팔레트 + HTML5 DnD API
-// @synced 2026-05-01T01:05:23.649Z
+// @synced 2026-05-01T01:10:31.191Z
 
 <script lang="ts">
 	import { STEP_TYPE_COLORS } from './types.js';

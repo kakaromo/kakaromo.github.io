@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/t32/controller/T32ConfigController.java
 // @lines 123-145
 // @note saveAssignedServers + loadDto — 매핑 deleteAll → saveAll 패턴
-// @synced 2026-05-01T01:05:23.653Z
+// @synced 2026-05-01T01:10:31.195Z
 
     // ── Helpers ──
 

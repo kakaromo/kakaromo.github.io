@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/auth/controller/AuthController.java
 // @lines 181-252
 // @note POST /adfs/callback — id_token 파싱 + claims 추출 + PortalUser 생성/갱신 + 세션 저장
-// @synced 2026-05-01T01:05:23.635Z
+// @synced 2026-05-01T01:10:31.177Z
 
                 + "&scope=" + URLEncoder.encode(adfsProperties.getScope(), StandardCharsets.UTF_8)
                 + "&nonce=" + URLEncoder.encode(nonce, StandardCharsets.UTF_8);

@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/minio/config/MinioProperties.java
 // @lines 1-17
 // @note @ConfigurationProperties minio — endpoint / port / credentials
-// @synced 2026-05-01T01:05:23.632Z
+// @synced 2026-05-01T01:10:31.174Z
 
 package com.samsung.move.minio.config;
 

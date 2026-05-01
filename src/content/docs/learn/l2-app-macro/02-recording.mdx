@@ -1,0 +1,89 @@
+---
+title: 02. 녹화 6 RPC — Go Agent gRPC 프록시
+description: ListInstalledApps · StartRecording · StopRecording — Spring 은 얇은 패스스루
+sidebar:
+  order: 2
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import rpcCode from '../../../../snippets/AgentController-app-macro-rpc.java?raw';
+import protoCode from '../../../../snippets/device_agent-macro-proto.text?raw';
+
+## 30초 요약
+
+매크로 녹화는 **6개 RPC** 의 조합입니다. Spring 은 모든 RPC 에서 **순수 프록시** — 단순 변환·전달만 하고 비즈니스 로직 없음. 이는 [Trace L2](/learn/l2-trace/) 가 Rust 서비스를 다루는 방식과 동일.
+
+## 6 RPC 의 역할
+
+<CodeTour
+  client:visible
+  language="text"
+  filename="device_agent.proto (App Macro RPC)"
+  code={protoCode}
+  startLine={42}
+  steps={[
+    { id: 's1', title: 'ListInstalledApps — 앱 목록', body: '<p>녹화 시작 전에 사용자가 어떤 앱의 매크로를 만들지 선택. <code>InstalledApp.appName + packageName</code> 두 필드.</p>', lines: [44, 44] },
+    { id: 's2', title: 'StartRecording — 녹화 시작', body: '<p>session_id 반환. <strong>Go Agent 가 내부적으로 getevent 같은 raw 이벤트 캡처를 시작</strong>. 이 시점부터 사용자가 화면을 만지는 모든 동작이 기록.</p>', lines: [45, 45] },
+    { id: 's3', title: 'StopRecording — 녹화 종료 + events 반환', body: '<p>StopRecordingResponse 안에 <strong>MacroEvent 배열 + 디바이스 해상도</strong>가 통째로 들어옴. Spring 은 이걸 그대로 프론트에 전달, 프론트가 사용자 확인 후 저장 결정.</p>', lines: [46, 46] },
+    { id: 's4', title: 'ReplayMacro — 재생', body: '<p>다음 페이지 [03. 재생 + OCR] 에서 다룸.</p>', lines: [47, 47] },
+    { id: 's5', title: 'TakeScreenshot — 단발 스크린샷', body: '<p>OCR 영역 지정 도와주는 보조 RPC. 사용자가 OcrRegion 을 그릴 때 미리보기로.</p>', lines: [48, 48] },
+    { id: 's6', title: 'ScreenshotOcr — 단발 OCR (디버깅용)', body: '<p>매크로 만들기 전에 OCR 정규식이 잘 작동하는지 테스트. 한 번 OCR 결과를 받아 정규식 매칭 검증.</p>', lines: [49, 49] },
+  ]}
+/>
+
+## Spring 의 프록시 4 step
+
+<CodeTour
+  client:visible
+  language="java"
+  filename="AgentController.java (App Macro RPC 프록시)"
+  code={rpcCode}
+  startLine={1064}
+  steps={[
+    { id: 's1', title: 'listInstalledApps — Map 변환만', body: '<p>gRPC 응답의 InstalledApp 을 Map 으로 변환해서 JSON 응답. 실제 데이터는 Go Agent 가 100% 결정.</p>', lines: [1068, 1079] },
+    { id: 's2', title: 'startRecording — sessionId 패스스루', body: '<p>프론트가 보내는 deviceId 만 추출. session_id 는 Go Agent 가 발급, Spring 은 보관 안 함 (stateless).</p>', lines: [1081, 1089] },
+    { id: 's3', title: 'stopRecording — events 그대로 반환', body: '<p>StopRecordingResponse 의 events 를 JSON 직렬화해서 반환. Spring 은 events 를 <strong>저장하지 않음</strong> — 프론트가 사용자에게 보여주고 "저장하시겠습니까?" 누를 때 비로소 POST /app-macros 로 저장.</p>', lines: [1091, 1099] },
+    { id: 's4', title: '⚡ 왜 stop 직후 저장 안 하나', body: '<p>녹화 결과를 사용자가 검토하지 않고 저장하면 <strong>실수로 한 동작</strong>도 영구 저장됨. UX 는 "녹화 → 검토 → 저장" 3단계가 자연스러움.</p><p>StopRecording 응답을 한 번 더 POST 로 보내는 게 비효율 같지만, 실제로는 사용자 검토 시간 (수 분) 동안 events 가 브라우저 메모리에만 머무는 게 옳음.</p>', lines: [1091, 1099] },
+  ]}
+/>
+
+## 프록시 패턴 — 다른 L2 와 비교
+
+| L2 | Spring 의 역할 | 외부 서비스 |
+|---|---|---|
+| 🎯 Trace | 얇은 프록시 + 인증 | Rust gRPC (:50053) |
+| 🔬 iotest | 얇은 프록시 + preset 조립 | Go Agent (:50051) |
+| 🕸 Scenario | 직렬화 + 위상 정렬 + 실행 추적 | Go Agent |
+| **App Macro 녹화** | **순수 프록시** | **Go Agent** |
+| **App Macro 재생** | **순수 프록시 + OCR 결과 가공** | **Go Agent + Tesseract (Agent 내부)** |
+
+녹화는 가장 얇은 프록시. **Spring 의 책임 = 인증 + DB 저장 + JSON 변환** 3가지. 비즈니스 로직 0.
+
+## Recording 동안의 상태
+
+| 단계 | Spring 상태 | Go Agent 상태 | DB |
+|---|---|---|---|
+| 시작 전 | 없음 | idle | (관계 없음) |
+| StartRecording 호출 | 없음 (응답만 전달) | recording (session_id 보유) | 없음 |
+| 사용자 조작 | 없음 | events 누적 | 없음 |
+| StopRecording | 없음 (응답 전달) | idle (events 일회성 반환) | 없음 |
+| 사용자 검토 | 없음 | 없음 | 없음 |
+| 사용자 저장 | POST /app-macros | 없음 | events_json INSERT |
+
+**Spring 이 무상태**라는 점이 핵심. 운영 중 Spring 재시작해도 녹화 세션이 살아 있음 (Go Agent 가 보유).
+
+## WebSocket 화면 미러링
+
+녹화 중 사용자가 디바이스 화면을 어떻게 보나? — `getScreenWebSocketUrl()` 로 별도 WebSocket 으로 H.264 스트림 미러링. JMuxer 로 디코딩.
+
+이 부분은 [원격 터미널 L2](/learn/l2-remote/) 와 비슷한 패턴 (브라우저 ↔ 외부 서비스 직결, Spring 미경유). 다만 화면 영상은 "녹화의 일부가 아님" — 단지 사용자가 화면을 보면서 조작할 수 있게 하는 보조.
+
+## 직접 해보기
+
+- StartRecording 호출 후 화면 1번 tap → StopRecording → events 배열에 정확히 1개 tap 이 들어왔는지 확인
+- 녹화 중 swipe → events 배열에 type="swipe" 가 1개 (tap 2개로 안 쪼개졌는지)
+- StopRecording 후 저장 안 한 채 페이지 새로고침 → events 가 사라지는지 (정상)
+
+## 다음
+
+[03. 재생 + OCR — Tesseract + 좌표 변환 + 정규식 매칭 →](/learn/l2-app-macro/03-replay-ocr/)

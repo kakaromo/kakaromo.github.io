@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/admin/controller/AdminController.java
 // @lines 1-58
 // @note AdminController 의존 15개 (health/cache/info/menu/vm/user/server/head/debug/permission/session/request 등)
-// @synced 2026-05-01T01:05:23.650Z
+// @synced 2026-05-01T01:10:31.191Z
 
 package com.samsung.move.admin.controller;
 

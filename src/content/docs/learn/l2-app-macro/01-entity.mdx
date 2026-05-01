@@ -1,0 +1,92 @@
+---
+title: 01. Entity — eventsJson MEDIUMTEXT + 좌표 메타
+description: portal_app_macros — 8 컬럼이지만 본질은 events_json 안의 MacroEvent 배열
+sidebar:
+  order: 1
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import entityCode from '../../../../snippets/AppMacro-entity.java?raw';
+import serviceCode from '../../../../snippets/AppMacroService.java?raw';
+import eventProtoCode from '../../../../snippets/device_agent-macro-event.text?raw';
+
+## 30초 요약
+
+`portal_app_macros` 테이블은 8 컬럼이지만 데이터의 **99%가 `events_json` 안**에 있습니다. iotest preset · Scenario template 과 같은 **"단일 컬럼 JSON 저장"** 패턴이 다시 등장.
+
+## AppMacro 엔티티 5 step
+
+<CodeTour
+  client:visible
+  language="java"
+  filename="AppMacro.java"
+  code={entityCode}
+  steps={[
+    { id: 's1', title: 'name + description + packageName', body: '<p>운영 메타. <code>packageName</code> 은 어떤 앱의 매크로인지 식별 (예: <code>com.antutu.ABenchMark</code>).</p>', lines: [24, 31] },
+    { id: 's2', title: '⚡ events_json — MEDIUMTEXT 단일 컬럼', body: '<p><strong>이 컬럼이 핵심.</strong> MacroEvent 배열 전체가 JSON 으로 직렬화되어 들어감. <code>MEDIUMTEXT</code> = 16 MB 까지 가능.</p><p>왜 정규화하지 않았나: <strong>이벤트 시퀀스는 절대 단독으로 쿼리되지 않음</strong>. 항상 매크로 단위로 통째로 로드 → 재생. 정규화하면 join 비용만 늘어나고 이득 없음.</p><p>iotest <code>configJson</code> · Scenario <code>stepsJson</code> 과 같은 패턴.</p>', lines: [33, 35] },
+    { id: 's3', title: 'deviceWidth + deviceHeight', body: '<p>녹화 시 디바이스 해상도. 재생 시 다른 해상도라면 <strong>비례 변환</strong>의 기준값.</p><p>예: 1080×2400 에서 녹화한 매크로를 720×1600 에서 재생 → x 좌표를 <code>x * 720 / 1080</code> 로 자동 변환.</p>', lines: [37, 41] },
+    { id: 's4', title: '타임스탬프 자동 갱신', body: '<p><code>@PrePersist</code> + <code>@PreUpdate</code> 로 created_at / updated_at 자동 관리. T32Config · iotest preset 등과 동일 패턴.</p>', lines: [43, 58] },
+    { id: 's5', title: 'Serializable — Redis 캐시 호환', body: '<p>Redis 캐시(JdkSerializationRedisSerializer) 가 동작하려면 엔티티가 <code>Serializable</code>. AppMacro 도 다른 엔티티들과 같은 규칙 적용.</p>', lines: [18, 18] },
+  ]}
+/>
+
+## MacroEvent 19 필드 (proto)
+
+이벤트 1개의 구조:
+
+<CodeTour
+  client:visible
+  language="text"
+  filename="device_agent.proto (MacroEvent)"
+  code={eventProtoCode}
+  startLine={560}
+  steps={[
+    { id: 's1', title: 't (시간 오프셋)', body: '<p><code>t</code>: 녹화 시작 기준 ms 단위. 모든 이벤트가 시작 시점 기준 상대 시간을 가짐 → 재생 시 같은 타이밍으로 재현.</p>', lines: [563, 564] },
+    { id: 's2', title: 'type — 7가지 이벤트 종류', body: '<p>tap(누름) · swipe(드래그) · key(키 입력) · wait(고정 대기) · wait_until(조건 대기) · screenshot(스크린샷) · scroll_capture(스크롤하며 OCR).</p>', lines: [565, 565] },
+    { id: 's3', title: 'tap 좌표 / swipe 좌표', body: '<p>tap 은 (x, y) 만. swipe 는 (x, y) → (x2, y2) + duration. 모두 <strong>녹화 해상도 기준</strong>.</p>', lines: [566, 570] },
+    { id: 's4', title: 'wait_until 의 4 필드', body: '<p>method (어떻게 감지) · pattern (감지할 문자열) · timeout (최대 대기) · poll_interval (확인 주기). <strong>activity / ui_text / screen_stable</strong> 3 메소드.</p><p>activity = 화면 액티비티 변경, ui_text = UI 안에 특정 텍스트 등장, screen_stable = N초 동안 화면이 변하지 않음 (벤치마크 종료 감지에 유용).</p>', lines: [573, 576] },
+    { id: 's5', title: 'screenshot — name + ocr_region + ocr_pattern', body: '<p>스크린샷 한 장 + OCR 결과를 <code>name</code> 키로 저장. 정규식으로 숫자만 뽑을 수 있음 (점수 추출).</p>', lines: [577, 582] },
+    { id: 's6', title: 'scroll_capture — 동영상 같은 OCR', body: '<p>스크롤하면서 매번 OCR 실행. 긴 결과 페이지(여러 화면)에서 모든 점수 추출 시 사용. <code>direction · max_scrolls · scroll_pause</code> 3 필드.</p>', lines: [578, 581] },
+  ]}
+/>
+
+`OcrRegion` 은 `(x, y, width, height)` 4 필드 — 화면 일부만 OCR 영역으로 지정 (전체보다 빠르고 정확).
+
+## AppMacroService — 표준 CRUD + duplicate
+
+<CodeTour
+  client:visible
+  language="java"
+  filename="AppMacroService.java"
+  code={serviceCode}
+  steps={[
+    { id: 's1', title: 'findAll · findById', body: '<p>표준 JPA 패턴. findById 는 not found 시 IllegalArgumentException.</p>', lines: [16, 23] },
+    { id: 's2', title: 'create · update', body: '<p>update 는 8 필드 setter 호출. T32Config 와 달리 <strong>비밀번호 마스킹 없음</strong> — 매크로에는 비밀 정보 없음.</p>', lines: [25, 38] },
+    { id: 's3', title: '⚡ duplicate — 매크로 복제', body: '<p>이름 끝에 "(복사)" 붙여서 새 행 생성. <strong>events_json 도 그대로 복제</strong> — 사용자가 매크로를 fork 해서 수정 가능.</p><p>왜 필요: AnTuTu 가 v9 → v10 으로 업데이트되면 UI 가 살짝 바뀜. 기존 매크로 복제 → 일부 step 수정 → 새 버전 매크로로 저장.</p>', lines: [40, 51] },
+    { id: 's4', title: 'delete', body: '<p>매크로 자체 삭제. 시나리오에서 macro_id 로 참조하던 곳은 <strong>orphan 처리 안 함</strong> (시나리오 실행 시 not found 에러로 명확히 실패).</p>', lines: [53, 55] },
+  ]}
+/>
+
+## "단일 컬럼 JSON" 패턴 비교 (3 모듈)
+
+| L2 | 컬럼 | 타입 | 내용 | 재생 시 |
+|---|---|---|---|---|
+| 🔬 iotest | `config_json` | MEDIUMTEXT | thread + commands 트리 | Go executor 가 파싱 |
+| 🕸 Scenario | `steps_json` + `loops_json` | TEXT | DAG 노드·엣지 | Spring 이 파싱 → topo sort |
+| **App Macro** | `events_json` | MEDIUMTEXT | **MacroEvent 배열** | **Go Agent 가 순서대로 재생** |
+
+3 모듈 모두 같은 트레이드오프:
+
+- **장점**: 정규화 비용 0, 사용자 편집 폼이 트리/DAG/배열 한 단위로 매핑됨
+- **단점**: SQL 로 부분 쿼리 불가 (예: "tap 만 5번 이상 있는 매크로 검색" → 불가능)
+- **언제 OK**: 부분 쿼리 요구 자체가 없을 때. App Macro 는 매크로 단위 CRUD 외에 안 함 → OK
+
+## 직접 해보기
+
+- 매크로 1개 생성 → `events_json` 컬럼 직접 SELECT 해서 JSON 구조 확인
+- 같은 매크로를 `duplicate` API 로 복제 → "복사" 매크로의 events_json 이 똑같이 복제되는지 확인
+- DB 에서 events_json 을 직접 수정 (예: 한 tap 의 좌표 변경) → 재생 시 반영되는지 확인 (raw JSON 편집의 위험성)
+
+## 다음
+
+[02. 녹화 6 RPC — Go Agent gRPC 프록시 →](/learn/l2-app-macro/02-recording/)

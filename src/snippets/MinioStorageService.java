@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/minio/service/MinioStorageService.java
 // @lines 1-150
 // @note 버킷/오브젝트 CRUD — list/listRecursive/upload/download/stat/createFolder/delete
-// @synced 2026-05-01T01:05:23.633Z
+// @synced 2026-05-01T01:10:31.175Z
 
 package com.samsung.move.minio.service;
 

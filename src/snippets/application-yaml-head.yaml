@@ -1,7 +1,7 @@
 # @source src/main/resources/application.yaml
 # @lines 10-30
 # @note head.* + tentacle.* 설정
-# @synced 2026-05-01T01:05:23.604Z
+# @synced 2026-05-01T01:10:31.146Z
 
 # Tomcat 응답 gzip 압축
 # 특히 /api/trace/chart 의 Arrow IPC 바이너리(수십 MB) 가 사내망에서 다운로드만으로

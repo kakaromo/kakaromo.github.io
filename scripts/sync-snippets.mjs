@@ -884,6 +884,48 @@ const manifest = [
     note: 'portal_server_groups — name(unique) · description · sortOrder',
   },
 
+  // ── App Macro (Phase 27) ──
+  {
+    id: 'AppMacro-entity',
+    source: 'src/main/java/com/samsung/move/agent/entity/AppMacro.java',
+    language: 'java',
+    note: 'portal_app_macros — eventsJson MEDIUMTEXT (단일 컬럼 JSON 저장 패턴 반복)',
+  },
+  {
+    id: 'AppMacroService',
+    source: 'src/main/java/com/samsung/move/agent/service/AppMacroService.java',
+    language: 'java',
+    note: 'CRUD + duplicate (이름 + "(복사)") — Service 패턴 단순',
+  },
+  {
+    id: 'AgentController-app-macro-rpc',
+    source: 'src/main/java/com/samsung/move/agent/controller/AgentController.java',
+    lines: [1064, 1100],
+    language: 'java',
+    note: 'macro/installed-apps + start-recording + stop-recording — Go Agent gRPC 프록시',
+  },
+  {
+    id: 'device_agent-macro-proto',
+    source: 'src/main/proto/device_agent.proto',
+    lines: [42, 60],
+    language: 'text',
+    note: '6 RPC: ListInstalledApps · StartRecording · StopRecording · ReplayMacro · TakeScreenshot · ScreenshotOcr',
+  },
+  {
+    id: 'device_agent-macro-event',
+    source: 'src/main/proto/device_agent.proto',
+    lines: [560, 595],
+    language: 'text',
+    note: 'MacroEvent 19 필드 — 7 type(tap/swipe/key/wait/wait_until/screenshot/scroll_capture) + OcrRegion',
+  },
+  {
+    id: 'device_agent-replay-response',
+    source: 'src/main/proto/device_agent.proto',
+    lines: [626, 663],
+    language: 'text',
+    note: 'ReplayMacro/Screenshot — ocr_results map(스크린샷 이름 → 텍스트), metrics map(정규식 → 숫자)',
+  },
+
   // ── T32 Admin (Phase 26) ──
   {
     id: 'T32Config-entity',

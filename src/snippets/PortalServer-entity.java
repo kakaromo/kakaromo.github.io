@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/admin/entity/PortalServer.java
 // @lines 1-79
 // @note portal_servers — 접속 대상 서버 + ssh/rdp/vnc 포트 + guacd_host/port
-// @synced 2026-05-01T01:05:23.616Z
+// @synced 2026-05-01T01:10:31.157Z
 
 package com.samsung.move.admin.entity;
 

@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/admin/entity/PortalServer.java
 // @lines 1-79
 // @note portal_servers — name(unique) · ip · 3 포트(ssh/rdp/vnc) · connectionType 비트마스크 · visible · guacdHost/Port
-// @synced 2026-05-01T01:05:23.652Z
+// @synced 2026-05-01T01:10:31.192Z
 
 package com.samsung.move.admin.entity;
 

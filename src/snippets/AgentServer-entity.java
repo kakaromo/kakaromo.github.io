@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/agent/entity/AgentServer.java
 // @lines 1-57
 // @note portal_agent_servers — Agent gRPC 서버 등록
-// @synced 2026-05-01T01:05:23.612Z
+// @synced 2026-05-01T01:10:31.153Z
 
 package com.samsung.move.agent.entity;
 

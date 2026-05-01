@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/testdb/service/PerformanceResultDataService.java
 // @lines 163-218
 // @note tryRepairJson — trailing comma + 닫히지 않은 bracket/문자열 복구
-// @synced 2026-05-01T01:05:23.638Z
+// @synced 2026-05-01T01:10:31.180Z
 
     /**
      * 불완전 JSON 복구 시도: trailing comma 제거 + 닫히지 않은 bracket 닫기

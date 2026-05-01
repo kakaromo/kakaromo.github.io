@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/metadata/service/MetadataMonitorService.java
 // @lines 134-234
 // @note @Scheduled checkSlotStateChanges + startMonitoring (TR 기반 제품→command 매핑 + 수집 주기)
-// @synced 2026-05-01T01:05:23.620Z
+// @synced 2026-05-01T01:10:31.161Z
 
             return elapsedSeconds.get();
         }

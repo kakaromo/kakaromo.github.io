@@ -1,0 +1,101 @@
+---
+title: App Macro — Android 이벤트 녹화·재생 + Tesseract OCR
+description: 사용자가 Android 디바이스 화면을 직접 조작하면 그 이벤트를 녹화하고, 재생하면 같은 동작이 자동 수행되며, 스크린샷에서 OCR 로 숫자/텍스트를 추출하는 신규 트랙
+sidebar:
+  order: 0
+---
+
+import ArchitectureDiagram from '../../../../components/learn/ArchitectureDiagram.svelte';
+
+## 이 모듈에서 배울 것
+
+"AnTuTu Benchmark 를 한 번 사람이 손으로 돌리면, 그 동안의 tap/swipe/key/wait 가 전부 녹화됩니다. 이 매크로를 저장해 두면, 다음에는 버튼 한 번으로 같은 디바이스에 자동 재생되고, 결과 화면을 OCR 로 인식해서 점수 숫자가 자동 추출됩니다."
+
+기존 19 L2 와 다른 4 가지 차이:
+
+1. **이벤트 시퀀스가 1차 데이터** — DB 컬럼 19개가 아니라 **MacroEvent 배열의 JSON**이 본질. iotest preset 과 같은 "단일 컬럼 JSON" 패턴이지만 더 큰 시간 차원
+2. **OCR 으로 동적 결과 추출** — Tesseract OCR + 정규식 매칭으로 **벤치마크 점수를 화면에서 직접** 가져옴. 앱 API 가 없어도 동작
+3. **scenario_canvas 와 직접 연동** — `app_macro` step type 으로 스케줄·loop·condition 안에 끼워 넣음
+4. **재생 시 좌표 변환** — 녹화 해상도 ≠ 재생 해상도일 때 자동 비례 변환
+
+## 여정 한눈에
+
+<ArchitectureDiagram
+  client:visible
+  height={360}
+  caption="ListInstalledApps → StartRecording → 사용자 조작 → StopRecording(events) → DB 저장 → ReplayMacro + OCR → Scenario 통합"
+  altText="App Macro 는 사용자가 Android 디바이스에 앱을 띄우고 직접 조작하면 그 동안의 tap/swipe 이벤트가 녹화됩니다. 저장된 매크로는 ReplayMacro 로 재생되고 스크린샷에서 OCR 로 숫자가 추출됩니다. 또 시나리오 캔버스의 한 step 으로도 사용 가능합니다."
+  nodes={[
+    { id: 's1', label: '1. Entity + DB',   sublabel: 'eventsJson MEDIUMTEXT', layer: 'state', x: 0,   y: 60,  href: '/learn/l2-app-macro/01-entity/' },
+    { id: 's2', label: '2. 녹화 6 RPC',    sublabel: 'List/Start/Stop',      layer: 'tx',    x: 220, y: 60,  href: '/learn/l2-app-macro/02-recording/' },
+    { id: 's3', label: '3. 재생 + OCR',    sublabel: 'Tesseract + 좌표 변환',  layer: 'tx',    x: 440, y: 60,  href: '/learn/l2-app-macro/03-replay-ocr/' },
+    { id: 's4', label: '4. Scenario 통합', sublabel: 'app_macro step type', layer: 'be',    x: 660, y: 60,  href: '/learn/l2-app-macro/04-scenario/' },
+  ]}
+  edges={[
+    { from: 's1', to: 's2', label: 'create',       kind: 'sync' },
+    { from: 's2', to: 's3', label: 'replay',        kind: 'async' },
+    { from: 's3', to: 's4', label: 'macro_id ref',  kind: 'sync' },
+  ]}
+/>
+
+## 다른 L2 와 무엇이 다른가
+
+| 축 | iotest | Scenario Canvas | **App Macro** |
+|---|---|---|---|
+| 1차 데이터 | configJson (thread + commands) | stepsJson + loopsJson | **eventsJson (MacroEvent 배열)** |
+| 데이터 차원 | 멀티 thread | DAG (그래프) | **시간 시퀀스 (1차원 배열, t 필드)** |
+| 트리거 | 사용자 Run | 사용자 Run / Schedule | **사용자 녹화 → 재생** |
+| 외부 결과 추출 | 없음 (syscall 결과만) | 없음 | **Tesseract OCR + 정규식** |
+| 결과 형식 | thread별 IOPS/BW | step별 status | **ocr_results map + metrics map** |
+| 재사용 | preset 1대1 | template 1대1 | **macro_id 로 시나리오 step 안에서 호출** |
+| 신규 L3 개념 | (없음) | (없음) | **Tesseract OCR · 좌표 변환 · 이벤트 녹화** |
+
+3 모듈 모두 "**configJson 단일 컬럼 + 외부 엔진 실행**" 패턴이지만, App Macro 는 **시간 + OCR** 두 차원을 추가합니다.
+
+## 왜 좌표 녹화가 아닌 UI Automator 를 안 썼나
+
+대안 비교:
+
+| 접근 | 장점 | 단점 |
+|---|---|---|
+| **Android UI Automator** | 의미적 (버튼 텍스트로 매칭) | 앱마다 view hierarchy 구조 다름 — 범용성 낮음 |
+| **Frida 후킹** | API 호출 추적 | 디바이스 root + 보안 우회 — Samsung 환경 부적합 |
+| **이벤트 녹화 (현재)** | 모든 앱 호환 | 해상도 의존 → 비례 변환 필요, OCR 로 동적 결과 추출 |
+| **앱 API 사용** | 가장 정확 | 대부분 벤치마크 앱은 API 미공개 |
+
+**3번이 정답인 이유**: 현장 요구는 "**아무 벤치마크 앱이라도 자동 실행**". 앱별 통합 작업 부담이 큰 1·4번은 운영 비용 높음. 이벤트 녹화는 한 번 만든 매크로가 같은 앱의 같은 버전에서 계속 동작.
+
+## scenario_canvas 와 어떻게 합쳐지는가
+
+[Scenario Canvas L2](/learn/l2-scenario/) 의 step type 에 `app_macro` 가 추가됐습니다.
+
+```
+benchmark · shell · cleanup · sleep
+trace_start · trace_stop · condition · app_macro  ← 신규
+```
+
+시나리오 step 으로 사용 시:
+
+```yaml
+type: app_macro
+macroId: 42         # 저장된 매크로 ID
+# 또는 인라인:
+events: [{t: 0, type: "tap", x: 540, y: 1200}, ...]
+```
+
+→ 자세히는 [04. Scenario 통합](/learn/l2-app-macro/04-scenario/)
+
+## 다음 페이지
+
+- [01. Entity — eventsJson MEDIUMTEXT 와 좌표 메타](/learn/l2-app-macro/01-entity/)
+- [02. 녹화 6 RPC — Go Agent gRPC 프록시](/learn/l2-app-macro/02-recording/)
+- [03. 재생 + OCR — Tesseract + 좌표 변환 + 정규식 매칭](/learn/l2-app-macro/03-replay-ocr/)
+- [04. Scenario 통합 — app_macro step type](/learn/l2-app-macro/04-scenario/)
+
+## 새 L3 개념 (3종)
+
+App Macro 는 11번째 무신규 L3 흐름을 깨고 신규 개념 3종을 도입합니다. 본문에서 인라인으로만 다루고 별도 페이지는 추후 작성:
+
+- **Tesseract OCR** — 오픈 소스 OCR 엔진. Go Agent 가 호출, 결과는 `full_text + extracted_value (정규식 매칭)`
+- **이벤트 녹화 — Android InputDispatcher** — `getevent` / `sendevent` 로 raw 이벤트 캡처
+- **해상도 비례 변환** — 녹화·재생 해상도가 다를 때 좌표를 `(x * w_target / w_source)` 로 자동 변환

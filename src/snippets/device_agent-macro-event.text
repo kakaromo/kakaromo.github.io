@@ -1,0 +1,41 @@
+// @source src/main/proto/device_agent.proto
+// @lines 560-595
+// @note MacroEvent 19 필드 — 7 type(tap/swipe/key/wait/wait_until/screenshot/scroll_capture) + OcrRegion
+// @synced 2026-05-01T01:10:31.194Z
+
+
+// ==================== App Macro ====================
+
+message MacroEvent {
+  int64 t = 1;                         // 녹화 시작 기준 경과시간 (ms)
+  string type = 2;                     // "tap", "swipe", "key", "wait", "wait_until", "screenshot", "scroll_capture"
+  int32 x = 3;                         // tap 좌표
+  int32 y = 4;
+  int32 x2 = 5;                        // swipe 끝 좌표
+  int32 y2 = 6;
+  int32 duration = 7;                  // swipe 지속시간 (ms)
+  int32 keycode = 8;                   // key 이벤트
+  int32 seconds = 9;                   // wait 대기 초
+  string wait_method = 10;             // wait_until: "activity", "ui_text", "screen_stable"
+  string wait_pattern = 11;            // wait_until: 감지할 문자열/정규식
+  int32 timeout = 12;                  // wait_until: 최대 대기 (초)
+  int32 poll_interval = 13;            // wait_until: 확인 간격 (초)
+  string name = 14;                    // screenshot 이름
+  string direction = 15;               // scroll_capture: "down", "up"
+  int32 max_scrolls = 16;              // scroll_capture: 최대 스크롤 횟수
+  int32 scroll_pause = 17;             // scroll_capture: 스크롤 후 대기 (초)
+  string ocr_pattern = 18;             // scroll_capture: OCR 추출 정규식
+  OcrRegion ocr_region = 19;           // screenshot/scroll_capture: OCR 영역 지정
+}
+
+message OcrRegion {
+  int32 x = 1;
+  int32 y = 2;
+  int32 width = 3;
+  int32 height = 4;
+}
+
+message ListInstalledAppsRequest {
+  string device_id = 1;
+}
+

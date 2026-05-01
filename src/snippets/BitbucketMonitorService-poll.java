@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/bitbucket/service/BitbucketMonitorService.java
 // @lines 33-108
 // @note @Scheduled fixedDelay 5분 polling + pollRepo + autoDownload 분기 (DETECTED 저장 or downloadBranch)
-// @synced 2026-05-01T01:05:23.630Z
+// @synced 2026-05-01T01:10:31.173Z
 
     /**
      * 5분 간격으로 활성화된 저장소의 새 브랜치 폴링

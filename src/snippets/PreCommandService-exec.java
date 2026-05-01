@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/head/precmd/service/PreCommandService.java
 // @lines 190-250
 // @note executeSync + parseCommands + resolveCommand(adb -s usbId) + extractVmName
-// @synced 2026-05-01T01:05:23.624Z
+// @synced 2026-05-01T01:10:31.166Z
 
             } catch (Exception e) {
                 // error handled via SSE

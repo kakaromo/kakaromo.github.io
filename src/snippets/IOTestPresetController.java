@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/agent/controller/AgentController.java
 // @lines 1291-1333
 // @note /agent/iotest-presets CRUD + configJson Map/String 자동 변환 빌더
-// @synced 2026-05-01T01:05:23.647Z
+// @synced 2026-05-01T01:10:31.189Z
 
     @GetMapping("/iotest-presets")
     public List<Map<String, Object>> getIOTestPresets() {

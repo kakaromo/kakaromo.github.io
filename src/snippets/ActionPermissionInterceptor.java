@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/auth/interceptor/ActionPermissionInterceptor.java
 // @lines 1-101
 // @note URL + HTTP method → DB ActionPermission 매칭 + 권한 체크 + 403 응답
-// @synced 2026-05-01T01:05:23.636Z
+// @synced 2026-05-01T01:10:31.178Z
 
 package com.samsung.move.auth.interceptor;
 

@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/admin/controller/AdminController.java
 // @lines 568-610
 // @note /permission-requests/{id}/approve — findByIdForUpdate(비관적락) + 권한·Head access 저장 + 요청 상태 전이
-// @synced 2026-05-01T01:05:23.650Z
+// @synced 2026-05-01T01:10:31.192Z
 
     @SuppressWarnings("unchecked")
     @Transactional("portalTransactionManager")

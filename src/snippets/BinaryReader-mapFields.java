@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/binmapper/service/BinaryReaderService.java
 // @lines 74-187
 // @note mapFields 재귀 — union/bitfield/char 배열/배열/nested struct/primitive 6 분기
-// @synced 2026-05-01T01:05:23.642Z
+// @synced 2026-05-01T01:10:31.184Z
 
     private List<MappedField> mapFields(StructDefinition structDef, byte[] data,
                                         int baseOffset, ByteOrder byteOrder) {

@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/guacamole/endpoint/GuacamoleTunnelEndpoint.java
 // @lines 84-147
 // @note onOpen — 파라미터 파싱 + Lock + VM 조회 + buildConfig + connect
-// @synced 2026-05-01T01:05:23.618Z
+// @synced 2026-05-01T01:10:31.159Z
 
     @OnOpen
     public void onOpen(Session session, EndpointConfig config) {

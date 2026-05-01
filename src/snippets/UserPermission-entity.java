@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/auth/entity/UserPermission.java
 // @lines 1-50
 // @note user_permissions — (userId, permissionKey) unique + granted boolean (17 key per user)
-// @synced 2026-05-01T01:05:23.652Z
+// @synced 2026-05-01T01:10:31.192Z
 
 package com.samsung.move.auth.entity;
 
