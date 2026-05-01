@@ -1,0 +1,140 @@
+---
+title: 리팩토링 사례 갤러리
+description: MOVE 코드베이스에서 실제로 일어난 4개의 리팩토링 사례 — 무엇을 바꾸고, 무엇을 안 바꿨는가
+sidebar:
+  order: 5
+---
+
+## 이 페이지는 무엇인가
+
+L1 4페이지(도메인·아키텍처·기술 스택·데이터 흐름)는 "**현재 어떤 모습인가**"를 다룹니다. 이 페이지는 그 옆에 있는 **"왜 이런 모습이 됐는가"**를 보여줍니다.
+
+신규 개발자가 가장 자주 묻는 질문 중 하나가 "이 코드는 왜 이렇게 나뉘어 있나요? 그냥 한 파일에 두면 안 되나요?"입니다. 이 페이지의 4개 사례는 모두 **한 번 한 파일에 다 있었던 코드를 의도적으로 나눈** 결과입니다. 어떤 기준으로 나눴고, 어떤 부분은 일부러 안 나눴는지가 핵심.
+
+## 사례 1 — `slots/+page.svelte`: 3,494줄 → 2,572줄 (Phase 1~4)
+
+**원본**: 슬롯 모니터링 페이지 단일 파일에 `$state` 98개, 인라인 핸들러 폭증, 다이얼로그 4종이 전부 포함.
+
+**분리 결과** (4 Phase):
+
+| Phase | 커밋 | 분리 대상 | 형태 |
+|---|---|---|---|
+| 1 | `8d9fe92` | `TcGroupDialog` | 컴포넌트 |
+| 2 | `b9d68de` | `SetTcSheet` | 컴포넌트 |
+| 3 | `6e8a19b` | `SetTrSheet` | 컴포넌트 |
+| 4-A2 | `549a8f7` | `SlotContextMenu` | 컴포넌트 |
+| 4-A3 | `0b112af` | `rubberBandSelect` | use:action |
+
+**적용된 3 원칙** (별도 [slots L2 99-refactor-journey](/learn/l2-slots/99-refactor-journey/)에 상세):
+
+1. **자체 상태가 있는가** — 부모 상태의 "뷰"라면 분리해도 prop 폭탄만 늘어남
+2. **prop/callback이 10개 이하로 수렴하는가** — 넘으면 파일만 나뉘고 결합도는 그대로
+3. **기능이 100% 유지되는가** — 리팩토링 커밋은 행동을 바꾸지 않음
+
+**의도적으로 나누지 않은 것**: 슬롯 그리드 자체. `$state` 30+개가 그리드와 직접 결합되어 있어 분리 시 prop 25+개가 발생. "**컴포넌트가 아니라 페이지의 본질**"이라 판단.
+
+→ 자세히: [slots L2 리팩토링 여정](/learn/l2-slots/99-refactor-journey/)
+
+## 사례 2 — Admin: 단일 페이지 + 패키지 분리
+
+**원본**: `admin/+page.svelte` 2,649줄 단일 파일 + `AdminController` 15+ Service 의존.
+
+**Frontend 분리** (탭 단위):
+
+```
+admin/+page.svelte (얇은 라우터)
+├─ AdminDebugTab.svelte
+├─ AdminMetadataTab.svelte
+├─ AdminSetsTab.svelte
+├─ AdminSlotsTab.svelte
+├─ AdminT32Tab.svelte
+├─ AdminUfsInfoTab.svelte
+└─ ...
+```
+
+**Backend 분리** (`e71ab79`, `51f285f`):
+
+```
+com.samsung.move.admin
+├─ controller/   (AdminController + 탭별 endpoint)
+├─ entity/
+├─ repository/
+└─ service/      (T32, Permission, UserHeadAccess, ...)
+```
+
+**의도적으로 안 나눈 것**: `+page.svelte` 자체. 18개 탭 라우팅을 별도 라우트로 쪼개는 대신, **단일 페이지 + 탭 컴포넌트**로 유지. 이유:
+
+- Admin 진입자는 보통 여러 탭을 오가며 작업
+- 탭 별 라우트는 URL 공유는 좋지만 페이지 reload·재인증을 유발
+- 탭별 데이터는 lazy load (`onMount` 안에서 fetch)로도 충분
+
+→ 자세히: [Admin 대시보드 L2](/learn/l2-admin/)
+
+## 사례 3 — Metadata 용어 통일: `collection` → `monitoring`
+
+**원본**: 백엔드는 `MetadataCollectionService` / 프론트는 "수집" / DB 컬럼명 `collection_*` / SSE 이벤트 이름 `collection-*`. 도메인 의미는 **"실시간 모니터링"**인데 코드만 "수집"이었음 — Korean UI는 "수집" 인지부조화.
+
+**커밋 2종** (`0662dd7`, `fa7e920`):
+
+| 영역 | Before | After |
+|---|---|---|
+| 백엔드 클래스 | `MetadataCollectionService` | `MetadataMonitoringService` |
+| DB 컬럼·테이블 | `collection_interval` | `monitoring_interval_sec` |
+| SSE event | `collection-update` | `monitoring-update` |
+| 프론트 UI 텍스트 | "수집 중", "수집 시작" | "모니터링 중", "모니터링 시작" |
+| API 경로 | `/api/metadata/collections` | `/api/metadata/monitors` |
+
+**왜 한 번에**: 절반만 바꾸면 코드 vs UI 용어가 어긋나서 신규 개발자에게 더 큰 혼란. 검색·치환 작업 1시간 < 누적 혼란 시간.
+
+**의도적으로 안 바꾼 것**:
+
+- 외부 시스템(Head 서버, adb shell 명령)에 보내는 raw 명령은 그대로 — 외부 호환 깨짐
+- 과거 PR/이슈/Slack 검색에 도움 되도록 git history 메시지는 "collection" 단어 보존 (커밋 메시지에 "collection → monitoring" 명시)
+
+→ 관련: [Metadata L2](/learn/l2-metadata/)
+
+## 사례 4 — `head` 패키지 기능별 분리 (`83784ea`, `0f8f3d3`)
+
+**원본**: `com.samsung.move.head` 안에 25+ 클래스가 평면적으로 — TCP client, SSE controller, slot store, makeset, pre-command, image upload …
+
+**분리 결과**:
+
+```
+com.samsung.move.head
+├─ tcp/         (HeadTcpClient, HeadConnection, HeadMessageParser)
+├─ slot/        (HeadSlotStateStore, HeadSseController)
+├─ makeset/     (MakeSet 다이얼로그 백엔드 + image upload)
+├─ precommand/  (Pre-Command 이벤트 훅 + SSH)
+├─ web/         (REST 컨트롤러)
+└─ dto/
+```
+
+**기준**: "한 기능을 고치려면 같이 열게 되는 파일들"을 묶는 것. precommand는 head TCP를 사용하지만 **목적이 다르니 별도 sub-package**.
+
+**의도적으로 평면 유지**: `com.samsung.move.testdb` — 엔티티가 `TestRequest`, `TestCase`, `History` 셋뿐이라 sub-package화의 이득 < 진입 비용. **3 클래스 미만이면 평면**이 일반 룰.
+
+→ 관련: [Pre-Command L2](/learn/l2-precmd/) · [TestDB L2](/learn/l2-testdb/)
+
+## 4 사례에서 공통으로 보이는 원칙
+
+각 사례를 관통하는 5가지 판단:
+
+1. **"같이 바뀌는가"가 분리 기준** — 항상 같이 바뀌면 한 곳에, 따로 바뀌면 분리. (slots Phase 1, head 패키지)
+2. **prop/의존성 10개를 넘으면 분리 효과 없음** — 파일만 나뉘고 결합도는 그대로. (slots 그리드 미분리)
+3. **부분 변경은 절반의 혼란을 만든다** — 용어·라이브러리 교체는 한 번에. (Metadata collection → monitoring)
+4. **외부 인터페이스는 보존** — 내부 리팩토링이 외부 약속을 깨면 안 됨. (Metadata raw 명령 유지)
+5. **"이 부분은 페이지의 본질"이면 안 나누는 것도 정답** — 분리는 비용. (Admin 페이지 통합 유지)
+
+## 신규 개발자에게 주는 시사점
+
+- **파일이 길다고 항상 나누지 마세요** — 위 5 원칙으로 먼저 검사
+- **나눌 때는 PR 하나 = Phase 하나** — 롤백 단위 분리, 리뷰어 인지 부하 감소
+- **리팩토링 커밋은 행동을 바꾸지 마세요** — 동작 변화는 별도 PR
+- **한 번 한 파일에 있었음을 기록하세요** — 위 4 사례처럼 "왜 나뉘었는가"는 신규 개발자에게 제일 도움 되는 문서
+
+## 더 깊이
+
+- [slots L2 99-refactor-journey](/learn/l2-slots/99-refactor-journey/) — Phase 1~4 상세
+- [Admin 대시보드 L2](/learn/l2-admin/) — 18 탭 + God Controller 허용 근거
+- [Metadata L2](/learn/l2-metadata/) — 7 command_type · 용어 통일 후 안정화
+- 다른 패키지 분리 — `4d2a8f6` (Admin UI 리디자인), `7048a0a` (Frontend 컴포넌트 그룹 분리)
