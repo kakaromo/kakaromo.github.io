@@ -55,7 +55,7 @@ import ArchitectureDiagram from '../../../../components/learn/ArchitectureDiagra
 | 로컬 분석 | `trace <log> <prefix>` | 로컬 로그 파일 | parquet + 차트 PNG + 통계 |
 | Parquet 재분석 | `trace --parquet ufs <pq> <prefix>` | 기존 parquet | 통계 + 차트 |
 | MinIO 워크플로 | `trace --minio-log <src> <dst>` | MinIO 로그 객체 | MinIO parquet 객체 |
-| **gRPC 서버** | `trace --grpc-server` | 8개 RPC | parquet/Arrow IPC stream |
+| **gRPC 서버** | `trace --grpc-server` | 9개 RPC | parquet/Arrow IPC stream |
 | gRPC 클라이언트 | `trace --grpc-client <cmd>` | 서버 호스트 | 위 RPC 호출 |
 | **Realtime 파서** | `trace --grpc-client realtime ...` | live 로그 파일 | 윈도우별 parquet + 알림 |
 

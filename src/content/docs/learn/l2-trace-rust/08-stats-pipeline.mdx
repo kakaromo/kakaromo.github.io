@@ -92,7 +92,10 @@ for i in 0..n {
 
 ```rust
 let reader = MinioParquetReader::new(config, parquet_path).await?;
-let batch = reader.read_columns_with_filter(&columns, time_range).await?;
+let batch = read_async_projected(
+    reader, &columns, time_range,
+    "time", &["continuous"],
+).await?;
 // 이후 build_payload_v2 동일
 ```
 
@@ -113,10 +116,11 @@ FROM read_parquet('s3://bucket/path/ufs.parquet')
 WHERE <filter pushdown>;
 
 -- 2) overview — 단일 SELECT 로 9 카운트 + 4 metric × (min/max/avg/stddev/percentiles/count)
+-- time 컬럼은 이미 초 단위라 단순 차이가 곧 duration_seconds (나누기 1000 없음)
 SELECT count(*), count(*) FILTER (WHERE action='send_req'),
-       (max(time) - min(time))/1000.0,
+       COALESCE(max(time) - min(time), 0.0)::DOUBLE,
        count(*) FILTER (WHERE action='send_req' AND continuous),
-       count(*) FILTER (WHERE action='send_req' AND lba % 8 = 0 AND size % 8 = 0 AND size > 0),
+       count(*) FILTER (WHERE action='send_req' AND lba % 8 = 0 AND size > 0 AND size % 8 = 0),
        <COALESCE(sum(...) FILTER ...) for read/write/discard bytes>,
        <MetricBuilder("dtoc"), MetricBuilder("ctoc"), MetricBuilder("ctod"), MetricBuilder("qd")>
 FROM base;
@@ -267,7 +271,7 @@ count(*) FILTER (WHERE action='send_req' AND continuous) AS continuous_count
 COALESCE(quantile_disc(qd::DOUBLE, [...]) FILTER (WHERE action='send_req'), [...])
 ```
 
-옛 parquet (continuous 컬럼 없음) 는 base view 의 `TRY_CAST(continuous AS BOOLEAN)` 가 NULL 반환 → FILTER 매치 안 됨 → continuous_count = 0. 정확도가 필요하면 `--migrate` 로 parquet 재생성.
+옛 parquet (continuous 컬럼 없음) 는 SQL 빌더가 DESCRIBE 로 컬럼 존재 여부를 확인 후 `FALSE AS continuous` 폴백을 base view 에 박음 (`stats_rpc_duckdb.rs` 의 `has_continuous` 분기 + `duckdb_common::parquet_columns`). 컬럼 자체가 없으면 `TRY_CAST` 는 binder error 라 못 잡고, 빌더 단계에서 분기해야 함. 결과적으로 continuous_count = 0. 정확도가 필요하면 `--migrate` 로 parquet 재생성.
 
 ## sync vs duckdb 응답 검증
 
@@ -276,7 +280,8 @@ COALESCE(quantile_disc(qd::DOUBLE, [...]) FILTER (WHERE action='send_req'), [...
 ```rust
 assert_eq!(p.total_events, 12);
 assert_eq!(p.send_count, 6);
-assert!((p.duration_seconds - 0.011).abs() < 1e-9);
+// fixture 12행이 time 1.0 ~ 12.0 (초 단위) → 11.0초가 정답
+assert!((p.duration_seconds - 11.0).abs() < eps);
 assert_eq!(p.continuous_count, 2);
 assert_eq!(p.aligned_count, 3);
 assert_eq!(p.read_total_bytes, 16 * 4096);
