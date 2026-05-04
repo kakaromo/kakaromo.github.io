@@ -189,7 +189,19 @@ parquet 은 **컬럼 지향**이라 `ProjectionMask` 로 필요 컬럼만 디코
 | `X-Trace-Schema-Version` | `ufs-v1` 등 | decoder 호환성 체크 |
 | `X-Trace-Stats` | Base64(JSON) | `{dtoc, ctod, ctoc, qd}` 각 min/max/avg/p50/p95/p99 |
 
+> 이 헤더들은 **portal HTTP 어댑터** 가 trace gRPC 응답 (`GetChartDataResponse` 의 `arrow_ipc` bytes 필드 + `total_events` / `sampled_events` / `dtoc` / `ctod` / `ctoc` / `qd` / `schema_version` 필드) 을 HTTP 로 옮긴 것. trace 서버 자체는 proto 필드로 메타를 전달.
+
 stats 만 보고 싶으면 헤더만 읽고 body 를 버리는 것도 가능 — 다만 헤더에 박아둔 건 **가볍고 즉시** 쓰기 위한 것이고, 본격 통계는 `/api/trace/stats` 를 쓴다.
+
+## 응답 캐시 (L5)
+
+같은 (parquet path, time range, filter, target_points, actions) 조합이면 trace 서버가 **첫 호출 결과를 메모리에 캐시 (4시간 TTI, 합 2GB)** — 두 번째 호출부터는 0ms.
+
+- 키에 parquet 의 ETag(fingerprint) 가 들어가 있어 parquet 가 갱신되면 자동 무효화
+- `try_get_with` 기반 single-flight — 같은 키 동시 N 요청이 동시에 들어와도 DuckDB 빌더는 1번만 실행 (N-1 호출자는 같은 `Arc<Response>` 공유)
+- 멀티 사용자가 같은 화면을 시간차로 보는 portal 패턴에서 hit 률 가장 높음
+
+자세한 정책·키 직렬화·single-flight 시퀀스는 [11. 캐시 시스템](/learn/l2-trace-rust/11-cache-system/) 에서.
 
 ## gRPC payload 상한
 
@@ -197,6 +209,7 @@ stats 만 보고 싶으면 헤더만 읽고 body 를 버리는 것도 가능 —
 - Portal 클라이언트: `spring.grpc.client.channels.trace-service.max-inbound-message-size: 256MB`
 - 1M targetPoints × 10 컬럼 ≈ 80~120MB — **2M 근처까지 안전**
 - `OUT_OF_RANGE` 가 나면 프론트가 `friendlyError` 로 "Samples 를 줄이라" 힌트 제공
+- **멀티 parquet 입력** (`parquet_paths` repeated, realtime 모드의 윈도우별 parquet 합산 등) 은 N개 응답이 합쳐 single Arrow IPC 가 돼서 256MB 한도에 더 빨리 부딪힘. duckdb reader 만 지원 (`grpc/dispatch.rs`)
 
 ## 제약
 

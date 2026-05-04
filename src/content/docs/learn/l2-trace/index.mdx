@@ -112,6 +112,14 @@ async 경로 (`TRACE_PARQUET_READER=async`):
 
 검증: async 모드에서 `/tmp/chart_data_*.parquet` 생성 0건 확인. sync 대비 첫 바이트 도착 수 배 빨라짐.
 
+## DuckDB 엔진 + 응답 캐시 (운영 기본)
+
+운영에서는 sync/async 위에 두 축이 더 들어갑니다 — 이 모듈은 portal 관점이라 짧게만 짚고, Rust 바이너리 내부는 [l2-trace-rust](/learn/l2-trace-rust/) 에서 깊게 봅니다.
+
+- **DuckDB stats 엔진** (`TRACE_STATS_ENGINE=duckdb`, `--features stats-duckdb`) — 1분+ → **17s** 까지 떨어진 stats RPC 의 핵심. httpfs 직접 SQL + L2 object_cache. [9. DuckDB tuning](/learn/l2-trace-rust/09-duckdb-tuning/)
+- **L4 head + L5 chart/stats 응답 캐시** (moka, single-flight) — 두 번째 호출은 **0ms**. portal 다중 사용자 hit 률이 가장 높음. [11. 캐시 시스템](/learn/l2-trace-rust/11-cache-system/)
+- **멀티 parquet 입력** (`parquet_paths` repeated) — realtime 모드의 윈도우별 parquet 합산 분석. **DuckDB reader 만 지원**
+
 ## 학습 순서와 예상 시간
 
 | 단계 | 제목 | 성격 | 시간 |

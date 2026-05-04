@@ -72,7 +72,7 @@ UFSCUSTOM 의 `request_action = ""` 은 의도적: **send_count 가 0 으로 자
       id: 'duration',
       title: 'time 기반 duration',
       lines: [32, 39],
-      body: '<p>parquet 은 시간 정렬이지만 안전하게 min/max 재계산. <code>(tmax − tmin)/1000</code> 으로 초 단위.</p>',
+      body: '<p>parquet 은 시간 정렬이지만 안전하게 min/max 재계산. <code>tmax − tmin</code> 으로 그대로 초 (time 컬럼이 이미 초 단위).</p>',
     },
     {
       id: 'single-loop',
@@ -157,6 +157,7 @@ p50 / p95 / p99 / p999 / p9999 / p99999 / p999999 — 6자리 9 까지 지원. p
   "durationSeconds": 12.34,
   "continuousCount": 440000,  "continuousRatio": 0.71,
   "alignedCount":    610000,  "alignedRatio":    0.99,
+  "durationSeconds": 12345.67,  // 트레이스 관측 기간 = max(time) − min(time) (초 단위)
   "readTotalBytes": 2500000000, "writeTotalBytes": 1200000000, "discardTotalBytes": 0,
   "dtoc": { "min": 0.012, "avg": 1.8, "median": 0.9, "p99": 15.2, ... },
   "ctod": { ... }, "ctoc": { ... }, "qd": { ... },
@@ -183,9 +184,14 @@ p50 / p95 / p99 / p999 / p9999 / p99999 / p999999 — 6자리 9 까지 지원. p
 - `cmdStats` 는 cmd 별 탭 (DtoC/CtoD/CtoC/QD 4탭), `latencyHistograms` 는 cmd 별 차트, `cmdSizeCounts` 는 cmd × size 막대 차트
 - 필드가 0 이면 UI 에서 해당 섹션 자동 숨김 (UFSCUSTOM 처럼 action 이 없는 경우)
 
+## 응답 캐시 (L5 stats)
+
+같은 (parquet path, time range, filter, latency_ranges_ms) 조합이면 trace 서버가 첫 호출 결과를 메모리에 캐시 (4시간 TTI, 합 1GB). 1억 row 17s → 두 번째 호출 0ms. parquet ETag 갱신 시 자동 무효화. single-flight 로 동시 N 요청은 빌더 1회만 실행. 자세한 건 [11. 캐시 시스템](/learn/l2-trace-rust/11-cache-system/) 에서.
+
 ## 제약
 
-- **continuous fallback** — parquet 에 컬럼이 없으면 재계산. 결과는 같아야 하지만 HashMap 삽입 비용이 추가
+- **continuous fallback (sync 경로)** — parquet 에 컬럼이 없으면 prev_end_by_cmd HashMap 으로 재계산
+- **continuous fallback (duckdb 경로)** — DESCRIBE 로 컬럼 존재 여부 확인 후 부재 시 `FALSE AS continuous` base view 폴백 (`stats_rpc_duckdb.rs` 의 `has_continuous` 분기, 옛 parquet 호환). 결과적으로 옛 parquet 은 `continuous_count = 0`
 - **sort percentile** — 수천만 row 까지는 sort 비용 < 로그 로딩. 그 이상은 t-digest 고려
 - **`latency_ranges_ms` 는 요청 파라미터** — 기본 `[0.1, 0.5, 1, 5, 10, 50, 100, 500, 1000]` 이지만 workload 특성에 맞게 조정 가능
 

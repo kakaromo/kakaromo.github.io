@@ -13,7 +13,7 @@ import ctrlRaw from '../../../../snippets/IOTestPresetController.java?raw';
 
 - **Editor UX**: thread 리스트 + 각 thread 안의 command 리스트 (loop/if는 중첩) + global 설정 (duration_seconds, sync_start)
 - **저장**: DB `portal_iotest_presets` 테이블, configJson **MEDIUMTEXT 단일 컬럼**에 IOTestConfig 통째 직렬화
-- **불러오기**: 내장 18 preset (`presets.ts`) + DB 유저 preset, 두 모드 — **replace**(새로 시작) · **append**(현재에 이어붙임)
+- **불러오기**: 내장 15 preset (`presets.ts`) + DB 유저 preset, 두 모드 — **replace**(새로 시작) · **append**(현재에 이어붙임)
 
 ## IOTestPreset 엔티티 — "JSON을 한 컬럼에"
 
@@ -158,7 +158,7 @@ function addCommand(thread, newCmd) {
 
 ## Preset 로드 — replace vs append
 
-내장 18 preset 각각이 "완결 시나리오" 또는 "조각":
+내장 15 preset 각각이 "완결 시나리오" 또는 "조각":
 
 - **완결**: Offset Write 한 덩어리가 그 자체로 실행 가능 → **replace**로 현재 config 교체
 - **조각**: "sysfs_write 3 step 세트"처럼 재사용 조각 → **append**로 현재 editor에 이어붙임

@@ -26,6 +26,11 @@ async 경로 (`TRACE_PARQUET_READER=async`):
 - `ParquetRecordBatchStream` 으로 row group 단위 async read
 - **`/tmp` 에 0 byte 안 씀**
 
+duckdb 경로 (`TRACE_STATS_ENGINE=duckdb` + `--features stats-duckdb` 빌드):
+- DuckDB 가 httpfs 로 MinIO 를 직접 read (range-GET + L2 object_cache)
+- 1억 row stats 17s. 멀티 parquet 입력 (`parquet_paths` repeated) 도 이 경로만 지원
+- 자세한 건 [8. Stats pipeline](/learn/l2-trace-rust/08-stats-pipeline/) 와 [9. DuckDB tuning](/learn/l2-trace-rust/09-duckdb-tuning/)
+
 검증: async 모드 기동 후 `/tmp/chart_data_*.parquet` 생성 0건. 첫 바이트 도착 시간 수 배 단축.
 
 ## 왜 `AsyncFileReader` trait 구현인가
@@ -166,20 +171,31 @@ parquet 파일의 레이아웃:
   ]}
 />
 
-## 분기 (sync/async) 배치
+## 분기 (3-way reader 배치)
 
-`grpc/server.rs` 의 `get_chart_data` / `get_trace_stats` 핸들러 맨 앞에서:
+핸들러 (`grpc/server.rs::get_chart_data` / `get_trace_stats`) 는 `crate::grpc::dispatch::select_reader()` 로 분기. **duckdb / async / sync 3-way** 우선순위:
 
 ```rust
-if is_async_reader_enabled() {
-    return async_path(...).await;
+enum ReaderChoice { Duckdb, Async, Sync }
+
+fn select_reader() -> ReaderChoice {
+    #[cfg(feature = "stats-duckdb")]
+    if duckdb_pool::is_duckdb_engine_enabled() {
+        return ReaderChoice::Duckdb;  // TRACE_STATS_ENGINE=duckdb
+    }
+    if std::env::var("TRACE_PARQUET_READER").as_deref() == Ok("async") {
+        return ReaderChoice::Async;
+    }
+    ReaderChoice::Sync  // 기본값
 }
-sync_path(...)   // 기존
 ```
 
 - 기본값 sync — 회귀 위험 0
-- async 경로는 `chart_rpc_async.rs` / `stats_rpc_async.rs` 에 별도 구현 (공유 helper 는 projection/filter 쪽)
-- `continuous` 컬럼이 없는 구버전 parquet 호환이 async 쪽에서 특히 중요 — 스키마 개선 시점이 겹쳤기 때문
+- 우선순위: **Duckdb > Async > Sync**. duckdb 가 켜져 있으면 다른 두 옵션은 무시됨
+- 분기 + trace_type match 가 모두 `grpc/dispatch.rs` 의 `build_chart_payload` / `build_stats_payload` 한 곳에 모여 있고, 핸들러는 캐시 lookup + dispatch 호출 + proto 변환만 함
+- 멀티 parquet 입력 (`parquet_paths` repeated) 은 **duckdb 만 지원** — async/sync 는 `InvalidArgument` 반환 (`dispatch.rs`)
+- async/sync 구현은 `chart_rpc_async.rs` / `stats_rpc_async.rs` / `chart_rpc.rs` / `stats_rpc.rs`, duckdb 는 `chart_rpc_duckdb.rs` / `stats_rpc_duckdb.rs`
+- `continuous` 컬럼이 없는 구버전 parquet 호환은 sync 가 HashMap 재계산, duckdb 가 DESCRIBE → `FALSE` 폴백
 
 ## 검증 체크리스트
 
@@ -191,7 +207,7 @@ sync_path(...)   // 기존
 ## 제약 / 다음 단계
 
 - **concat_batches 여전히 동기 집약** — stream 에서 batch 를 받아 마지막에 concat 하므로 메모리 피크는 남아 있음. 필요 시 chart/stats 집계를 **batch 별 누적** 으로 바꿔 peak 를 낮출 수 있음
-- **footer 캐시** — 같은 parquet 에 대한 반복 요청이 많으면 `ParquetMetaData` 를 LRU 로 캐시할 수 있음 (현재는 매 RPC 마다 재파싱)
+- **footer 캐시 — 이미 구현됨** — 같은 (path, ETag) 의 head_object 는 L4 (5초 TTL), 같은 요청 응답은 L5 (chart 4h TTI / 2GB, stats 4h TTI / 1GB) 로 캐시되며, single-flight 까지 적용됨. duckdb 경로는 추가로 L2 object_cache (parquet metadata + row group). 자세한 건 [11. 캐시 시스템](/learn/l2-trace-rust/11-cache-system/). standalone parquet_async 경로 자체는 여전히 metadata 캐시 없음 (응답 캐시가 있어 큰 영향 없음)
 - **cancel 전파** — 프론트 `AbortController` 로 요청을 끊어도 Rust tokio task 는 계속 돎. 크리티컬해지면 `CancellationToken` 연동 필요
 
 ---

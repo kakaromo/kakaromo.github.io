@@ -34,7 +34,7 @@ import entityRaw from '../../../../snippets/TraceJob-entity.java?raw';
 
 | 컬럼 | 타입 | 설명 |
 |---|---|---|
-| `time` | Float64 | ms 단위 timestamp |
+| `time` | Float64 | **초 단위** timestamp (event_time, `max-min` 이 그대로 `duration_seconds`) |
 | `process` | Utf8 | 프로세스 이름 |
 | `cpu` | UInt32 | CPU 코어 번호 |
 | `action` | Utf8 | `send_req` / `complete_rsp` |
@@ -48,7 +48,7 @@ import entityRaw from '../../../../snippets/TraceJob-entity.java?raw';
 
 ### Block (`block-v1`)
 
-- UFS 와 동일한 구조 — 단 `lba` 가 아니라 **`sector`** (raw Block layer 용어)
+- UFS 와 동일한 구조 — 원본 컬럼명은 **`sector`** 지만 **공용 정규화 후엔 `lba`** (UFS 와 통일)
 - `opcode` 대신 **`io_type`** (`RA`, `R`, `W`, `FF`, `D`)
 - **Flush 이벤트**의 특수 케이스: `size=0`, `sector=u64::MAX` — parser 단계에서 `normalize_sector` 로 `sector=0` 으로 보정 (`log_common.rs`)
 
@@ -132,7 +132,9 @@ pub const SCHEMA_VERSION_BLOCK: &str = "block-v1";
 pub const SCHEMA_VERSION_UFSCUSTOM: &str = "ufscustom-v1";
 ```
 
-이 문자열이 HTTP 응답 헤더 `X-Trace-Schema-Version` 에 실립니다. 프론트는 decoder 에서 **알고 있는 버전만 진행**, 그 외엔 `friendlyError` 로 경로를 유도합니다. 스키마 변경 시:
+이 문자열이 HTTP 응답 헤더 `X-Trace-Schema-Version` 에 실립니다. 또한 **trace 서버의 L5 응답 캐시 키 fingerprint** 에도 포함돼, 스키마 버전이 바뀌면 옛 캐시 entry 가 자동으로 hit 되지 않음 ([11. 캐시 시스템](/learn/l2-trace-rust/11-cache-system/) 참고).
+
+프론트는 decoder 에서 **알고 있는 버전만 진행**, 그 외엔 `friendlyError` 로 경로를 유도합니다. 스키마 변경 시:
 
 1. Rust 의 `build_chart_batch_*` 수정
 2. `SCHEMA_VERSION_*` 를 올림 (예: `ufs-v2`)
