@@ -335,19 +335,20 @@ prefilter 로 먼저 거르면:
 
 대신 SIMD-가속 byte search (`memchr::memmem::find`) 로 prefilter 까지 갈 수도 있지만, 현재는 `lazy_static! Regex` 가 충분히 빠르고 코드 단순함을 우선. **UFSCUSTOM 만 byte-level prefilter** (`line.starts_with("0x")`) 사용 — 라인 포맷이 단순해서.
 
-## benchmark — 측정 가능
+## 측정 — 두 모드 비교
 
-`benches/`에 criterion 기반 벤치마크가 있습니다.
+별도 criterion 하네스는 두지 않고, `parse_log_file_high_perf` / `parse_log_file_streaming` 의 자체 출력 (`PerformanceProfiler::print_profile`, `PerformanceMetrics::print_summary`) 으로 단계별 elapsed 와 처리량을 봅니다.
 
 ```bash
-cargo bench --bench parser_bench
+./target/release/trace <log> <prefix>             # 단순 실행. 콘솔에 단계별 시간 출력
+./target/release/trace --parquet ufs <pq> <prefix> # 파싱 단계 스킵, 후단만
 ```
 
-평균 결과 (M2 Pro, 5GB UFS log 기준):
+평균 결과 (M2 Pro, 5GB UFS log 기준, `print_profile` 의 elapsed):
 - 레거시 `parsers/log.rs` (단일 스레드, 정규식): ~95초
 - `log_high_perf.rs` (mmap + rayon 8코어 + memchr): ~12초
 
-약 **8배 차이**. 코어 수가 늘어나면 격차는 더 벌어집니다.
+약 **8배 차이**. 코어 수가 늘어나면 격차는 더 벌어집니다. 회귀 검증은 같은 로그를 두 모드로 돌려 parquet 결과를 DuckDB diff 하는 방식 (`utils::filter::FilterOptions` 가 동일하게 적용되므로 row count 가 1:1 일치).
 
 ## 다음 — Bottom half latency
 
