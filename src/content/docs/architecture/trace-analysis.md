@@ -73,7 +73,7 @@ flowchart TD
 | **Arrow IPC wire format** | 차트 데이터(시계열 scatter) 는 **컬럼 기반 + 타이프드 배열**. JSON 대비 페이로드 50~80% 감소, 디코딩 1/10 속도 |
 | **parquet columnar** | 다른 컬럼 조합으로 재질의(chart/stats/filter) 할 때 **필요한 컬럼만 projection** 으로 I/O 최소화 |
 | **MinIO S3 호환** | parquet object 를 range-GET 으로 읽으면 5GB+ 파일도 /tmp 경유 없이 row group 단위 스트리밍 가능 |
-| **Feature flag 렌더러** | ECharts (기본, 50k 내외) vs Deck.gl (opt-in, 500k~1M+ WebGL). 릴레이즈 없이 사용자가 env 로 전환 |
+| **Feature flag 렌더러** | ECharts (기본, 50k 내외) vs Deck.gl (opt-in, 500k~1M+ WebGL). 릴리즈 없이 사용자가 env 로 전환 |
 
 ---
 
@@ -155,7 +155,7 @@ CREATE TABLE portal_trace_parquets (
 | `lba` | UInt64 | Logical Block Address |
 | `size` | UInt32 | I/O 크기 (바이트) |
 | `groupid` | UInt32 | CP group id |
-| `hwqid` | UInt32 | MCQ HWQ ID (MCQ 미사용 시 0) |
+| `hwqid` | Int32 | MCQ HWQ ID (kernel 이 -1 등 음수도 전송할 수 있어 부호 있는 정수, MCQ 미사용 시 0) |
 | `qd` | UInt32 | Queue Depth (send +1 / complete -1) |
 | `dtoc` | Float64 | Dispatch→Complete latency (ms, complete 이벤트) |
 | `ctoc` | Float64 | Complete→Complete latency (ms) |
@@ -257,7 +257,7 @@ sequenceDiagram
         Rust-->>Spring: {stage, progress_percent}
         Spring->>DB: currentStage, progressPercent 갱신
     end
-    Rust->>MinIO: PUT trace-parquet/{jobId}/{ufs|block|ufscustom}.parquet
+    Rust->>MinIO: PUT trace-parquet/{user}/{jobId}/{ufs|block|ufscustom}.parquet
     Rust-->>Spring: 완료 (output_files[])
     Spring->>DB: INSERT portal_trace_parquets
     Spring->>DB: status=PARSED, parsedAt=now
@@ -366,17 +366,20 @@ Browser: tableFromIPC (apache-arrow)
 | `cpu` | UInt32 | UFSCUSTOM 은 0 채움 |
 | `cmd` | Utf8 | UFS=opcode, Block=io_type, UFSCUSTOM=opcode |
 
-### 5.3 다운샘플링 (time-bucket decimation)
+### 5.3 다운샘플링 (stratified time-bucket)
 
-`src/utils/downsample.rs::time_bucket_decimate` — `target_points` 만큼 시간 버킷으로 나누고 각 버킷에서:
+`src/utils/downsample.rs::time_bucket_decimate` — **정확히 `target_points` row 보장** stratified 알고리즘:
 
-- 첫 인덱스 (bucket_first)
-- 마지막 인덱스 (bucket_last)
-- `qd` 최대 인덱스 (bucket_argmax) — QD spike 보존
+1. 시간축 `target_points` 등분, 각 bucket 의 첫 idx 만 후보로 선택
+2. min/max time idx 강제 포함 (X축 범위 보장)
+3. `qd` 컬럼 있으면 argmax(qd) idx 강제 포함 — QD 스파이크 보존
+4. 빈 bucket 으로 부족하면 row index 균등 sampling 으로 채움
+5. 초과 시 빽빽한 구간에서 한 개 drop
+6. idx 정렬 후 `take_record_batch`
 
-→ 한 버킷당 최대 3개. 전체 응답은 `target_points × 3` 이내. `n ≤ target_points × 3` 이면 원본 그대로.
+`n ≤ target_points` 이면 원본 그대로 (패스스루).
 
-**시간 분포 편향이 큰 로그**에서는 많은 버킷이 비어 실제 반환이 `target_points` 보다 한참 적을 수 있음 (예: 160만 이벤트 → 3,869 샘플). 이 경우 프론트에서 `targetPoints` 를 올리거나 더 나은 알고리즘(LTTB 등) 필요.
+**핵심**: outlier 한 개로 t_max 가 늘어나도 row index fill 로 보충돼 결과 row 수가 `target_points` 에서 손실되지 않음. (이전 first/last/argmax 3-pick 방식은 빈 bucket 누적 시 실제 반환이 한참 적었던 문제를 해소.)
 
 ### 5.4 gRPC Payload 크기 제한
 

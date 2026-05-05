@@ -55,7 +55,7 @@ MOVE 에서 사용되는 용어를 **도메인 / 런타임 컴포넌트 / 데이
 | **Arrow IPC** | Apache Arrow Inter-Process Communication. 차트 데이터를 JSON 대신 컬럼 지향 바이너리로 전송 (페이로드 50~70% 감소, 파싱 수 ms) |
 | **ProjectionMask / RowFilter** | parquet 의 컬럼 선택 + 조건 pruning — 5GB 파일에서 필요한 컬럼·row group 만 디코딩 |
 | **AsyncFileReader (Rust)** | parquet crate 의 trait — 임의 byte range 를 async 로 공급. MinIO `MinioParquetReader` 가 구현해 `/tmp` 경유 없이 range-GET 스트리밍 |
-| **time-bucket decimate** | target_points × 3 이내로 샘플링하는 다운샘플링 알고리즘. 버킷당 first/last/qd_argmax 3 점 보존 |
+| **time-bucket decimate** | **정확히 `target_points` row 보장** stratified 다운샘플링 — 시간축 등분 + 빈 bucket 시 row index fill. min/max time + argmax(qd) idx 강제 포함 |
 | **Deck.gl OrthographicView** | WebGL 2D 직교 투영 뷰. `ScatterplotLayer` binary attribute 로 1M 포인트 60fps |
 
 ## 런타임 컴포넌트
