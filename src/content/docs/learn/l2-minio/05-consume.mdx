@@ -10,13 +10,14 @@ import listVisRaw from '../../../../snippets/MinioController-list-visibility.jav
 
 ## 30초 요약
 
-MinIO는 세 주체가 소비합니다.
+MinIO는 네 주체가 소비합니다.
 
 - **포털 사용자** (브라우저 File Storage UI) — 업로드·다운로드·탐색
 - **Admin** — 버킷 가시성(`BucketVisibility`) 토글로 **일반 사용자에게 어떤 버킷을 숨길지** 제어
 - **Agent (gRPC)** — `UploadTraceToMinio` · `UploadBenchmarkToMinio` RPC로 벤치마크/trace 결과를 자동 업로드
+- **Trace gRPC 서버 (Rust)** — 같은 MinIO 버킷의 parquet 을 `head_object` + `get_object_range` 로 읽어 chart/stats RPC 응답 생성
 
-이 중 가장 흥미로운 것은 **가시성 필터 로직**과 **Agent gRPC의 간접 연동**.
+이 중 가장 흥미로운 것은 **가시성 필터 로직**, **Agent gRPC의 간접 연동**, 그리고 **Trace 서버의 캐시 계층** (HEAD 5초 TTL + 응답 4시간 TTI).
 
 ## 버킷 가시성 — Admin/User 분기
 
@@ -110,28 +111,67 @@ message UploadTraceRequest {
 - Go가 S3 SDK로 직접 → 성능 · 메모리 효율
 - 포털은 **메타데이터 관리**(JobExecution) + **다운로드 UI** 만 담당
 
-## 세 소비자의 경로 요약
+## Trace gRPC 서버 (Rust) 접점 — chart/stats RPC
+
+Agent 가 업로드한 parquet 을 분석할 때 **포털이 아니라 trace Rust 서버** (`:50053`) 가 직접 MinIO 를 읽습니다. 환경변수로 같은 MinIO 자격 증명을 보유:
+
+| 변수 | 의미 |
+|---|---|
+| `MINIO_ENDPOINT` | MinIO 호스트 (예: `http://192.168.1.248:9000`) |
+| `MINIO_ACCESS_KEY` | 액세스 키 |
+| `MINIO_SECRET_KEY` | 시크릿 키 |
+| `MINIO_BUCKET` | 기본 버킷 |
+| `MINIO_REGION` | region (기본 `us-east-1`) |
+
+읽기 패턴 (`storage/minio_client.rs`):
+
+- **`head_object_full`** — parquet ETag + Last-Modified 조회 (캐시 키 fingerprint 용)
+- **`get_object_range(start, end)`** — parquet footer + row group bytes range-GET
+- **DuckDB httpfs (운영 기본)** — DuckDB 가 같은 자격으로 직접 SQL `read_parquet('s3://...')`
+
+같은 parquet 의 같은 (path, time_range, filter) 조합은 **trace 서버 메모리에서 collapsed**:
+
+| 캐시 | 단위 | TTL/TTI |
+|---|---|---|
+| **L4 head** | HEAD object info (4096 entry) | TTL 5s |
+| **L5 chart** | `GetChartDataResponse` (weight 합 2GB) | TTI 4h |
+| **L5 stats** | `GetTraceStatsResponse` (weight 합 1GB) | TTI 4h |
+
+이 캐시들이 **single-flight (`try_get_with`)** 까지 적용돼, 같은 키 동시 N 요청도 MinIO HEAD 1회·DuckDB 빌드 1회로 collapse. 1억 row stats 17s → 두 번째 호출 0ms.
+
+자세한 정책·키 직렬화·single-flight 시퀀스는:
+- [Trace Rust 7. Storage & MinIO](/learn/l2-trace-rust/07-storage-minio/) — async/sync reader, MinIO 직접 read
+- [Trace Rust 11. 캐시 시스템](/learn/l2-trace-rust/11-cache-system/) — 5계층 + single-flight
+
+> 운영 의의: portal 업로드가 multipart presigned 로 MinIO 에 직접 들어가고, trace 분석이 같은 MinIO 를 직접 읽으면 **portal JVM 은 메타데이터/UI 만 담당** — 큰 trace 파일은 portal 을 통과하지 않음.
+
+## 네 소비자의 경로 요약
 
 ```
-             [포털 User]           [Admin]              [Agent (Go)]
-                 │                    │                       │
-                 │ MultipartFile      │ visibility toggle     │ Go S3 SDK
-                 ▼                    ▼                       ▼
-         /api/minio/upload     /api/minio/buckets     (direct MinIO 9000)
-                 │                    │                       │
-                 │                    │                       │
-                 ▼                    ▼                       ▼
-         MinioStorageService ◄── MinioClient ─────────► MinIO Server
-                 ▲                                             │
-                 │                                             │
-          [다운로드 UI]                                         │
-          /api/minio/download                                  │
-         /download-folder ◄────── Agent trace 결과 조회 ───────┘
+       [포털 User]      [Admin]      [Agent (Go)]      [Trace gRPC (Rust)]
+           │               │              │                     │
+           │ Multipart     │ visibility   │ Go S3 SDK           │ rust-s3 + DuckDB httpfs
+           │ presigned     │ toggle       │ (Write)             │ (Read: HEAD + range-GET)
+           ▼               ▼              ▼                     │
+     /api/minio/*    /api/minio/buckets   │                     │
+       (form-data    /api/minio/visibility│                     │
+        legacy 등)         │              │                     │
+           │               │              │                     │
+           ▼               ▼              ▼                     ▼
+  MinioStorageService ── MinioClient ──────────────────► MinIO Server
+  S3PresignService   ── S3Client/S3Presigner                    ▲
+           ▲                                                    │
+           │                                                    │ HEAD + range-GET
+   [다운로드 UI / chart UI]                                      │ (L4 head + L5 응답 캐시)
+   /api/minio/download                                          │
+   /api/trace/chart, /stats ──────────────────────────────────► (Trace 서버가 단독으로)
 ```
 
-**세 주체가 같은 스토리지를 공유**하지만 경로는 완전히 분리. 쓰기는 각자, 읽기는 포털 API로 통일.
+**네 주체가 같은 스토리지를 공유**하지만 경로는 분리:
+- **쓰기** — portal multipart presigned (브라우저 → MinIO 직결) + Agent Go S3 SDK + portal `MinioStorageService`
+- **읽기** — portal 다운로드 API + **Trace Rust 서버가 분석용으로 직접 read** (캐시 5계층)
 
-## 열 L2의 재사용 관계 최종도
+## L2 재사용 관계 (요약)
 
 ```
 T32 Dump ──┬──→ Bitbucket (브랜치 드롭다운)
@@ -145,12 +185,14 @@ Excel Export ──→ Log Browser (JSON 파일)
 
 MinIO 사용자 UI ──┐
 Admin UI ─────────┤──→ MinIO (버킷/객체 CRUD)
-Agent (Go) ───────┘
+Agent (Go) ───────┤
+Trace Rust ───────┘  (chart/stats RPC 가 parquet 직접 read + 5계층 캐시)
 ```
 
-두 재사용 레이어가 완성됨:
+세 재사용 레이어가 완성됨:
 - **하부 파일 시스템**: Log Browser (SSH/Local)
 - **하부 오브젝트 스토리지**: **MinIO** (S3 호환)
+- **하부 분석 엔진**: Trace Rust gRPC (parquet 직접 read · DuckDB · Arrow IPC)
 
 ## 직접 해보기
 
@@ -163,4 +205,4 @@ Agent (Go) ───────┘
 
 **L2 MinIO 튜토리얼 완료**. 돌아가기:
 
-- [L2 9종 비교](/learn/l2-compare/) · [Log Browser L2](/learn/l2-logbrowser/) · [Agent 벤치마크 L2](/learn/l2-benchmark/) · 기타 L2
+- [L2 21종 비교](/learn/l2-compare/) · [Log Browser L2](/learn/l2-logbrowser/) · [Agent 벤치마크 L2](/learn/l2-benchmark/) · [Trace Rust L2](/learn/l2-trace-rust/) · 기타 L2

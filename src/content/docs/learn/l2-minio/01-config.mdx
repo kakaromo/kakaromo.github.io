@@ -1,6 +1,6 @@
 ---
 title: 1. 설정 + 클라이언트 Bean
-description: MinioProperties + MinioConfig · 총 33줄의 간결한 부트스트랩
+description: MinioProperties + MinioConfig · MinioClient + S3Client + S3Presigner 3 빈으로 multipart presigned URL 까지
 sidebar:
   order: 1
 ---
@@ -11,10 +11,13 @@ import configRaw from '../../../../snippets/MinioConfig.java?raw';
 
 ## 30초 요약
 
-- **`MinioProperties`** — yaml `minio.*` 바인딩 (endpoint · port · useSsl · accessKey · secretKey)
-- **`MinioConfig`** — `MinioClient.builder()`로 싱글턴 빈 생성, 프로퍼티 주입
+- **`MinioProperties`** — yaml `minio.*` 바인딩 (endpoint · port · useSsl · accessKey · secretKey · publicEndpoint · presignExpirySeconds · partSizeBytes · region)
+- **`MinioConfig`** — **3개 빈** 등록:
+  - `MinioClient` — MinIO Java SDK, 일반 CRUD/스트림 업로드용
+  - `S3Client` — AWS S3 SDK, multipart upload (init/complete/abort) 직접 호출용
+  - `S3Presigner` — Presigned URL 발급 (브라우저가 nginx 경유로 MinIO 직접 접근)
 
-두 파일 합쳐 **33줄**. Spring Boot의 설정 바인딩 + Bean 등록 관용구만으로 완결됩니다.
+두 파일 합쳐 **97줄** (Properties 31 + Config 66). 두 SDK 를 같이 쓰는 이유는 MinIO Java SDK 가 multipart upload 의 일부 RPC (CreateMultipartUpload presigned 등) 를 직접 노출하지 않아 AWS S3 SDK 로 보완.
 
 ## MinioProperties — yaml 바인딩
 
@@ -28,14 +31,20 @@ import configRaw from '../../../../snippets/MinioConfig.java?raw';
     {
       id: 'config',
       title: '@ConfigurationProperties(prefix = "minio")',
-      lines: [6, 10],
+      lines: [12, 14],
       body: '<p>yaml의 <code>minio.*</code>가 여기 필드로 바인딩. Lombok <code>@Getter @Setter</code>로 접근자 자동. <strong>타입 안전 + IDE 자동완성</strong>이 장점.</p>',
     },
     {
-      id: 'fields',
-      title: '5 필드 — 합리적 기본값',
-      lines: [11, 15],
+      id: 'fields-base',
+      title: '기본 5 필드',
+      lines: [16, 20],
       body: '<p><code>endpoint = "http://127.0.0.1"</code>, <code>port = 9000</code>, <code>useSsl = false</code>, <code>accessKey = "admin"</code>, <code>secretKey = "changeme"</code>. <strong>로컬 개발에서 설정 없이도 동작</strong>. prod는 yaml로 override.</p>',
+    },
+    {
+      id: 'fields-presigned',
+      title: 'Presigned/Multipart 추가 3 필드 + region',
+      lines: [22, 30],
+      body: '<p><code>publicEndpoint</code> — 브라우저가 nginx 경유로 닿을 외부 URL (없으면 internal endpoint 그대로 — 외부 직접 접근 가능 환경 전용). <code>presignExpirySeconds = 3600</code> — 큰 파일 업로드 시간 + 여유. <code>partSizeBytes = 64MB</code> — multipart upload 의 part 단위. <code>region = "us-east-1"</code> — MinIO 는 region 검증 안 하지만 AWS SDK 가 요구하는 더미 값.</p>',
     },
   ]}
 />
@@ -49,28 +58,45 @@ minio:
   use-ssl: false
   access-key: dev-user
   secret-key: <dev-secret>
+  # presigned URL / multipart 흐름이 필요하면 추가
+  public-endpoint: https://memo.samsungds.net/minio-upload
+  presign-expiry-seconds: 3600
+  part-size-bytes: 67108864  # 64MB
+  region: us-east-1
 ```
 
-## MinioConfig — Bean 등록
+## MinioConfig — 3 Bean 등록
 
 <CodeTour
   client:visible
   language="java"
   source="MinioConfig.java"
-  height={280}
+  height={420}
   code={configRaw}
   steps={[
     {
       id: 'configuration',
-      title: '@Configuration + @Bean',
-      lines: [6, 9],
-      body: '<p>Spring 표준 Bean 공장 패턴. <code>MinioClient</code>는 <strong>생성 비용이 있는 싱글턴</strong>이라 앱 생명주기 동안 하나만 필요.</p>',
+      title: '@Configuration + 3개 @Bean',
+      lines: [20, 22],
+      body: '<p>Spring 표준 Bean 공장. <code>MinioClient</code> / <code>S3Client</code> / <code>S3Presigner</code> 세 빈 모두 생성 비용 있는 싱글턴이라 앱 생명주기 동안 하나만.</p>',
     },
     {
-      id: 'builder',
-      title: 'MinioClient.builder() — endpoint + credentials',
-      lines: [10, 16],
-      body: '<p>SDK의 fluent builder. <code>endpoint(url, port, ssl)</code>, <code>credentials(access, secret)</code>, <code>build()</code>. <strong>총 3줄</strong>로 초기화 완결. 내부적으로 HTTP 클라이언트와 자격 증명을 묶은 호출 엔진이 만들어짐.</p>',
+      id: 'minio-client',
+      title: 'MinioClient — 일반 CRUD/스트림 업로드',
+      lines: [23, 29],
+      body: '<p>MinIO Java SDK fluent builder. <code>endpoint(url, port, ssl)</code> + <code>credentials(access, secret)</code>. <strong>총 3줄</strong>. listObjects/get/put/uploadObjectStreaming 등 일반 RPC 에 사용.</p>',
+    },
+    {
+      id: 's3-client',
+      title: 'S3Client — Multipart upload 직접 RPC',
+      lines: [31, 43],
+      body: '<p>AWS S3 SDK. MinIO Java SDK 가 직접 노출 안 하는 multipart upload RPC (createMultipartUpload, completeMultipartUpload, abortMultipartUpload) 를 위해 보완. <code>pathStyleAccessEnabled(true)</code> 가 MinIO 호환 핵심.</p>',
+    },
+    {
+      id: 's3-presigner',
+      title: 'S3Presigner — 브라우저용 Presigned URL',
+      lines: [45, 64],
+      body: '<p>브라우저가 nginx 경유로 MinIO 에 직접 PUT 하도록 발급. <code>publicEndpoint</code> 가 설정돼 있으면 그쪽 호스트로, 없으면 internal endpoint 그대로. 옵션 A: 외부 노출 nginx → MinIO. 옵션 B: 브라우저 → MinIO 직결 (개발 환경).</p>',
     },
   ]}
 />
@@ -99,22 +125,34 @@ minio:
 
 yaml 프로파일 기반(`application-dev.yaml` / `application-prod.yaml`)으로 분기. **설정 키는 동일**, 값만 다름 — 코드 경로는 환경 무관.
 
-## Bean 1개 · 서비스 1개 구조
+## 3 Bean · 2 서비스 구조
 
 ```
 MinioConfig (@Configuration)
-    │ @Bean
-    ▼
-MinioClient (싱글턴)
-    │ @Autowired (via @RequiredArgsConstructor)
-    ▼
-MinioStorageService (@Service)
-    │ 호출
-    ▼
-MinioController / MinioUploadController
+    │ @Bean × 3
+    ├──▶ MinioClient    (싱글턴) ──▶ MinioStorageService  (일반 CRUD + 스트림)
+    │                                      │
+    │                                      ▼
+    │                              MinioController / MinioUploadController
+    │
+    ├──▶ S3Client       (싱글턴) ──┐
+    └──▶ S3Presigner    (싱글턴) ──┴──▶ S3PresignService   (multipart presigned URL)
+                                                 │
+                                                 ▼
+                                       (TraceJobController 등이 활용)
 ```
 
-**단계마다 딱 하나**의 주체. Spring DI가 자동으로 연결하므로 우리가 작성하는 건 필드 선언 + 생성자뿐.
+| 빈 | 사용처 | 패턴 |
+|---|---|---|
+| `MinioClient` | `MinioStorageService` 11 메서드 | 서버측 CRUD / 폴더 ZIP / 스트림 업로드 |
+| `S3Client` | `S3PresignService.createMultipartUpload / completeMultipartUpload / abortMultipartUpload` | 서버측 multipart 메타 RPC |
+| `S3Presigner` | `S3PresignService.presignAllParts / presignUploadPart / presignSinglePut` | 브라우저가 직접 PUT 할 URL 발급 |
+
+Spring DI 가 자동 연결하므로 작성하는 건 필드 선언 + `@RequiredArgsConstructor` 생성자뿐.
+
+업로드 경로 두 가지:
+- **legacy** (`MinioUploadController` form-data) — 작은 파일, 서버를 통과
+- **multipart presigned** (`S3PresignService` + 호출 컨트롤러) — 큰 파일, 브라우저 → nginx → MinIO 직결 (서버 메모리/네트워크 우회)
 
 ## 직접 해보기
 
