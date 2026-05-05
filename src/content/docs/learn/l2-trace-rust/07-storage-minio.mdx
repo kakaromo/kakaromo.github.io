@@ -351,7 +351,7 @@ impl MinioAsyncClient {
 
     pub async fn upload_file(&self, src: &Path, dst: &str) -> Result<()> { ... }
     pub async fn download_file(&self, src: &str, dst: &str) -> Result<()> { ... }
-    pub async fn list_objects(&self, prefix: &str) -> Result<Vec<String>> { ... }
+    pub async fn list_files(&self, prefix: &str) -> Result<Vec<String>> { ... }
 }
 ```
 

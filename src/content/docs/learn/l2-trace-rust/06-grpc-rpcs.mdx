@@ -310,7 +310,7 @@ async fn list_files(
         bucket: req.bucket,
         ..self.minio_config.clone()
     })?;
-    let files = client.list_objects(&req.prefix).await?;
+    let files = client.list_files(&req.prefix).await?;
     Ok(Response::new(ListFilesResponse { files }))
 }
 ```
