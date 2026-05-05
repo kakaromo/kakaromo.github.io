@@ -150,6 +150,8 @@ async fn process_logs_internal(...) {
 
 각 step 함수가 자기 단계의 진행률 송신 (`send_progress` 헬퍼) + 실패 시 stack trace 가 어디서 끊겼는지 직접 드러남. 옛날엔 한 함수 396줄 인라인이라 어디서 실패했는지 추적 어려웠음.
 
+> **stateless helper 분리** — Phase A 리팩토링 산출물로 `grpc/service_helpers.rs` 별도 impl 블록에 무상태 헬퍼 4개 분리: `chart_schema_version` / `stats_schema_version` (스키마 버전 lookup), `convert_filter_options` (proto FilterOptions → 내부 타입), `send_progress` / `send_csv_progress` (진행률 mpsc send + 에러 매핑). 핸들러 본체에서 self 의존성 없이 호출 가능 → 본체 가독성 ↑.
+
 **임시 자원 누수 차단 (N2)**:
 - `temp_log_path` (다운로드 압축본, 수십 GB 가능), `temp_parquet_path` (파싱 결과), `extract_dir` (압축 해제 디렉토리) 세 가지가 step 중간 실패 시 누수 가능했음
 - 외부 스코프 `Option<String>` 추적 + 블록 종료 후 일괄 cleanup 으로 해결
