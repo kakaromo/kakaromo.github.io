@@ -78,7 +78,7 @@ trace는 의도적으로 **여러 프로세스로 나누지 않습니다**:
 - **mmap + rayon** — 5GB 파일을 메모리 매핑해 chunk 경계만 찾고 각 청크를 스레드가 독립 파싱. JVM 대비 GC가 없어 latency 변동 적음
 - **`Box<str>` 기반 작은 메모리 fingerprint** — `String` 대신 `Box<str>`을 쓰면 capacity 필드(8B)를 절약. 이벤트 5천만 개면 400MB 차이
 - **단일 정적 바이너리** — 의존성 배포 없이 scp 한 번으로 운영
-- **`memchr` / `lazy_static`** — 정규식 없이 byte search로 파싱. 정규식 대비 5~10배
+- **`memchr` / `lazy_static`** — `memchr` 로 라인 경계(`\n`) SIMD 분할, `lazy_static!` 으로 컴파일된 prefilter 정규식 + 캡처 정규식을 lazy 초기화 (단순 정규식 매칭 대비 ~5배 빠름)
 
 대안이었던 Go/Python:
 - Go: GC가 있고, parquet/arrow 라이브러리가 Rust 대비 미성숙
@@ -117,7 +117,7 @@ trace 바이너리 의존성 중 핵심:
 | `tokio` / `tokio-util` | async runtime + CancellationToken |
 | `rust-s3` | MinIO/S3 client (rustls 변종 — OpenSSL 의존 회피) |
 | `bincode` / `serde` | 직렬화 (테스트/디버깅용) |
-| `memchr` | byte search (정규식 회피) |
+| `memchr` | 라인 경계 (`\n`) SIMD 분할 |
 | `duckdb` (optional, `stats-duckdb` feature) | OLAP SQL 엔진 — 1억 row stats/chart 가속 |
 | `r2d2` (optional) | DuckDB connection pool |
 | `moka` | size-aware LRU + TTL + single-flight 캐시 (L5) |
