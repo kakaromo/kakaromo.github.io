@@ -1,6 +1,6 @@
 ---
 title: 3. Arrow IPC 차트 RPC (projection + decimate)
-description: parquet 10컬럼만 ProjectionMask 로 읽고, RowFilter 로 시간 pruning 후 time-bucket decimation 으로 target_points 근처까지 줄여 Arrow IPC 바이너리로 내려준다
+description: parquet 10컬럼만 ProjectionMask 로 읽고, RowFilter 로 시간 pruning 후 stratified row sampling 으로 정확히 target_points row 까지 줄여 Arrow IPC 바이너리로 내려준다
 sidebar:
   order: 3
 ---
@@ -16,7 +16,7 @@ import decimateRaw from '../../../../snippets/downsample-time_bucket_decimate.rs
 
 1. **parquet projection + row-filter** — 10개 컬럼만 읽고 `time_range` 안에서 pruning
 2. **공용 10컬럼 정규화 + Arrow filter** — `lba` / `qd` / `dtoc` 등 범위 필터를 `BooleanArray` mask 로 적용
-3. **time-bucket decimate → Arrow IPC 직렬화** — `target_points` 개 버킷으로 나눠 first/last/qd_argmax 만 남김
+3. **stratified row sampling → Arrow IPC 직렬화** — 시간 균등 bucket + 빈 bucket fill + min/max/argmax(qd) 강제. **정확히 `target_points` row** 보장
 
 응답은 바이너리:
 - **Body**: Arrow IPC stream bytes (Content-Type `application/vnd.apache.arrow.stream`)
@@ -90,7 +90,7 @@ parquet 은 **컬럼 지향**이라 `ProjectionMask` 로 필요 컬럼만 디코
       id: 'decimate',
       title: 'time_bucket_decimate',
       lines: [29, 35],
-      body: '<p>target_points × 3 이내로 줄인다 (버킷당 first/last/qd_argmax). 줄어든 만큼 IPC payload 가 작아짐.</p>',
+      body: '<p>정확히 target_points row 로 줄인다. 시간 균등 bucket + 빈 bucket fill + min/max/argmax(qd) 강제. n ≤ target_points 면 패스스루.</p>',
     },
     {
       id: 'serialize',
@@ -137,47 +137,81 @@ parquet 은 **컬럼 지향**이라 `ProjectionMask` 로 필요 컬럼만 디코
   ]}
 />
 
-## 코드 투어 — `time_bucket_decimate`
+## 코드 투어 — `time_bucket_decimate` (Stratified row sampling)
 
 <CodeTour
   client:visible
   language="rust"
   source="utils/downsample.rs"
-  height={640}
+  height={680}
   code={decimateRaw}
   steps={[
     {
       id: 'guard',
-      title: 'passthrough 조건',
-      lines: [8, 16],
-      body: '<p>입력이 이미 작으면(<code>n ≤ target_points × 3</code>) 그대로 반환. 작은 데이터를 굳이 샘플링하면 오히려 왜곡.</p>',
+      title: 'passthrough — n ≤ target',
+      lines: [16, 22],
+      body: '<p>입력이 이미 target 이하면 그대로 반환. 요청보다 적게 나오는 건 자연스러우므로 다운샘플 의미 없음.</p>',
     },
     {
-      id: 'bucket-dt',
-      title: '버킷 폭 dt',
-      lines: [22, 28],
-      body: '<p>(t_max − t_min) / target_points. 시간 분포가 한쪽에 쏠리면 많은 버킷이 비게 돼 실제 결과가 target_points 보다 훨씬 적을 수 있음 (LTTB 같은 알고리즘 후보).</p>',
+      id: 'scan',
+      title: '1회 scan — t_min/t_max + argmax(qd) idx',
+      lines: [29, 49],
+      body: '<p>min/max 시간 idx 와 qd 최댓값 idx 를 한 번에 추출. 이 셋은 보호 row — 차트 X축 범위와 QD 스파이크 보존을 위해 항상 keepers 에 포함.</p>',
     },
     {
-      id: 'three-points',
-      title: '버킷당 first / last / qd_argmax',
-      lines: [30, 53],
-      body: '<p>trend 는 first+last, spike 는 argmax 로 보존. QD spike 같은 "순간 튀는" 값이 다운샘플로 지워지지 않도록.</p>',
+      id: 'bucket-fill',
+      title: '시간 균등 bucket — 각 bucket 첫 idx',
+      lines: [54, 67],
+      body: '<p>시간 축을 target_points 등분, 각 bucket 의 첫 row 만 후보로. 시간 분포가 균등한 영역은 이 단계에서 거의 채워짐.</p>',
     },
     {
-      id: 'flush',
-      title: 'flush last bucket',
-      lines: [54, 63],
-      body: '<p>루프가 끝날 때 마지막 버킷이 push 되지 않은 상태라서 수동 flush. small but important — 빼먹으면 우측 경계가 잘린 듯 보인다.</p>',
+      id: 'force-include',
+      title: 'min/max/argmax 강제 + dedup',
+      lines: [69, 76],
+      body: '<p>3종 보호 row 를 keepers 에 push 후 sort+dedup. 이미 bucket fill 에 포함된 경우는 dedup 으로 정리.</p>',
+    },
+    {
+      id: 'fillback',
+      title: '빈 bucket fill-back — row index 균등 sampling',
+      lines: [78, 92],
+      body: '<p><strong>핵심 안전망</strong>. outlier 한 개로 t_max 가 늘어나 99% 의 데이터가 적은 bucket 에 몰려도, 부족분을 row index 균등 sampling 으로 채워 정확히 target_points 보장. 1M row + target=50K 에서 28K 로 줄어드는 손실 차단.</p>',
+    },
+    {
+      id: 'overflow-drop',
+      title: '초과 발생 시 가장 빽빽한 인접쌍 drop',
+      lines: [97, 100],
+      body: '<p>argmax(qd) 강제 추가 등으로 N+1 이 되면, 보호 row 외에서 가장 인접 간격이 좁은 두 idx 중 하나를 제거. 정확히 target_points 로 마무리.</p>',
     },
     {
       id: 'take',
       title: 'take_record_batch 로 일괄 적용',
-      lines: [65, 73],
+      lines: [102, 105],
       body: '<p>keeper set 을 UInt32Array 로 만든 뒤 모든 컬럼에 동일 인덱스 선택. 컬럼별 루프 없이 Arrow 네이티브 경로.</p>',
     },
   ]}
 />
+
+### DuckDB 경로의 두 단계 다운샘플
+
+운영 기본인 DuckDB stats 엔진 (`TRACE_STATS_ENGINE=duckdb`) 은 다른 패턴:
+
+1. **SQL 1차** — `chart_base` view 위에서 bucket 별 first/last/argmax(qd) 추출 → ~target×3 row 로 1차 축소 (1억 row 를 그대로 fetch 하면 client 메모리 위험)
+2. **Rust 2차** — `time_bucket_decimate` 가 ~target×3 row 를 입력으로 받아 정확히 target 으로 trim (μs 단위, 비용 미미)
+
+이렇게 두 단계로 두는 이유:
+- SQL 만으로 stratified row sampling (빈 bucket fill / 보호 row drop / set 연산) 을 깔끔히 표현하기 어려움
+- 1억 row 를 그대로 Rust 로 fetch 하면 메모리 폭발 — SQL 단계가 거른 후 Rust 가 정확성만 마무리
+- sync/async/duckdb 세 reader 모두 같은 invariant (`정확히 target_points`) 보장
+
+### 왜 stratified row sampling 인가
+
+| 옵션 | 정확히 N | 시간 균등 | outlier 회복 | min/max 보존 | QD 스파이크 |
+|---|---|---|---|---|---|
+| 옛 (bucket × first/last/argmax) | ❌ (≤ N×3) | ✅ | ❌ (빈 bucket 손실) | ❌ | ✅ |
+| Row index 균등만 | ✅ | ❌ | ✅ | ❌ | ❌ |
+| **Stratified (현재)** | ✅ | ✅ (bucket 채워진 영역) + row index (빈 영역) | ✅ | ✅ (강제) | ✅ (강제) |
+
+핵심 통찰: 시간 균등 bucket 의 *빈 슬롯* 을 row index fill 로 보충하면 두 방식의 장점을 합칠 수 있음.
 
 ## 응답 헤더 정리
 
@@ -213,8 +247,9 @@ stats 만 보고 싶으면 헤더만 읽고 body 를 버리는 것도 가능 —
 
 ## 제약
 
-- **시간 분포 편향** — 앞쪽에 이벤트가 몰린 로그는 같은 `target_points` 여도 결과 포인트가 덜 나올 수 있음
-- **LTTB 미적용** — 시각적 품질이 더 필요하면 Largest-Triangle-Three-Buckets 등 후보. 현재는 first/last/argmax 조합으로 충분
+- **시각적 부드러움 vs 정확한 N** — 빈 bucket 영역에서 row index fill 로 보충하므로 시간 분포가 극단적으로 한쪽에 쏠리면 그 영역에 점이 빽빽해질 수 있음. 일반적인 ftrace/blktrace 분포에선 문제 없음
+- **LTTB 미적용** — 시각적 품질이 더 필요하면 Largest-Triangle-Three-Buckets 등 후보. 현재는 stratified + min/max/argmax 강제로 트렌드와 스파이크 모두 보존
 - **필터 조합** — 모든 필터가 BooleanArray `and` 로 처리되므로 O(n). 큰 parquet 에서도 보통 초단위
+- **`target_points` 의미** — 현재는 **결과 row 수** 의미 (`n > target` 이면 정확히 N). 이전 코드는 bucket 수였고 결과가 ≤ N×3 였음 — 운영에서 1M → 28K 같은 손실 사례가 보고돼 [stratified 알고리즘](#코드-투어--time_bucket_decimate-stratified-row-sampling)으로 교체
 
 다음: [4. 상세 통계 pipeline (단일 scan 다수 집계)](/learn/l2-trace/04-stats-pipeline/) →
