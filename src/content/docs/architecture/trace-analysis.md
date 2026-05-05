@@ -368,18 +368,24 @@ Browser: tableFromIPC (apache-arrow)
 
 ### 5.3 다운샘플링 (stratified time-bucket)
 
-`src/utils/downsample.rs::time_bucket_decimate` — **정확히 `target_points` row 보장** stratified 알고리즘:
+`src/utils/downsample.rs::time_bucket_decimate_with_y` — **정확히 `target_points` row 보장** stratified 알고리즘:
 
-1. 시간축 `target_points` 등분, 각 bucket 의 첫 idx 만 후보로 선택
-2. min/max time idx 강제 포함 (X축 범위 보장)
-3. `qd` 컬럼 있으면 argmax(qd) idx 강제 포함 — QD 스파이크 보존
-4. 빈 bucket 으로 부족하면 row index 균등 sampling 으로 채움
-5. 초과 시 빽빽한 구간에서 한 개 drop
-6. idx 정렬 후 `take_record_batch`
+1. 시간축 `target_points` 등분, 각 bucket 의 첫 idx 만 후보로 선택 (NaN/Inf time 자동 스킵)
+2. **min/max time** idx 강제 포함 (X축 범위 보장)
+3. `qd` 컬럼 있으면 **argmax(qd)** idx 강제 포함 — QD 스파이크 보존
+4. `dtoc` 컬럼 있으면 **min/max dtoc** idx 강제 포함 — latency 양극값 보존 (estrace 패턴 참고)
+5. 빈 bucket 으로 부족하면 row index 균등 sampling 으로 채움
+6. 초과 시 보호 row 외에서 빽빽한 구간 한 개 drop
+7. idx 정렬 후 `take_record_batch`
 
 `n ≤ target_points` 이면 원본 그대로 (패스스루).
 
-**핵심**: outlier 한 개로 t_max 가 늘어나도 row index fill 로 보충돼 결과 row 수가 `target_points` 에서 손실되지 않음. (이전 first/last/argmax 3-pick 방식은 빈 bucket 누적 시 실제 반환이 한참 적었던 문제를 해소.)
+**핵심 두 가지**:
+
+- **outlier 회복** — outlier 한 개로 t_max 가 늘어나도 row index fill 로 보충돼 결과 row 수가 `target_points` 에서 손실되지 않음 (이전 first/last/argmax 3-pick 방식의 빈 bucket 누적 손실 해소)
+- **보호 row 5종 강제** — 차트의 X축 범위 + QD 스파이크 + latency 양극값이 항상 표시. portal 사용자가 가장 높은 QD / 가장 빠른·느린 I/O 를 다운샘플 결과에서 누락하지 않음
+
+**NaN/Inf 안전성**: parquet 손상 또는 latency 미계산 send 이벤트의 NaN 값이 섞여도 결과가 깨지지 않음 — finite 한 값만 bucket 분배·min/max 후보로 사용.
 
 ### 5.4 gRPC Payload 크기 제한
 

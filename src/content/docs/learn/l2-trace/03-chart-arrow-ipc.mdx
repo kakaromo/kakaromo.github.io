@@ -16,7 +16,7 @@ import decimateRaw from '../../../../snippets/downsample-time_bucket_decimate.rs
 
 1. **parquet projection + row-filter** — 10개 컬럼만 읽고 `time_range` 안에서 pruning
 2. **공용 10컬럼 정규화 + Arrow filter** — `lba` / `qd` / `dtoc` 등 범위 필터를 `BooleanArray` mask 로 적용
-3. **stratified row sampling → Arrow IPC 직렬화** — 시간 균등 bucket + 빈 bucket fill + min/max/argmax(qd) 강제. **정확히 `target_points` row** 보장
+3. **stratified row sampling → Arrow IPC 직렬화** — 시간 균등 bucket + 빈 bucket fill + 보호 row 5종 강제 (min/max time + argmax(qd) + min/max dtoc). NaN/Inf time 안전. **정확히 `target_points` row** 보장
 
 응답은 바이너리:
 - **Body**: Arrow IPC stream bytes (Content-Type `application/vnd.apache.arrow.stream`)
@@ -88,9 +88,9 @@ parquet 은 **컬럼 지향**이라 `ProjectionMask` 로 필요 컬럼만 디코
     },
     {
       id: 'decimate',
-      title: 'time_bucket_decimate',
+      title: 'time_bucket_decimate_with_y',
       lines: [29, 35],
-      body: '<p>정확히 target_points row 로 줄인다. 시간 균등 bucket + 빈 bucket fill + min/max/argmax(qd) 강제. n ≤ target_points 면 패스스루.</p>',
+      body: '<p>정확히 target_points row 로 줄인다. 시간 균등 bucket + 빈 bucket fill + 보호 row 5종 (min/max time, argmax qd, min/max dtoc) 강제. NaN/Inf time 자동 스킵. n ≤ target_points 면 패스스루.</p>',
     },
     {
       id: 'serialize',
@@ -149,43 +149,43 @@ parquet 은 **컬럼 지향**이라 `ProjectionMask` 로 필요 컬럼만 디코
     {
       id: 'guard',
       title: 'passthrough — n ≤ target',
-      lines: [16, 22],
+      lines: [21, 23],
       body: '<p>입력이 이미 target 이하면 그대로 반환. 요청보다 적게 나오는 건 자연스러우므로 다운샘플 의미 없음.</p>',
     },
     {
       id: 'scan',
-      title: '1회 scan — t_min/t_max + argmax(qd) idx',
-      lines: [29, 49],
-      body: '<p>min/max 시간 idx 와 qd 최댓값 idx 를 한 번에 추출. 이 셋은 보호 row — 차트 X축 범위와 QD 스파이크 보존을 위해 항상 keepers 에 포함.</p>',
+      title: '1회 scan — t_min/t_max + argmax(qd) + min/max(dtoc) idx',
+      lines: [35, 60],
+      body: '<p>한 번의 pass 로 5종 보호 row idx 를 추출: <strong>(1)</strong> min/max time (X축 범위), <strong>(2)</strong> argmax qd (QD 스파이크), <strong>(3)</strong> min/max dtoc (latency 양극값). NaN/Inf time/dtoc 인 row 는 후보에서 자동 스킵 — parquet 손상 / latency 미계산 send 이벤트 안전.</p>',
     },
     {
       id: 'bucket-fill',
       title: '시간 균등 bucket — 각 bucket 첫 idx',
-      lines: [54, 67],
-      body: '<p>시간 축을 target_points 등분, 각 bucket 의 첫 row 만 후보로. 시간 분포가 균등한 영역은 이 단계에서 거의 채워짐.</p>',
+      lines: [67, 80],
+      body: '<p>시간 축을 target_points 등분, 각 bucket 의 첫 row 만 후보로. 시간 분포가 균등한 영역은 이 단계에서 거의 채워짐. NaN/Inf time 은 bucket 분배에서도 스킵.</p>',
     },
     {
       id: 'force-include',
-      title: 'min/max/argmax 강제 + dedup',
-      lines: [69, 76],
-      body: '<p>3종 보호 row 를 keepers 에 push 후 sort+dedup. 이미 bucket fill 에 포함된 경우는 dedup 으로 정리.</p>',
+      title: 'min/max time + argmax(qd) + min/max(dtoc) 강제 + dedup',
+      lines: [82, 90],
+      body: '<p>5종 보호 row 를 keepers 에 push 후 sort+dedup. 이미 bucket fill 에 포함된 경우는 dedup 으로 정리.</p>',
     },
     {
       id: 'fillback',
       title: '빈 bucket fill-back — row index 균등 sampling',
-      lines: [78, 92],
+      lines: [92, 95],
       body: '<p><strong>핵심 안전망</strong>. outlier 한 개로 t_max 가 늘어나 99% 의 데이터가 적은 bucket 에 몰려도, 부족분을 row index 균등 sampling 으로 채워 정확히 target_points 보장. 1M row + target=50K 에서 28K 로 줄어드는 손실 차단.</p>',
     },
     {
       id: 'overflow-drop',
       title: '초과 발생 시 가장 빽빽한 인접쌍 drop',
-      lines: [97, 100],
-      body: '<p>argmax(qd) 강제 추가 등으로 N+1 이 되면, 보호 row 외에서 가장 인접 간격이 좁은 두 idx 중 하나를 제거. 정확히 target_points 로 마무리.</p>',
+      lines: [97, 105],
+      body: '<p>보호 row 강제 추가 (5종) 로 N+M 이 되면, 보호 row 외에서 가장 인접 간격이 좁은 두 idx 중 하나를 제거. 정확히 target_points 로 마무리.</p>',
     },
     {
       id: 'take',
       title: 'take_record_batch 로 일괄 적용',
-      lines: [102, 105],
+      lines: [106, 110],
       body: '<p>keeper set 을 UInt32Array 로 만든 뒤 모든 컬럼에 동일 인덱스 선택. 컬럼별 루프 없이 Arrow 네이티브 경로.</p>',
     },
   ]}
@@ -205,13 +205,18 @@ parquet 은 **컬럼 지향**이라 `ProjectionMask` 로 필요 컬럼만 디코
 
 ### 왜 stratified row sampling 인가
 
-| 옵션 | 정확히 N | 시간 균등 | outlier 회복 | min/max 보존 | QD 스파이크 |
-|---|---|---|---|---|---|
-| 옛 (bucket × first/last/argmax) | ❌ (≤ N×3) | ✅ | ❌ (빈 bucket 손실) | ❌ | ✅ |
-| Row index 균등만 | ✅ | ❌ | ✅ | ❌ | ❌ |
-| **Stratified (현재)** | ✅ | ✅ (bucket 채워진 영역) + row index (빈 영역) | ✅ | ✅ (강제) | ✅ (강제) |
+| 옵션 | 정확히 N | 시간 균등 | outlier 회복 | min/max time | QD 스파이크 | min/max dtoc | NaN 안전 |
+|---|---|---|---|---|---|---|---|
+| 옛 (bucket × first/last/argmax) | ❌ (≤ N×3) | ✅ | ❌ (빈 bucket 손실) | ❌ | ✅ | ❌ | ❌ |
+| Row index 균등만 | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| **Stratified (현재)** | ✅ | ✅ (bucket 채워진 영역) + row index (빈 영역) | ✅ | ✅ (강제) | ✅ (강제) | ✅ (강제) | ✅ |
 
-핵심 통찰: 시간 균등 bucket 의 *빈 슬롯* 을 row index fill 로 보충하면 두 방식의 장점을 합칠 수 있음.
+핵심 통찰 두 가지:
+
+1. **시간 균등 bucket 의 *빈 슬롯* 을 row index fill 로 보충** 하면 두 방식의 장점을 합침
+2. **보호 row 5종** (min/max time, argmax qd, min/max dtoc) 강제 — 차트 X축 범위 + QD 스파이크 + latency 양극값 모두 항상 표시. estrace 의 sampling.rs (`bucket_downsample` 의 min-Y/max-Y 보존) 패턴과 NaN 안전성을 가져옴
+
+운영상 의미: portal 사용자가 차트의 양 끝 시간 + 가장 높은 QD + 가장 빠른/느린 I/O 를 다운샘플 결과에서 항상 볼 수 있어 디버깅 누락 위험이 줄어듦.
 
 ## 응답 헤더 정리
 
