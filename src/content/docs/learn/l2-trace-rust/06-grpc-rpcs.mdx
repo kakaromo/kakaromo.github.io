@@ -98,34 +98,51 @@ async fn process_logs(
 2. **job_id 발급** — `GetJobStatus`로 폴링 가능
 3. **mpsc channel** — 내부 task가 progress를 push, gRPC가 pull
 
-내부 단계는 4개의 step 함수 + 2개의 finish 헬퍼로 분리돼 있음 (Phase A 리팩토링):
+내부 단계는 4개의 step 함수 + 2개의 finish 헬퍼로 분리돼 있음 (Phase A 리팩토링). 임시 자원은 **외부 스코프에서 추적**해 중간 step 실패 시에도 cleanup 보장:
 
 ```rust
 async fn process_logs_internal(...) {
+    // 임시 자원 경로를 외부 스코프 Option<String> 으로 추적 — 중간 step `?` 트립 시에도
+    // async 블록 종료 후 catch-all cleanup 으로 누수 차단 (1억 row 압축본 수십 GB 가
+    // step1 성공 + step2 파싱 실패 시 디스크에 남는 운영 사례 방지).
+    let mut temp_log_path: Option<String> = None;
+    let mut temp_parquet_path: Option<String> = None;
+    let extract_dir = format!("{}/trace_extract_{}", home_dir, job_id);
+
     let result: Result<(usize, Vec<String>), String> = async {
         // 1단계: 다운로드 + (필요 시) 압축 해제
-        let (temp_log_path, actual_log_path) =
+        let (log_path, actual_log_path) =
             self.step_download_and_extract(&job_id, &request, &tx, &home_dir).await?;
+        temp_log_path = Some(log_path);
 
         // 2단계: 파싱 + 필터 + latency
         let (ufs_traces, block_traces, ufscustom_traces, total_records) =
             self.step_parse_filter_latency(&job_id, &request, &tx, &actual_log_path).await?;
 
         // 3단계: Parquet 저장
-        let temp_parquet_path = Self::step_save_parquet(...).await?;
+        let parquet_path = Self::step_save_parquet(...).await?;
+        temp_parquet_path = Some(parquet_path);
 
         // 4단계: MinIO 업로드
-        let uploaded_files = self.step_upload(...).await?;
+        let uploaded_files = self.step_upload(
+            &job_id, &request, &tx,
+            temp_parquet_path.as_deref().unwrap(),
+            total_records,
+        ).await?;
 
-        // 정리
-        let _ = std::fs::remove_file(&temp_log_path);
         Ok((total_records, uploaded_files))
     }.await;
 
+    // 정리: 성공/실패와 무관하게 임시 자원 cleanup (best-effort).
+    if let Some(p) = temp_log_path.as_ref()    { let _ = std::fs::remove_file(p); }
+    if let Some(p) = temp_parquet_path.as_ref(){ let _ = std::fs::remove_file(p); }
+    if Path::new(&extract_dir).exists() {
+        let _ = std::fs::remove_dir_all(&extract_dir);
+    }
+
     match result {
-        Ok((total_records, uploaded_files)) => {
-            self.finish_success(&job_id, &tx, total_records, uploaded_files).await;
-        }
+        Ok((total_records, uploaded_files)) =>
+            self.finish_success(&job_id, &tx, total_records, uploaded_files).await,
         Err(e) => self.finish_failure(&job_id, &tx, e).await,
     }
 }
@@ -133,11 +150,40 @@ async fn process_logs_internal(...) {
 
 각 step 함수가 자기 단계의 진행률 송신 (`send_progress` 헬퍼) + 실패 시 stack trace 가 어디서 끊겼는지 직접 드러남. 옛날엔 한 함수 396줄 인라인이라 어디서 실패했는지 추적 어려웠음.
 
+**임시 자원 누수 차단 (N2)**:
+- `temp_log_path` (다운로드 압축본, 수십 GB 가능), `temp_parquet_path` (파싱 결과), `extract_dir` (압축 해제 디렉토리) 세 가지가 step 중간 실패 시 누수 가능했음
+- 외부 스코프 `Option<String>` 추적 + 블록 종료 후 일괄 cleanup 으로 해결
+- 두 cleanup 모두 `let _ = remove_*` best-effort — panic 안전
+
 `ConvertToCsv` 도 비슷한 구조. parquet → CSV 부분만 다른 step 함수.
+
+## 공통 진입부 — `resolve_request_meta` 헬퍼
+
+`get_chart_data` / `get_trace_stats` 두 핸들러는 진입부가 거의 byte-equal — 단/복수 path 분기, trace_type 검증, MinioConfig 생성, 정렬·fingerprint 멀티 join 까지 ~50 줄이 같음. 이걸 `resolve_request_meta` 헬퍼 한 곳으로 모았음:
+
+```rust
+async fn resolve_request_meta(
+    &self,
+    bucket: &str,
+    parquet_path: &str,
+    parquet_paths_in: &[String],
+    trace_type_in: &str,
+) -> Result<(Vec<String>, String, String, String, MinioConfig), Status> {
+    // 단/복수 path → Vec<String> 정규화 (둘 다 비면 InvalidArgument)
+    // trace_type 검증 (ufs/block/ufscustom)
+    // MinioConfig 생성 (요청 bucket 으로 갈아끼움)
+    // 정렬 후 fingerprint 멀티 join (입력 순서 무관 캐시 키 안정성)
+    // ...
+}
+```
+
+반환: `(parquet_paths, cache_path, fingerprint, trace_type, config)`.
+
+이 헬퍼 덕분에 두 핸들러는 진입부가 8줄 호출로 줄어들고, 향후 신규 RPC 도 같은 헬퍼 재사용 가능. 두 핸들러 동치성을 코드로 보장.
 
 ## GetChartData — Arrow IPC unary + 3-way dispatch + single-flight
 
-핸들러는 캐시 lookup + dispatch 호출 + proto 변환만. moka `try_get_with` 로 같은 키 동시 N 요청을 빌더 1회로 collapse (자세한 건 [11. 캐시 시스템](/learn/l2-trace-rust/11-cache-system/)).
+핸들러는 공통 헬퍼 호출 + 캐시 lookup + dispatch 호출 + proto 변환만. moka `try_get_with` 로 같은 키 동시 N 요청을 빌더 1회로 collapse (자세한 건 [11. 캐시 시스템](/learn/l2-trace-rust/11-cache-system/)).
 
 ```rust
 async fn get_chart_data(
@@ -145,6 +191,13 @@ async fn get_chart_data(
     request: Request<GetChartDataRequest>,
 ) -> Result<Response<GetChartDataResponse>, Status> {
     let req = request.into_inner();
+
+    // 진입부 ~50 줄을 공통 헬퍼로 — 두 분석 RPC 가 동치
+    let (parquet_paths, cache_path, fingerprint, trace_type, config) = self
+        .resolve_request_meta(
+            &req.source_bucket, &req.parquet_path,
+            &req.parquet_paths, &req.trace_type,
+        ).await?;
 
     // parquet fingerprint(ETag) + 요청 파라미터로 캐시 키 생성
     let cache_key = cache::chart_key(...);
@@ -219,7 +272,7 @@ pub async fn build_chart_payload(
 
 응답 페이로드는 [l2-trace의 03-chart-arrow-ipc](/learn/l2-trace/03-chart-arrow-ipc/) 와 [8. Stats pipeline](/learn/l2-trace-rust/08-stats-pipeline/) 에서 자세히.
 
-## StartRealtimeParsing — server-streaming + Cancel
+## StartRealtimeParsing — server-streaming + Cancel + panic watcher
 
 ```rust
 async fn start_realtime_parsing(
@@ -232,38 +285,47 @@ async fn start_realtime_parsing(
     let (tx, rx) = mpsc::channel(32);
     let cancel_token = CancellationToken::new();
 
-    // 취소 토큰 등록 — StopParsing이 발화시킴
-    self.realtime_jobs
-        .lock()
-        .await
-        .insert(job_id.clone(), cancel_token.clone());
+    // 취소 토큰 등록 — StopParsing 이 발화시킴
+    self.realtime_jobs.lock().await.insert(job_id.clone(), cancel_token.clone());
 
-    // bridge: BottomHalfState용 알림 채널 → gRPC stream으로 forward
     let (notif_tx, mut notif_rx) = mpsc::channel(32);
 
-    let job_id_for_task = job_id.clone();
-    tokio::spawn(async move {
+    // 1) 파서 task — JoinHandle 보관해 watcher 가 결과 await
+    let parser_handle = tokio::spawn(async move {
         run_realtime_parser(
-            req.log_source,
-            req.output_dir,
+            req.log_source, req.output_dir,
             req.window_seconds.unwrap_or(1),
-            cancel_token,
-            notif_tx,
+            cancel_token, notif_tx,
         ).await
     });
 
-    // notification → ParquetFileReady 변환
+    // 2) notification → ParquetFileReady 변환 (정상 흐름)
+    let tx_for_stream = tx.clone();
+    let job_id_for_task = job_id.clone();
     tokio::spawn(async move {
         while let Some(n) = notif_rx.recv().await {
-            let msg = ParquetFileReady {
-                file_path: n.file_path,
-                event_count: n.event_count,
-                total_events: n.total_events,
-                file_seq: n.file_seq,
-                is_final: n.is_final,
-                job_id: job_id_for_task.clone(),
-            };
-            if tx.send(Ok(msg)).await.is_err() { break; }
+            let msg = ParquetFileReady { /* ... */ };
+            if tx_for_stream.send(Ok(msg)).await.is_err() { break; }
+        }
+    });
+
+    // 3) parser 결과 watcher — Err / panic 둘 다 클라이언트로 전파
+    let job_id_watch = job_id.clone();
+    tokio::spawn(async move {
+        match parser_handle.await {
+            Ok(Ok(())) => {} // cancel 또는 EOF — 정상 종료
+            Ok(Err(e)) => {
+                let msg = format!("[Job: {}] 실시간 파싱 오류: {}", job_id_watch, e);
+                let _ = tx.send(Err(Status::internal(msg))).await;
+            }
+            Err(join_err) => {
+                let msg = if join_err.is_panic() {
+                    format!("[Job: {}] 실시간 파서 panic: {}", job_id_watch, join_err)
+                } else {
+                    format!("[Job: {}] 실시간 파서 종료: {}", job_id_watch, join_err)
+                };
+                let _ = tx.send(Err(Status::internal(msg))).await;
+            }
         }
     });
 
@@ -293,10 +355,11 @@ async fn stop_parsing(
 }
 ```
 
-핵심 두 가지:
+핵심 세 가지:
 
 - **CancellationToken** — `tokio_util::sync`. `cancel()` 호출 시 모든 `is_cancelled()` 체크 지점이 즉시 반응
-- **2단계 채널** — 파서는 `mpsc::Sender<ParquetFileNotification>`만 알면 됨 (gRPC와 무관). 서버 레이어가 proto 메시지로 변환. 파서 단위 테스트도 쉽게
+- **2단계 채널** — 파서는 `mpsc::Sender<ParquetFileNotification>` 만 알면 됨 (gRPC와 무관). 서버 레이어가 proto 메시지로 변환. 파서 단위 테스트도 쉽게
+- **Panic watcher** — `tokio::spawn` 의 `JoinHandle` 을 별도 task 가 `await` 하고 결과를 분기 (`Ok(Err)` / `is_panic()` / `Ok(())`). 옛날엔 parser panic 시 `eprintln!` 만 찍히고 stream 이 그냥 멈춰 클라이언트가 panic 사실을 모름 — 운영 진단 어려웠음. 이제 panic / 정상 에러 둘 다 `Status::internal` 로 즉시 전파
 
 ## ListFiles / GetJobStatus / ReadParquet — 단순 unary
 
