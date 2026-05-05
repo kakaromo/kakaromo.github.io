@@ -11,7 +11,7 @@ import ArchitectureDiagram from '../../../../components/learn/ArchitectureDiagra
 
 "사용자가 **슬롯에 UFS metadata 수집을 켜두면**, TC running 을 감지한 순간 Portal 이 자동으로 **해당 제품에 맞는 metadata 명령들** 을 찾아 **초 단위로 adb shell** 을 치고, UFS 공급사마다 출력 포맷이 전혀 달라서 **7가지 `command_type`** 으로 분기 파싱해 JSON 화하며, binary 덤프는 **BinMapper 모듈을 재사용**해 struct 로 매핑하고, f2fs 전용 3 뷰(Iostat·Heatmap·Bitmap)로 시각화한다."
 
-스무 번째 L2입니다. [L2 19종 비교](/learn/l2-compare/)의 체크리스트를 따라 작성됐고, 이 모듈의 특이점은:
+L2 카탈로그의 한 모듈입니다. [L2 21종 비교](/learn/l2-compare/)의 체크리스트를 따라 작성됐고, 이 모듈의 특이점은:
 
 - **트리거가 TC running** — 사용자 RUN 버튼이 아니라 Head SlotState 변화를 **5초 폴링**으로 감지 (→ 자동 시작/종료)
 - **7가지 `command_type` 분기** — UFS 컨트롤러·펌웨어·파일시스템마다 출력 포맷이 달라 **파싱 경로가 7개**. 새 포맷이 생기면 `command_type` 을 추가
@@ -140,6 +140,6 @@ TC 수집은 **수십 분~수 시간** 지속. 사용자는 대부분 그 시간
 
 - [UFS Metadata 아키텍처](/architecture/ufs-metadata/) — 시스템 상세 설계
 - [BinMapper L2](/learn/l2-binmapper/) — binary `command_type` 이 재사용하는 엔진
-- [L2 19종 비교](/learn/l2-compare/) — 이 모듈이 기존 축들과 어떻게 다른지
+- [L2 21종 비교](/learn/l2-compare/) — 이 모듈이 기존 축들과 어떻게 다른지
 
 다음: [1. 엔티티 & 7가지 command_type](/learn/l2-metadata/01-entity-commandtype/) →

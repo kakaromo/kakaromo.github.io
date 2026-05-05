@@ -156,7 +156,7 @@ $ ldd ./trace
 - `parquet` extension 도 bundled (libduckdb-sys feature) — 인터넷 LOAD 불필요
 - `httpfs` extension 만 별도 — 사내 미리 깐 `~/.duckdb/extensions/<ver>/<arch>/httpfs.duckdb_extension` 을 LOAD
 
-httpfs 는 한 번 사외 머신에서 받아 사내에 복사하는 패턴. 해당 절차는 [duckdb-pool](/learn/l2-trace-rust/08-stats-pipeline/) 참고.
+httpfs 는 한 번 사외 머신에서 받아 사내에 복사하는 패턴. 해당 절차는 [DuckDB pool 워밍 — connection 단위 SET](/learn/l2-trace-rust/08-stats-pipeline/#duckdb-pool-워밍--connection-단위-set) 참고.
 
 ## 모듈 끝
 

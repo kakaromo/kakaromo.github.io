@@ -50,7 +50,7 @@ MOVE 에서 사용되는 용어를 **도메인 / 런타임 컴포넌트 / 데이
 
 | 용어 | 설명 |
 |------|------|
-| **Trace Analysis** | UFS/Block/UFSCUSTOM I/O trace 로그 분석 모듈 (L2 19호). 수 GB parquet → Arrow IPC 차트 + 상세 통계 |
+| **Trace Analysis** | UFS/Block/UFSCUSTOM I/O trace 로그 분석 모듈 (기능 축 11호 + 데이터 규모 서브축). 수 GB parquet → Arrow IPC 차트 + 상세 통계. 엔진 deep-dive 는 [l2-trace-rust](/learn/l2-trace-rust/) |
 | **UFS trace / Block trace / UFSCUSTOM** | 3 종 원본 로그 타입 — parquet 변환 단계에서 공용 10 컬럼 스키마로 정규화 |
 | **Arrow IPC** | Apache Arrow Inter-Process Communication. 차트 데이터를 JSON 대신 컬럼 지향 바이너리로 전송 (페이로드 50~70% 감소, 파싱 수 ms) |
 | **ProjectionMask / RowFilter** | parquet 의 컬럼 선택 + 조건 pruning — 5GB 파일에서 필요한 컬럼·row group 만 디코딩 |
@@ -160,4 +160,4 @@ MOVE 에서 사용되는 용어를 **도메인 / 런타임 컴포넌트 / 데이
 
 - [변경 이력](/reference/changelog/) — 용어가 도입된 시점 추적
 - [인프라 구성](/reference/infrastructure/) — 포트·호스트·외부 서비스 배치
-- [L2 19종 비교](/learn/l2-compare/) — 모든 L2 의 축별 대조
+- [L2 21종 비교](/learn/l2-compare/) — 모든 L2 의 축별 대조

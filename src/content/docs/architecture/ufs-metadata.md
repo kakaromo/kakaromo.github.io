@@ -607,4 +607,4 @@ sequenceDiagram
 - [L2 20호 — UFS Metadata 모니터링](/learn/l2-metadata/) — 6 장 여정형 학습 (index + 엔티티 + 스케줄러 + 6 파싱 + binary/BinMapper + REST/placeholder + 프론트)
 - [BinMapper L2](/learn/l2-binmapper/) — binary `command_type` 이 재사용하는 엔진
 - [UFS Metadata 사용 가이드](/guide/ufs-metadata/) — UI 사용법, 타입 관리, 주기 설정, 트러블슈팅
-- [L2 19종 비교](/learn/l2-compare/) — 축별 대조 표에서 Metadata 의 위치
+- [L2 21종 비교](/learn/l2-compare/) — 축별 대조 표에서 Metadata 의 위치

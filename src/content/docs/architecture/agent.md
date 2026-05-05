@@ -1050,5 +1050,5 @@ flowchart TD
 - [Agent 가이드](/guide/agent/) — 사용법, 벤치마크·시나리오·trace·매크로 실전
 - [Agent L2](/learn/l2-scenario/) — Orchestration 축, ScenarioCanvas(@xyflow) + Kahn 위상 정렬 + has_branching DAG 실행
 - [iotest L2](/learn/l2-iotest/) — 엔진 축 3번째, syscall DSL 엔진
-- [L2 19종 비교](/learn/l2-compare/) — Agent 축별 위치 (기능 축, 벤치마크/모니터링/trace)
+- [L2 21종 비교](/learn/l2-compare/) — Agent 축별 위치 (기능 축, 벤치마크/모니터링/trace)
 - [변경 이력](/reference/changelog/) — `2026-04-13 iotest` / `2026-03-30 ScenarioCanvas` 등 Agent 주요 갱신
