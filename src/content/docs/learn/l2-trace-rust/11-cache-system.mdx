@@ -266,6 +266,9 @@ per-connection `SET` 은 회사 환경에서 `Config::enable_object_cache(true)`
 | `TRACE_STATS_DUCKDB_THREADS` | num_cpus | DuckDB 내부 병렬도 |
 | `TRACE_STATS_DUCKDB_MEMORY` | "4GB" | DuckDB max_memory |
 | `TRACE_STATS_DUCKDB_TEMP` | std::env::temp_dir() | spill-to-disk 디렉토리 |
+| `TRACE_STATS_TIMING` | unset | set 시 stats 단계별 elapsed 출력 |
+| `TRACE_CHART_TIMING` | unset | set 시 chart 단계별 elapsed 출력 |
+| `TRACE_RAW_TIMING` | unset | set 시 ReadParquet (DuckDB) 단계별 elapsed 출력 (`output/raw_rpc_duckdb.rs:49`) |
 
 ## 운영 가이드
 

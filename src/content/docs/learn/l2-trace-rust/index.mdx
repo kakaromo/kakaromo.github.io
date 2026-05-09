@@ -121,6 +121,8 @@ trace 바이너리 의존성 중 핵심:
 | `duckdb` (optional, `stats-duckdb` feature) | OLAP SQL 엔진 — 1억 row stats/chart 가속 |
 | `r2d2` (optional) | DuckDB connection pool |
 | `moka` | size-aware LRU + TTL + single-flight 캐시 (L5) |
+| `rust_xlsxwriter` 0.94 (`constant_memory`) | ExportXlsx — 분할 xlsx 디스크 직접 flush, peak memory ≈ 1 chunk |
+| `zip` | 분할 xlsx → ZIP STORED 묶음 (단일 파일은 skip) |
 
 ## 새로 등장할 L3 개념
 

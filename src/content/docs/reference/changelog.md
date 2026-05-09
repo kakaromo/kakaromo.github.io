@@ -3,6 +3,23 @@ title: 변경 이력
 description: MOVE (Mobile OS Validation Eco-system) 의 주요 변경 사항 및 기능 추가 이력
 ---
 
+## 2026-05-09
+
+### Trace — Raw Data 페이지 + 무한 스크롤 + xlsx 분할 export + 원본 .log 다리
+
+trace 바이너리에 portal Raw Data DataTable 과 다운로드 UX 를 위한 RPC·필드·모듈 일괄 보강:
+
+- **모델 `line_number: u64` 추가** (UFS/Block/UFSCUSTOM) — 1-based 원본 .log 라인 번호, parquet 컬럼으로 직렬화. 옛 parquet 은 0 폴백
+- **RPC #10 `GetRawLogLines`** — `line_number` 키로 원본 .log 의 ± context 라인 lazy 조회. `BufReader::next_line()` 단일 패스 (멀티 GB OOM 안전)
+- **RPC #11 `ExportXlsx`** — parquet → 1M row/file 분할 xlsx → (분할 시만) ZIP STORED → MinIO 업로드. server-streaming progress 8 stage. `rust_xlsxwriter` 0.94 `constant_memory` + chunk-local time sort + spawn_blocking + mpsc::blocking_send → peak memory ≈ 1 chunk. 파일명 `{prefix}_{startTime}_{endTime}.xlsx`
+- **`ReadParquet` 대폭 확장** — `offset` / `parquet_paths[]` / `time_range` / `trace_type` / 응답 첫 메시지의 `columns` + `schema_version`. **Keyset pagination** (`cursor_time` + `cursor_line_number` tiebreak, 둘 다 optional — `time=0.0` 도 유효 cursor 일 수 있어 default 0 으로 끝 표현 금지). DuckDB 위임 (`output/raw_rpc_duckdb.rs::query_raw_page`) — `read_parquet([s3://...]) → WHERE → ORDER BY (sort_col, line_number) → LIMIT` 한 큐리. inmem fallback 도 동일 의미로 정렬·필터
+- **운영 안전성**: `resolve_request_meta` 헬퍼 (chart/stats 진입부 통합), `process_logs_internal` 임시자원 cleanup (수십 GB log/parquet/extract_dir 누수 차단), realtime parser panic → `Status::internal` watcher, `read_parquet` 임시파일 cleanup 보장
+- **호환 fix**: 옛 parquet 의 `aligned`/`start_qd`/`end_qd`/`ctoc`/`ctod` 부재 시 binder error → `has_*` 검사 + FALSE/0 cast 리터럴. `line_number` `::UBIGINT` cast, `hwqid` `::INTEGER` cast (옛 UInt32 / 신규 Int32 통일)
+
+trace 11 RPC 카탈로그 + 11-cache-system 5계층 + ExportXlsx 진행 단계 표는 [l2-trace-rust 6장](/learn/l2-trace-rust/06-grpc-rpcs/) 참조.
+
+---
+
 ## 2026-04-25
 
 ### 문서 — UFS Metadata 동기화 + Changelog 갱신

@@ -492,6 +492,8 @@ message RawLogBlock {
 
 ConvertToCsv 의 분할 정책을 그대로 따라 parquet → 1M row/file 분할 xlsx → (분할 시만) ZIP → MinIO 업로드. server-streaming progress 로 단계별 진행 메시지 송신.
 
+> **별개 시스템 주의**: [guide/excel-export](/guide/excel-export/) 의 "Excel 내보내기" 는 portal 의 **성능 테스트 결과** 를 Go `Excel Service` (port 50052, 네이티브 Excel 차트 포함) 로 만드는 다른 기능. 이 RPC 는 trace 의 **UFS/Block/UFSCUSTOM raw row** 를 분할 xlsx 로 떨구는 trace 전용 경로 — 두 시스템은 서로 호출 관계가 없음.
+
 ### 요청 + 진행 stage
 
 ```proto

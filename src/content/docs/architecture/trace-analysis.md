@@ -31,11 +31,15 @@ flowchart TD
         Db["binmapper DB<br/>portal_trace_jobs / portal_trace_parquets"]
     end
 
-    subgraph Rust["Rust trace 서비스 :50053"]
-        Parser["log parser<br/>ftrace / blktrace CSV / UFSCUSTOM"]
+    subgraph Rust["Rust trace 서비스 :50053 (11 RPC)"]
+        Parser["log parser<br/>ftrace / blktrace CSV / UFSCUSTOM<br/>(line_number 기록)"]
         Proc["processors<br/>latency / qd / continuous / aligned"]
         Async["parquet async reader<br/>MinIO range-GET"]
         Duck["DuckDB stats engine<br/>(opt-in)"]
+        RawDuck["ReadParquet 페이지<br/>raw_rpc_duckdb<br/>(offset / keyset cursor)"]
+        Xlsx["ExportXlsx<br/>분할 xlsx + ZIP<br/>spawn_blocking + mpsc"]
+        RawLog["GetRawLogLines<br/>BufReader 단일 패스"]
+        Cache["Cache (L4 head + L5 chart/stats)<br/>moka try_get_with single-flight"]
     end
 
     subgraph Minio["MinIO :9000"]
@@ -55,9 +59,16 @@ flowchart TD
     Presign -.presigned URL 발급.-> UploadClient
     Svc -.gRPC ProcessLogs (stream).-> Rust
     Ctrl -.gRPC GetChartData / GetTraceStats.-> Rust
+    Ctrl -.gRPC ReadParquet / GetRawLogLines / ExportXlsx.-> Rust
     Async --> BucketUp
     Async --> BucketPq
     Duck --> BucketPq
+    RawDuck --> BucketPq
+    RawLog --> BucketUp
+    Xlsx --> BucketPq
+    Xlsx -.upload zip/xlsx.-> BucketPq
+    Cache --> Duck
+    Cache --> Async
     Parser --> Proc
     Proc --> BucketPq
     Echarts --> Page
