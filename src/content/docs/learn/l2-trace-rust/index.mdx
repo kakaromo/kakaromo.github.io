@@ -55,7 +55,7 @@ import ArchitectureDiagram from '../../../../components/learn/ArchitectureDiagra
 | 로컬 분석 | `trace <log> <prefix>` | 로컬 로그 파일 | parquet + 차트 PNG + 통계 |
 | Parquet 재분석 | `trace --parquet ufs <pq> <prefix>` | 기존 parquet | 통계 + 차트 |
 | MinIO 워크플로 | `trace --minio-log <src> <dst>` | MinIO 로그 객체 | MinIO parquet 객체 |
-| **gRPC 서버** | `trace --grpc-server` | 9개 RPC | parquet/Arrow IPC stream |
+| **gRPC 서버** | `trace --grpc-server` | 11개 RPC | parquet/Arrow IPC stream + xlsx zip |
 | gRPC 클라이언트 | `trace --grpc-client <cmd>` | 서버 호스트 | 위 RPC 호출 |
 | **Realtime 파서** | `trace --grpc-client realtime ...` | live 로그 파일 | 윈도우별 parquet + 알림 |
 
@@ -93,14 +93,14 @@ trace는 의도적으로 **여러 프로세스로 나누지 않습니다**:
 | 3 | Bottom half — DtoC/CtoC/CtoD/QD 계산 | 개념 + 코드 | 15분 |
 | 4 | Realtime mode — tail -f + 윈도우 + 증분 처리 | 코드 투어 | 15분 |
 | 5 | Debug story — QD 150 스파이크 추적기 | 사례 | 12분 |
-| 6 | gRPC RPC 카탈로그 — 9개 엔드포인트 | 레퍼런스 | 12분 |
+| 6 | gRPC RPC 카탈로그 — 11개 엔드포인트 (+ ReadParquet keyset / ExportXlsx / GetRawLogLines) | 레퍼런스 | 14분 |
 | 7 | Storage & MinIO — sync vs async reader | 코드 투어 | 12분 |
 | 8 | Stats pipeline — Arrow scan + DuckDB 듀얼 path | 코드 투어 | 15분 |
 | 9 | DuckDB tuning — 1분+ → 17s 최적화 회고 | 사례 | 12분 |
 | 10 | 빌드 스크립트 — 폐쇄망 친화 + rustls | 가이드 | 8분 |
 | 11 | 캐시 시스템 — 5계층과 single-flight | 횡단 정리 | 12분 |
 
-총 약 **133분**. `l2-trace`를 먼저 읽지 않아도 됩니다 (오히려 이 모듈이 더 기초). 다만 ftrace/blktrace 포맷에 익숙하지 않으면 [parquet 스키마](/learn/l2-trace/02-parquet-schema/)를 먼저 보면 좋습니다.
+총 약 **135분**. `l2-trace`를 먼저 읽지 않아도 됩니다 (오히려 이 모듈이 더 기초). 다만 ftrace/blktrace 포맷에 익숙하지 않으면 [parquet 스키마](/learn/l2-trace/02-parquet-schema/)를 먼저 보면 좋습니다.
 
 1~5장은 trace 바이너리 자체의 구조와 동작을 다루고, 6~8장은 외부에서 trace를 쓰는 인터페이스(gRPC/MinIO/통계)를 깊게 봅니다. 9~10장은 운영/배포 (DuckDB 최적화 + Linux 호환 빌드). 11장은 L1~L5 캐시 시스템 횡단 정리 — 다른 챕터에서 흩어져 다룬 캐시 동작을 한 번에 봅니다. 1~5장만 읽어도 trace 코드 변경에 충분히 들어갈 수 있습니다.
 
