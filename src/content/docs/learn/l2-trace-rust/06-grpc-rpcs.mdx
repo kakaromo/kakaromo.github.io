@@ -520,29 +520,31 @@ enum XlsxStage { XLSX_UNKNOWN; XLSX_DOWNLOADING; XLSX_FILTERING;
 | % | message 예시 | 의미 |
 |---|---|---|
 | 5–20 | `Downloaded n/m parquet …` | 멀티 path 다운로드 |
-| 25 | `Reading parquet rows` | iter_*_from_parquet 시작 |
+| **22** | `Sorting rows by time (DuckDB merge)` | **DuckDB `COPY (... ORDER BY (sort_col, line_number)) TO ...` 로 정렬된 단일 임시 parquet 생성** (`676aeac`). DuckDB 비활성 빌드 시 skip (chunk-local sort fallback) |
+| 25 | `Reading parquet rows` | iter_*_from_parquet 시작 (정렬된 parquet) |
 | 35 | `Read N {trace_type} rows` | 읽기 완료 |
 | 42 → 48 | `Applying filters` → `Filtered N → M rows` | filter 적용 |
-| 50 | `Sorting M rows by time` | parquet `(action, opcode, time)` 순서 → time 정렬 (e5b4677) |
-| 55 → 80 | `Writing xlsx (M rows)` → `Wrote N file(s)` | chunk-local time sort + constant_memory write |
+| 55 → 80 | `Writing xlsx (M rows)` → `Wrote N file(s)` | streaming write + constant_memory |
 | 85 → 90 | `Compressing N files` → `Zipped to X bytes` | **단일 파일이면 skip** (a5733b2) |
 | 93 | `Uploading {xlsx\|zip} to MinIO (X.XX MB)` | upload |
 | 98 | `Generating download URL` | presigned URL |
 | 100 | `Completed` | output_zip_path 채움 |
 
+> **정렬 정책의 위치**: 22% 단계가 입력 parquet 들을 **글로벌 시간순으로 머지·정렬**하는 핵심. 이전엔 (`e5b4677`) 50% 단계의 in-memory `traces.sort_by(time)` 였다가 streaming 전환 (`724bbdb`) 으로 chunk-local sort 가 됐고, chunk 경계에서 시간 역전이 발생해 (`676aeac`) DuckDB 머지·정렬로 대체. 자세한 3-tier 정책은 [9. DuckDB tuning § 정렬 정책](/learn/l2-trace-rust/09-duckdb-tuning/#정렬-정책--3-tier-stats--raw--xlsx).
+
 ### 파일명 규약 (9e569ed)
 
-`{filename_prefix}_{startTime}_{endTime}.xlsx` — chunk 의 첫/마지막 row 의 `time` (UFS/Block) 또는 `start_time` (UFSCUSTOM) 사용. 소수점 3자리(ms 정밀도), `.` → `_` 치환. chunk 1 = 가장 이른 시간, chunk N = 가장 나중 시간이 자연스럽게 단조증가.
+`{filename_prefix}_{startTime}_{endTime}.xlsx` — chunk 의 첫/마지막 row 의 `time` (UFS/Block) 또는 `start_time` (UFSCUSTOM) 사용. 소수점 3자리(ms 정밀도), `.` → `_` 치환. **22% 단계의 글로벌 정렬 덕분에 chunk 1 = 가장 이른 시간, chunk N = 가장 나중 시간이 정확히 단조증가** — 파일명 범위가 실제 시간 범위와 1:1 일치.
 
 ### Streaming write — peak memory ≈ 1 chunk
 
 핵심 구현 (`output/xlsx.rs::save_*_to_xlsx_split_streaming`):
 - `iter_*_from_parquet` (`output/reader.rs`) 가 RecordBatch → row-by-row iterator
-- `chunk(file_row_limit)` 단위 buffer + chunk-local time sort
+- `chunk(file_row_limit)` 단위 buffer + (안전망) chunk-local time sort — 정상 경로에서 입력이 이미 글로벌 정렬이라 거의 noop
 - `rust_xlsxwriter` 0.94 `constant_memory` worksheet → 디스크 직접 flush
 - `spawn_blocking + mpsc::blocking_send` 로 chunk progress forward
 
-→ 1억 row · 수십 GB 입력에서도 peak memory 가 1 chunk (1M row) 분량으로 한정.
+→ 1억 row · 수십 GB 입력에서도 peak memory 가 1 chunk (1M row) 분량으로 한정. DuckDB 머지·정렬 단계도 disk spill 활용 — peak memory 영향 X.
 
 ### 운영 함정 — 단일 파일은 ZIP 안 함
 

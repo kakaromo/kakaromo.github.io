@@ -3,6 +3,24 @@ title: 변경 이력
 description: MOVE (Mobile OS Validation Eco-system) 의 주요 변경 사항 및 기능 추가 이력
 ---
 
+## 2026-05-10
+
+### Trace — ExportXlsx 정렬 정확성 + clippy 정리 + 3-tier 정렬 정책 명시화
+
+- **ExportXlsx chunk 경계 time 역전 차단** (`676aeac`) — parquet 이 stats 가속용 `(action, opcode, time)` 키로 저장돼 streaming chain 결과 chunk 경계에서 time 역전 가능 → 파일명 `{prefix}_{startTime}_{endTime}.xlsx` 가 실제 시간 범위와 어긋남. 신규 모듈 `output/xlsx_sort_duckdb.rs::merge_sort_local_parquets` — 다운로드된 local parquet[] → DuckDB `COPY (SELECT * FROM read_parquet(...) ORDER BY (sort_col, line_number)) TO '...' (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 200000)` 한 SQL. `export_xlsx_internal` 22% 단계로 신설. DuckDB 비활성 빌드(feature off) / pool 미초기화 시 chunk-local sort fallback (사용자 다운로드 항상 성공)
+- **clippy 6건 fix** (`be08b8d`) — `doc_lazy_continuation` (read_raw_log_blocks doc), `useless_conversion` (`req.offset.unwrap_or(0)`), `explicit_counter_loop` (`(0_i64..).zip` 패턴), `too_many_arguments` 3건 (xlsx::save_split / save_split_streaming / raw_rpc_duckdb::query_raw_page) → `#[allow]` (인자 묶음 struct 보다 호출부 가독성 우선). `cargo clippy --all-targets [+ --features stats-duckdb] -- -D warnings ✓ 0`
+- **3-tier 정렬 정책 명시화** — "왜 parquet 을 처음부터 time 순으로 저장하지 않나" 가 운영 빈출 질문이라 결정 근거를 [9. DuckDB tuning § 정렬 정책](/learn/l2-trace-rust/09-duckdb-tuning/#정렬-정책--3-tier-stats--raw--xlsx) 표로 정리:
+
+  | 단계 | 정렬 키 | 이유 |
+  |---|---|---|
+  | parquet 저장 | `(action, opcode, time)` | stats RPC **1분+ → 17s** 핵심 지렛대 |
+  | ReadParquet 응답 | `time` 재정렬 (top-K heap) | UI 시간순 무한 스크롤 |
+  | ExportXlsx write | DuckDB 머지·정렬 | chunk 경계 단조증가 보장 |
+
+  비용 분담 원칙 (stats hot path 보호 + ExportXlsx 일회성 비용 감수) + 기각 대안 3종 (time 순 저장 / 이중 parquet / BRIN) 도 같은 섹션에 명시
+
+---
+
 ## 2026-05-09
 
 ### Trace — Raw Data 페이지 + 무한 스크롤 + xlsx 분할 export + 원본 .log 다리
@@ -11,7 +29,7 @@ trace 바이너리에 portal Raw Data DataTable 과 다운로드 UX 를 위한 R
 
 - **모델 `line_number: u64` 추가** (UFS/Block/UFSCUSTOM) — 1-based 원본 .log 라인 번호, parquet 컬럼으로 직렬화. 옛 parquet 은 0 폴백
 - **RPC #10 `GetRawLogLines`** — `line_number` 키로 원본 .log 의 ± context 라인 lazy 조회. `BufReader::next_line()` 단일 패스 (멀티 GB OOM 안전)
-- **RPC #11 `ExportXlsx`** — parquet → 1M row/file 분할 xlsx → (분할 시만) ZIP STORED → MinIO 업로드. server-streaming progress 8 stage. `rust_xlsxwriter` 0.94 `constant_memory` + chunk-local time sort + spawn_blocking + mpsc::blocking_send → peak memory ≈ 1 chunk. 파일명 `{prefix}_{startTime}_{endTime}.xlsx`
+- **RPC #11 `ExportXlsx`** — parquet → 1M row/file 분할 xlsx → (분할 시만) ZIP STORED → MinIO 업로드. server-streaming progress 8 stage. `rust_xlsxwriter` 0.94 `constant_memory` + spawn_blocking + mpsc::blocking_send → peak memory ≈ 1 chunk. 파일명 `{prefix}_{startTime}_{endTime}.xlsx` (글로벌 time 정렬 — 5월 10일 `676aeac` 에서 DuckDB 머지·정렬로 정착)
 - **`ReadParquet` 대폭 확장** — `offset` / `parquet_paths[]` / `time_range` / `trace_type` / 응답 첫 메시지의 `columns` + `schema_version`. **Keyset pagination** (`cursor_time` + `cursor_line_number` tiebreak, 둘 다 optional — `time=0.0` 도 유효 cursor 일 수 있어 default 0 으로 끝 표현 금지). DuckDB 위임 (`output/raw_rpc_duckdb.rs::query_raw_page`) — `read_parquet([s3://...]) → WHERE → ORDER BY (sort_col, line_number) → LIMIT` 한 큐리. inmem fallback 도 동일 의미로 정렬·필터
 - **운영 안전성**: `resolve_request_meta` 헬퍼 (chart/stats 진입부 통합), `process_logs_internal` 임시자원 cleanup (수십 GB log/parquet/extract_dir 누수 차단), realtime parser panic → `Status::internal` watcher, `read_parquet` 임시파일 cleanup 보장
 - **호환 fix**: 옛 parquet 의 `aligned`/`start_qd`/`end_qd`/`ctoc`/`ctod` 부재 시 binder error → `has_*` 검사 + FALSE/0 cast 리터럴. `line_number` `::UBIGINT` cast, `hwqid` `::INTEGER` cast (옛 UInt32 / 신규 Int32 통일)

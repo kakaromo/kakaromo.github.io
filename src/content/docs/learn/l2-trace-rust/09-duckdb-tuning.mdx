@@ -85,13 +85,36 @@ FROM base GROUP BY cmd
 
 ## 3단계: parquet 정렬 + row group 200K + ZSTD 3
 
-`save_to_parquet` 에서 (action, cmd, time) 으로 정렬해 저장:
+`save_to_parquet` 에서 (action, opcode, time) 으로 정렬해 저장 (UFSCustom 은 action 컬럼 없음 → `(opcode, start_time)`):
 
 - action 값별 row group 클러스터링 → DuckDB 가 row group min/max statistics 로 일부 prune
 - row_group_size 200K → 메타데이터 오버헤드/granularity 균형
 - ZSTD level 3 → snappy 보다 30% 작음, 압축 해제 비용 비슷
 
 stats SQL 의 FILTER 가 column expression 이라 row group skip 효과는 크지 않지만 (FILTER 는 row-level), **chunk fetch 양 자체는 줄어듦** (압축률 ↑). 1-2s 절감.
+
+### 정렬 정책 — 3-tier (stats / raw / xlsx)
+
+같은 parquet 을 세 가지 RPC 가 서로 다른 정렬 요구로 읽기 때문에 단계별로 정렬 키가 다릅니다. 운영에서 가장 자주 묻는 질문이 "왜 parquet 을 처음부터 time 순으로 저장하지 않나요" 라서 결정 근거를 명시:
+
+| 단계 | 정렬 키 | 도입 commit | 이유 |
+|---|---|---|---|
+| **parquet 저장** | UFS/Block: `(action, opcode, time)` / UFSCustom: `(opcode, start_time)` | `260b00f` | stats RPC 가속 — 같은 action/opcode row 가 인접 row group 에 모이면 `WHERE action='complete' GROUP BY opcode` 가 row group skip + dictionary encoding 으로 빨라짐. 1억 row stats **1분+ → 17s 의 핵심 지렛대** |
+| **ReadParquet 응답** | `time` (UFS/Block) / `start_time` (UFSCustom) 재정렬 | `acc4942` | UI raw row 시간순 무한 스크롤. DuckDB 경로는 `ORDER BY (sort_col, line_number) LIMIT N` 으로 top-K heap — 전체 정렬 안 함 |
+| **ExportXlsx write** | DuckDB 머지·정렬 (`time`/`start_time` + `line_number` tiebreak) | `676aeac` | chunk 경계에서도 시간 단조증가 보장. 파일명 `{prefix}_{startTime}_{endTime}.xlsx` 의 범위가 실제 시간 범위와 정확히 일치 — ExportXlsx 가 streaming chain 으로 흘리면 chunk N 의 마지막 row time 이 chunk N+1 의 첫 row time 보다 클 수 있음 (action 별 묶음으로 들어와 chunk 경계에서 인터리빙) |
+
+**비용 분담 원칙**:
+
+- **stats RPC = 상시 hot path** → parquet 정렬 최적화 받음 (한 번 저장 시 비용 → 매 호출마다 이득)
+- **ExportXlsx = 사용자 다운로드 트리거 시 일회성** → 정렬 비용 감수 (DuckDB disk spill 활용 — peak memory 영향 X)
+- **ReadParquet = 페이지 단위** → SQL `ORDER BY ... LIMIT` top-K heap 으로 처리
+
+**대안 검토 후 기각**:
+- ❌ parquet 을 time 순으로 저장 — stats RPC 가 다시 1분+ 로 갈 위험 (3단계 자체를 되돌리는 셈)
+- ❌ 이중 정렬 parquet (`*_by_time.parquet`) — 디스크 2배 + 저장 시간 증가
+- ❌ DuckDB 인덱스/BRIN — 검증 비용 대비 이득 불확실
+
+ExportXlsx 의 머지·정렬 구현은 `output/xlsx_sort_duckdb.rs::merge_sort_local_parquets` — 다운로드된 local parquet[] → `COPY (SELECT * FROM read_parquet(...) ORDER BY (sort_col, line_number)) TO '...' (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 200000)` 한 SQL. DuckDB 비활성 빌드 (feature off) 또는 pool 미초기화 시엔 chunk-local sort fallback 으로 동작하며 사용자 다운로드는 항상 성공.
 
 ## 4단계: L5 cache 크기/TTL 확대
 
