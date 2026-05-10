@@ -417,6 +417,19 @@ Reparse는 원본 trace.log가 서버에 보존되어 있어야 합니다. trace
 - **개별 선택**: 특정 trace만 선택하여 분석
 - **실시간 확인**: 시나리오 진행 중 `trace_stop` 완료 즉시 목록에 나타남
 
+#### Trace Archive — 영속 저장 (포털 ↔ MinIO 직접 PUT)
+
+agent 가 보관 중인 trace 결과 (trace.log + realtime parquet 들) 를 portal 이 발급한 presigned URL 로 nginx 경유 MinIO 에 직접 PUT 해서 영속화. agent 종료 후에도 portal 에서 trace 조회 가능 (`6d57d6f`).
+
+흐름:
+1. portal 이 `GetArchiveFilesInfo` RPC 로 보관 파일 목록 + 크기 조회
+2. portal 이 multipart 분할 계획 + presigned URL 발급
+3. portal 이 agent 의 `UploadTraceArchive` (server-streaming) 호출
+4. agent 가 단일/multipart (4-way 병렬) 자동 선택해서 PUT, ETag stream-back
+5. portal 이 자동으로 multipart complete + DB 갱신
+
+agent 단방향 원칙 유지 (portal 이 모든 RPC 호출 시작). 표준 `net/http` 사용 (minio-go SDK 우회 — endpoint 협상 회피).
+
 ---
 
 ## 8. 실시간 모니터링

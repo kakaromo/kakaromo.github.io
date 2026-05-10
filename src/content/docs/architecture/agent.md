@@ -397,6 +397,8 @@ message AppMacroConfig {
 | `GetTraceResult` | 통계 조회 (repeated job_ids + TraceFilter) |
 | `GetTraceRawData` | raw 이벤트 조회 (scatter 차트용, 최대 256MB) |
 | `ReparseTrace` | 기존 trace 데이터 재파싱 |
+| **`UploadTraceArchive`** | server-streaming. portal 이 발급한 presigned URL 로 trace.log + realtime parquet 들을 nginx 경유 MinIO 에 PUT. 단일/multipart (4-way 병렬) 자동 선택. ETag 를 stream-back → portal 이 자동으로 multipart complete + DB 갱신. agent 단방향 원칙 유지 (`6d57d6f`) |
+| **`GetArchiveFilesInfo`** | trace.log + realtime parquet 목록을 시퀀스 번호(=시간순)로 정렬해 size/type 과 함께 반환. portal 이 multipart 분할 계획·presigned 발급에 사용 |
 
 **TraceFilter** — trace 데이터 필터링:
 
@@ -459,8 +461,13 @@ rpc MonitorDevices(MonitorDevicesRequest) returns (stream DeviceMetrics);
 
 | RPC | 설명 |
 |-----|------|
-| `UploadTraceToMinio` | trace 데이터를 MinIO 오브젝트 스토리지에 업로드 |
+| `UploadTraceToMinio` | (legacy) trace 데이터를 minio-go SDK 로 업로드. 신규 흐름은 위 `UploadTraceArchive` 권장 — agent 측 endpoint 협상 회피 + nginx 경유 |
 | `UploadBenchmarkToMinio` | 벤치마크 결과를 MinIO에 업로드 |
+
+**presigned multipart 흐름** (`storage/http_uploader.go`):
+- `UploadFilePresigned` — 단일 PUT (작은 파일)
+- `UploadFileMultipart` — 4-way 병렬 PUT, ETag 추출. 표준 `net/http` 사용 (minio-go SDK 우회 — endpoint 협상 회피)
+- `archiveSender` mutex — multipart 4-way goroutine 의 `stream.Send` 동시 호출 race 방지
 
 #### App Macro (이벤트 녹화/재생 + OCR)
 
@@ -1011,7 +1018,24 @@ generic `RunBenchmark` gRPC 에 `BENCHMARK_TOOL_IOTEST` 로 기생하는 syscall
 
 관리 UI 는 `IOTestEditor` (thread + commands 트리 편집) + `IOTestPreset` 엔티티(`configJson` MEDIUMTEXT) + 내장 18 프리셋. Portal 은 JSON 생성 + 서빙만 하고 실행 로직은 전부 Go Agent 쪽.
 
+**iotest 진행률 streaming 구조** (`4d7776f` + `7138940`):
+- `cmd/iotest/` 가 stderr 에 `ProgressEvent` JSONL 로 thread/step/op/status/iter emit
+- Agent `benchmark/iotest.go` 가 `adb.ShellStream` 으로 stderr 라인을 받아 thread 별 누적 상태로 변환 → `onProgress` 콜백
+- 콜백 → `JobProgress.message` 에 패턴 `IOTEST|thread=...|completed=...|total=...|status=...|op=...` 로 직렬화
+- portal `AgentController` 가 message 그대로 forward → frontend `ScenarioCanvas.extractIOTestThreadProgresses` 가 실시간 파싱하여 thread 별 미니 progress bar 표시
+
 **상세**: [iotest L2 (엔진 축 3번째)](/learn/l2-iotest/) · [iotest 가이드](/guide/iotest/)
+
+### adb.ShellStream — stdout/stderr 라인 callback streaming shell
+
+기존 `adb.Shell()` 은 그대로 두고, **iotest 처럼 stderr 로 실시간 진행률을 흘리는 도구를 위해** stdout/stderr 라인 callback 받는 streaming shell 추가 (`7138940`). scenario `executeStep` 의 iotest 분기에서 `onProgress` 콜백을 만들어 iotest 의 `IOTEST|...` 메시지를 즉시 `job.notify(JobProgress)` 로 SSE 에 흘림.
+
+### `/health` HTTP endpoint
+
+agent 바이너리의 health check endpoint (`f9c6461`):
+- `GET /health` → `{"status":"ok","devices":N}` (JSON, `adb.Manager.Count()` RLock)
+- httptest 로 단위 테스트 가능하도록 `newHealthHandler` 함수 분리 + 50-way 동시 Count() 테스트 (`-race`)
+- portal 의 health check / k8s readiness probe 등에서 활용
 
 ---
 

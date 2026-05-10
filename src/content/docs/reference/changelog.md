@@ -5,6 +5,38 @@ description: MOVE (Mobile OS Validation Eco-system) 의 주요 변경 사항 및
 
 ## 2026-05-10
 
+### Portal — Trace 상세 'Logs' 탭 + log-search (MinIO range-GET 이진탐색)
+
+trace job 1 개에 보조 로그 (logcat/kmsg) 를 첨부하고, 같은 페이지의 chart zoom 시간범위로 즉시 검색 가능 (`portal e35170d` + `0dc6a74`):
+
+- **TraceLog entity (`portal_trace_logs`)** — jobId / kind / objectKey / format / bootEpochMs / referenceYear 등. presigned multipart 업로드 (브라우저 → MinIO 직접 PUT, JVM 우회)
+- **`/api/trace/jobs/{jobId}/logs` REST** — init / complete / GET / DELETE (TraceLogController)
+- **`POST /api/log-search/timestamps`** — `traceLogId` set 시 portal_trace_logs 에서 자동 lookup. 100GB 파일도 1초 이내 첫 응답. 응답 limit 5,000 default / 50,000 max + `truncated` flag
+- **`LogTimestampParser`** — logcat short(MM-DD) / long(YYYY-MM-DD) / kmsg([secs.ms] monotonic) / auto detect. 단위 테스트 10/10
+- **bucket whitelist** (`edab1f3`) — `log-search` 가 portal 발급 traceLogId 만 받음 (objectKey hijack 방어)
+- 사용자 가이드: [trace-analysis § 7. Logs 탭](/guide/trace-analysis/#7-logs-탭--logcat--kmsg-첨부--시간범위-검색)
+
+### Portal — Raw Data DataTable + 무한 스크롤 + 원본 .log 라인 Dialog + Excel 분할 다운로드
+
+trace 결과 페이지에 1억 row 까지 다룰 수 있는 raw 이벤트 표 + 클릭 row 의 원본 .log 라인 컨텍스트 + 필터 적용 분할 xlsx 다운로드 3종 (`portal a1d4aa3` + `548bd9b` + `f70ff59` + `66d41d7` + `bc21586` + `5aaff18` + `2941645` + `92443db`):
+
+- **TraceRawDataView** — `POST /api/trace/raw` (DataTable serverSide, limit≤5000)
+- **무한 스크롤** — keyset cursor (`cursor_time` + `cursor_line_number`) 패스스루. loadMore race 가드, cursor null 처리
+- **원본 .log 라인 뷰어 Dialog** (이전 Sheet → Dialog 로 변경) — `POST /api/trace/raw-line` (line_numbers≤64, context≤50)
+- **TraceExportService + TraceExportController** — `POST /api/trace/export/xlsx` SSE progress + 완료 시 presigned GET 발급. stage 라벨에 정렬 단계 명시 ("읽기/필터" → "읽기/필터/정렬")
+- **TraceExportCleanupTask** — 매일 04:00 KST `(userId, jobId)/exports/` prefix 24h 이상 zip 자동 삭제 (다른 사용자 영향 없도록 prefix 좁힘 — `0d0edc7`)
+- 사용자 가이드: [trace-analysis § 6. Raw Data 탭](/guide/trace-analysis/#6-raw-data-탭) + [§ 12. ExportXlsx](/guide/trace-analysis/#12-exportxlsx--excel-분할-다운로드)
+
+### Agent — Trace Archive RPC + iotest 진행률 SSE + /health endpoint
+
+agent 의 trace 결과를 portal 이 영속화 + iotest 실시간 진행률 + health check (`agent 6d57d6f` + `4d7776f` + `7138940` + `f9c6461`):
+
+- **`UploadTraceArchive`** (server-streaming) + **`GetArchiveFilesInfo`** RPC — portal 이 발급한 presigned URL 로 trace.log + realtime parquet 들을 nginx 경유 MinIO 에 PUT. 단일/multipart (4-way 병렬) 자동. ETag stream-back. agent 단방향 원칙 유지
+- **`storage/http_uploader.go`** — 표준 `net/http` 사용 (minio-go SDK 우회 — endpoint 협상 회피)
+- **iotest syscall 엔진** (`cmd/iotest/`, 22개 op) — stderr 에 `ProgressEvent` JSONL emit
+- **`adb.ShellStream`** — stdout/stderr 라인 callback streaming shell. iotest 의 stderr 진행률을 `IOTEST|thread=...|completed=...|...` 패턴으로 변환 → JobProgress.message → portal SSE → frontend ScenarioCanvas 실시간 thread 별 progress bar
+- **`/health` HTTP endpoint** — `{"status":"ok","devices":N}` (httptest 단위 테스트 + `-race` 50-way 동시성)
+
 ### Trace — ExportXlsx 정렬 정확성 + clippy 정리 + 3-tier 정렬 정책 명시화
 
 - **ExportXlsx chunk 경계 time 역전 차단** (`676aeac`) — parquet 이 stats 가속용 `(action, opcode, time)` 키로 저장돼 streaming chain 결과 chunk 경계에서 time 역전 가능 → 파일명 `{prefix}_{startTime}_{endTime}.xlsx` 가 실제 시간 범위와 어긋남. 신규 모듈 `output/xlsx_sort_duckdb.rs::merge_sort_local_parquets` — 다운로드된 local parquet[] → DuckDB `COPY (SELECT * FROM read_parquet(...) ORDER BY (sort_col, line_number)) TO '...' (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 200000)` 한 SQL. `export_xlsx_internal` 22% 단계로 신설. DuckDB 비활성 빌드(feature off) / pool 미초기화 시 chunk-local sort fallback (사용자 다운로드 항상 성공)

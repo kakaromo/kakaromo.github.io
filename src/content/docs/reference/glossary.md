@@ -61,6 +61,9 @@ MOVE 에서 사용되는 용어를 **도메인 / 런타임 컴포넌트 / 데이
 | **GetRawLogLines (RPC #10)** | row 의 `line_number` 로 원본 .log 의 ± context 라인 lazy 조회. `BufReader::next_line()` 단일 패스 — 멀티 GB .log 도 OOM 없음 |
 | **ExportXlsx (RPC #11)** | parquet → DuckDB 글로벌 time 머지·정렬 (`xlsx_sort_duckdb`) → 1M row/file 분할 xlsx → (분할 시만) ZIP → MinIO 업로드. `rust_xlsxwriter` 0.94 `constant_memory`. 파일명 `{prefix}_{startTime}_{endTime}.xlsx` 가 실제 시간 범위와 1:1 일치, peak memory ≈ 1 chunk |
 | **3-tier 정렬 정책 (trace)** | parquet 저장은 stats RPC 가속용 `(action, opcode, time)`, ReadParquet 응답은 `time` top-K 재정렬, ExportXlsx write 는 DuckDB 머지·정렬. stats hot path 보호 + xlsx 일회성 비용 감수 원칙. 자세히는 [9. DuckDB tuning § 정렬 정책](/learn/l2-trace-rust/09-duckdb-tuning/#정렬-정책--3-tier-stats--raw--xlsx) |
+| **TraceLog / Logs 탭** | trace job 1개에 첨부되는 보조 로그 (logcat/kmsg/custom). 같은 trace 페이지 chart zoom 시간범위로 즉시 검색 가능. 업로드는 presigned multipart (브라우저 → MinIO PUT, JVM 우회) |
+| **log-search** | logcat/kmsg 같은 대용량 텍스트 로그를 wall-clock 시간범위로 자르는 Java 단독 서비스. MinIO range-GET 64KB probe 이진탐색 (~30회 GET) 으로 startOffset 결정 → end-time 까지 line-by-line 매칭. Rust trace 서비스 거치지 않음. 100GB 파일도 1초 이내 첫 응답 |
+| **Trace Archive (UploadTraceArchive)** | agent 의 trace.log + realtime parquet 들을 portal 이 발급한 presigned URL 로 nginx 경유 MinIO 에 PUT 해서 영속화. agent 단방향 원칙 유지 (portal 이 RPC 호출). 표준 `net/http` 사용 (minio-go SDK 우회) |
 | **Deck.gl OrthographicView** | WebGL 2D 직교 투영 뷰. `ScatterplotLayer` binary attribute 로 1M 포인트 60fps |
 
 ## 런타임 컴포넌트

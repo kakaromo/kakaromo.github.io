@@ -25,10 +25,11 @@ flowchart TD
     end
 
     subgraph Portal["Portal (Spring Boot)"]
-        Ctrl["TraceController<br/>TraceJobController"]
-        Svc["TraceJobService (@Async)"]
+        Ctrl["TraceController<br/>TraceJobController<br/>TraceLogController<br/>TraceExportController"]
+        Svc["TraceJobService (@Async)<br/>TraceLogService<br/>TraceExportService (SSE)<br/>TraceExportCleanupTask (daily)"]
         Presign["S3PresignService"]
-        Db["binmapper DB<br/>portal_trace_jobs / portal_trace_parquets"]
+        LogSearch["LogSearchService<br/>(MinIO range-GET 이진탐색)<br/>logcat / kmsg / auto<br/>LogTimestampParser"]
+        Db["binmapper DB<br/>portal_trace_jobs / portal_trace_parquets<br/>portal_trace_logs"]
     end
 
     subgraph Rust["Rust trace 서비스 :50053 (11 RPC)"]
@@ -55,7 +56,9 @@ flowchart TD
     NginxMinio --> BucketUp
     Ctrl --> Svc
     Ctrl --> Presign
+    Ctrl --> LogSearch
     Svc --> Db
+    LogSearch -.range-GET 이진탐색.-> BucketUp
     Presign -.presigned URL 발급.-> UploadClient
     Svc -.gRPC ProcessLogs (stream).-> Rust
     Ctrl -.gRPC GetChartData / GetTraceStats.-> Rust
@@ -85,6 +88,7 @@ flowchart TD
 | **parquet columnar** | 다른 컬럼 조합으로 재질의(chart/stats/filter) 할 때 **필요한 컬럼만 projection** 으로 I/O 최소화 |
 | **MinIO S3 호환** | parquet object 를 range-GET 으로 읽으면 5GB+ 파일도 /tmp 경유 없이 row group 단위 스트리밍 가능 |
 | **Feature flag 렌더러** | ECharts (기본, 50k 내외) vs Deck.gl (opt-in, 500k~1M+ WebGL). 릴리즈 없이 사용자가 env 로 전환 |
+| **log-search 는 Java 단독** | logcat/kmsg 같은 wall-clock 텍스트 로그는 Rust trace 서비스 거치지 않고 Java 가 MinIO range-GET 이진탐색 (~30회) 으로 직접 처리. 100GB 파일도 1초 이내 첫 응답. parquet 변환 불필요한 로그가 trace 파이프라인을 부풀리지 않도록 분리 |
 
 ---
 
