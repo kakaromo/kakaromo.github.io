@@ -59,7 +59,8 @@ MOVE 에서 사용되는 용어를 **도메인 / 런타임 컴포넌트 / 데이
 | **line_number (trace 모델 필드)** | UFS/Block/UFSCUSTOM 공통 1-based 원본 .log 라인 번호 (0 = 미상). parquet 컬럼으로 직렬화돼 `GetRawLogLines` 의 키 + `ReadParquet` keyset cursor tiebreak 로 사용 |
 | **Keyset pagination (ReadParquet)** | OFFSET 누적 스캔 회피용 무한 스크롤. 응답 마지막 row 의 `next_cursor_time` + `next_cursor_line_number` 를 다음 요청에 그대로 전달. cursor 가 optional 인 이유: time=0.0 이 유효 cursor 일 수 있어 default 0 으로 "끝" 표현 금지 |
 | **GetRawLogLines (RPC #10)** | row 의 `line_number` 로 원본 .log 의 ± context 라인 lazy 조회. `BufReader::next_line()` 단일 패스 — 멀티 GB .log 도 OOM 없음 |
-| **ExportXlsx (RPC #11)** | parquet → 1M row/file 분할 xlsx → (분할 시만) ZIP → MinIO 업로드. `rust_xlsxwriter` 0.94 `constant_memory` + chunk-local time sort. 파일명 `{prefix}_{startTime}_{endTime}.xlsx`, peak memory ≈ 1 chunk |
+| **ExportXlsx (RPC #11)** | parquet → DuckDB 글로벌 time 머지·정렬 (`xlsx_sort_duckdb`) → 1M row/file 분할 xlsx → (분할 시만) ZIP → MinIO 업로드. `rust_xlsxwriter` 0.94 `constant_memory`. 파일명 `{prefix}_{startTime}_{endTime}.xlsx` 가 실제 시간 범위와 1:1 일치, peak memory ≈ 1 chunk |
+| **3-tier 정렬 정책 (trace)** | parquet 저장은 stats RPC 가속용 `(action, opcode, time)`, ReadParquet 응답은 `time` top-K 재정렬, ExportXlsx write 는 DuckDB 머지·정렬. stats hot path 보호 + xlsx 일회성 비용 감수 원칙. 자세히는 [9. DuckDB tuning § 정렬 정책](/learn/l2-trace-rust/09-duckdb-tuning/#정렬-정책--3-tier-stats--raw--xlsx) |
 | **Deck.gl OrthographicView** | WebGL 2D 직교 투영 뷰. `ScatterplotLayer` binary attribute 로 1M 포인트 60fps |
 
 ## 런타임 컴포넌트
