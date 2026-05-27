@@ -327,6 +327,17 @@ export default defineConfig({
             { label: '변경 이력', slug: 'reference/changelog' },
           ],
         },
+        {
+          label: 'fsiotrace (eBPF Tracer)',
+          items: [
+            { label: '개요', slug: 'fsiotrace/overview' },
+            { label: '설계 (cross-layer · io_flags)', slug: 'fsiotrace/design' },
+            { label: '사용법', slug: 'fsiotrace/usage' },
+            { label: 'TSV 출력 형식', slug: 'fsiotrace/output-format' },
+            { label: '빌드 (NDK + Bionic)', slug: 'fsiotrace/build' },
+            { label: '폐쇄망 환경', slug: 'fsiotrace/offline' },
+          ],
+        },
       ],
     }),
   ],
