@@ -308,6 +308,9 @@ if layer != "BLK" && layer != "UFS" { return None; }
 
 ## 7. 알려진 변동 사항
 
+- **`-x`(--decode) 켜면 18번째 컬럼 추가**: io_flags 비트를 사람이 읽는
+  `[WRITE|O_SYNC|DATA|...]` 로 푼 컬럼이 17컬럼 **뒤에** 붙는다. 분석기는 `cols.len() >= 17`
+  로 검사하고 17번째까지만 읽으면 영향 없다(18번째는 무시). 기본(`-x` 없음)은 17컬럼.
 - `comm` 길이 ≤ 16, TAB 없음 (sanitize 보장)
 - `name` 길이 ≤ 64 (FNAME_LEN). TAB 없음
 - `extra` 길이 ≤ 256

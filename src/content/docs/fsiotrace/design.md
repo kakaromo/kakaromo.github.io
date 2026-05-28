@@ -113,7 +113,9 @@ io_flags  [decoded bits]  ufs={...}  req=0x...
 > `IO_EXTENT_FREE`(26) / `IO_BMAP`(27) / `IO_MMAP_WRITEBACK`(34). 비트 번호 자체는
 > `src/fsiotrace.h` 에 보존 — 해당 hook 추가 시 그대로 사용.
 
-`-x` (`--decode`) 옵션으로 hex 옆에 사람 읽기 텍스트 병기.
+`-x` (`--decode`) 옵션을 켜면 줄 끝에 **18번째 컬럼**으로 사람이 읽는 비트 이름
+(`[WRITE|O_SYNC|DATA|SAW_VFS|...]`)이 덧붙는다. 17컬럼 뒤에 추가되므로 TSV 파서
+(trace/ 분석기)는 영향받지 않는다.
 
 ### `entry_op` (syscall) vs `op` (action)
 
@@ -380,7 +382,7 @@ noise 발생. 해결:
 | `-p PID` | 특정 PID 만 |
 | `-D MAJ[:MIN]` | 특정 block device. `-D 8` = sd*, `-D 8:32` = sda partition |
 | `-I HEX` | `io_flags & MASK != 0` 만 |
-| `-x, --decode` | hex 옆 비트 이름 풀이 |
+| `-x, --decode` | 줄 끝에 18번째 컬럼으로 비트 이름 풀이 `[WRITE\|O_SYNC\|...]` 추가 (17컬럼 TSV 뒤라 파서 호환) |
 | `--only=LAYER` | print 필터 (vfs/fs/blk/ufs, 콤마 다중). BPF 는 다 동작 |
 | `--no-vfs / --no-fs / --no-blk / --no-ufs` | layer 단위 BPF 끄기 (cross-layer 정보 손실) |
 | `--wb-inode` | writeback inode_ctx fallback (실험) |
