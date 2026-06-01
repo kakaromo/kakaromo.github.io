@@ -386,6 +386,8 @@ noise 발생. 해결:
 | `--only=LAYER` | print 필터 (vfs/fs/blk/ufs, 콤마 다중). BPF 는 다 동작 |
 | `--no-vfs / --no-fs / --no-blk / --no-ufs` | layer 단위 BPF 끄기 (cross-layer 정보 손실) |
 | `--wb-inode` | writeback inode_ctx fallback (실험) |
+| `--rb-size=MB` | ringbuf 크기 (기본 8MB, 2의 거듭제곱). 종료 시 `diag[9] ringbuf_reserve DROP` 값이 크면 ↑ |
+| `--poll-ms=MS` | ring_buffer 폴링 주기 (기본 50ms). 짧을수록 burst 흡수 ↑, CPU ↑ |
 | `-v` | libbpf verbose + verifier log + diag dump |
 
 `-v` 로 종료 시 stderr 에 cross-layer pairing 진단 카운터 출력:

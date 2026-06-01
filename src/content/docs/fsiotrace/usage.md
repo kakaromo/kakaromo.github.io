@@ -28,6 +28,8 @@ less run.events
 | `-x` | 줄 끝에 비트 이름 풀이 `[WRITE\|O_SYNC\|DATA]` 를 18번째 컬럼으로 추가 (17컬럼 뒤라 파서 호환) |
 | `--no-vfs` / `--no-fs` / `--no-blk` / `--no-ufs` | layer 단위 off |
 | `--wb-inode` | writeback inode 매핑 활성 (실험적) |
+| `--rb-size=MB` | ringbuf 크기 (기본 8MB). 고부하·QD 클 때 `diag[9]` drop 보이면 ↑ |
+| `--poll-ms=MS` | ring_buffer poll 주기 (기본 50ms). 짧을수록 burst 흡수 ↑ |
 | `-v` | libbpf verbose |
 
 ## 3. 시나리오별 명령
