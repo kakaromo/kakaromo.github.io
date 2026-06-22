@@ -1,0 +1,144 @@
+---
+title: 6. 단독 점유 lock + 중단
+description: 같은 T32 PC를 두 사람이 동시에 못 만지게 하는 configId 단위 in-memory lock과 중단 처리
+sidebar:
+  order: 6
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import SequenceTimeline from '../../../../components/learn/SequenceTimeline.svelte';
+import lockRaw from '../../../../snippets/T32DumpLockService.java?raw';
+import cancelRaw from '../../../../snippets/T32DumpService-lock-cancel.java?raw';
+
+## 30초 요약
+
+한 T32 장비에서는 **한 번에 한 명만** dump 할 수 있어야 합니다 (RDP 단독 접속과 같은 발상). 물리적으로 같은 JTAG/PowerView 를 두 dump 가 동시에 만지면 둘 다 깨지기 때문입니다.
+
+- **lock 키는 `t32ConfigId`** — serverId 가 아니다. 여러 slot 이 한 T32 PC(=한 Config)를 공유하므로.
+- **저장소는 `ConcurrentHashMap` 한 개** — in-memory, 단일 인스턴스 가정. 재시작 시 lock 초기화(진행 중 dump 도 같이 죽으니 정합성 OK).
+- **획득은 dump 시작 전** — 거부되면 `locked` 이벤트만 보내고 끝.
+- **해제는 워커 finally 단일 지점** — 성공/실패/예외/중단 모두 한 곳에서.
+- **중단은 점유자만** — 다른 사람 dump 를 실수로 못 끊게 `userKey` 일치 확인.
+
+## 왜 serverId가 아니라 configId로 잠그는가
+
+<SequenceTimeline
+  client:visible
+  height={300}
+  autoplay={true}
+  caption="slot A·B가 같은 T32 PC(config 7)를 공유 — config 키라야 B가 막힌다"
+  altText="slot A 가 config 7 의 lock 을 획득해 dump 를 시작합니다. 곧이어 다른 slot B 가 같은 T32 PC 를 가리키는 config 7 로 dump 를 시도하지만, 이미 A 가 config 7 을 점유 중이라 lock 획득에 실패하고 locked 이벤트를 받아 거부됩니다. serverId 로 잠갔다면 A 와 B 는 serverId 가 달라 둘 다 통과해 같은 장비를 동시에 만져 충돌했을 것입니다."
+  lanes={[
+    { id: 'a',   label: 'slot A',   layer: 'fe',    sublabel: 'serverId 11' },
+    { id: 'b',   label: 'slot B',   layer: 'fe',    sublabel: 'serverId 12' },
+    { id: 'lk',  label: 'LockSvc',  layer: 'be',    sublabel: 'key=configId' },
+    { id: 'pc',  label: 'T32 PC',   layer: 'hw',    sublabel: 'config 7' },
+  ]}
+  messages={[
+    { from: 'a',  to: 'lk', label: 'tryAcquire(7)',  t: 0,  kind: 'sync' },
+    { from: 'lk', to: 'a',  label: 'OK (획득)',       t: 4,  kind: 'sync' },
+    { from: 'a',  to: 'pc', label: 'dump 진행',       t: 6,  kind: 'async' },
+    { from: 'b',  to: 'lk', label: 'tryAcquire(7)',  t: 10, kind: 'sync' },
+    { from: 'lk', to: 'b',  label: 'Holder(A) 반환',  t: 14, kind: 'sync' },
+    { from: 'b',  to: 'b',  label: 'locked 이벤트',   t: 16, kind: 'async' },
+  ]}
+/>
+
+`serverId 11`(slot A)과 `serverId 12`(slot B)가 **같은 T32 PC**(`configId 7`)에 매핑돼 있다고 합시다. serverId 로 잠그면 키가 11·12 로 달라 둘 다 통과 → 같은 장비를 동시에 만져 충돌. **configId 로 잠그면 두 번째가 막힙니다.** `serverId → configId` 변환은 `resolveConfigId(serverId)`(= `T32ConfigServer` 조회).
+
+## LockService — 코드 투어
+
+`ConcurrentHashMap` 의 원자적 연산 두 개(`putIfAbsent`, `computeIfPresent`)만으로 경합 없는 lock 을 만듭니다.
+
+<CodeTour
+  client:visible
+  language="java"
+  source="T32DumpLockService.java"
+  height={520}
+  code={lockRaw}
+  steps={[
+    {
+      id: 'holder',
+      title: 'Holder + ConcurrentHashMap',
+      lines: [31, 34],
+      body: '<p><code>Holder(userKey, displayName, since)</code> = 점유 정보. <code>locks</code> 맵은 <code>configId → Holder</code>. 별도 락 객체 없이 맵 하나가 전부.</p>',
+    },
+    {
+      id: 'try-acquire',
+      title: 'tryAcquire — putIfAbsent 원자성',
+      lines: [41, 52],
+      body: '<p><code>putIfAbsent</code> 가 <strong>원자적</strong>이라 동시에 두 요청이 와도 하나만 성공. 반환이 null 이면 획득, non-null 이면 이미 있던 점유자를 그대로 돌려준다 → 호출 측이 <code>locked</code> 이벤트로 사용. <code>configId == null</code> 이면 lock 대상 아님(통과).</p>',
+    },
+    {
+      id: 'release',
+      title: 'release — 점유자 일치할 때만 제거',
+      lines: [58, 69],
+      body: '<p><code>computeIfPresent</code> 안에서 <code>holder.userKey().equals(userKey)</code> 일 때만 null 반환(제거). <strong>다른 사람 lock 을 실수로 덮어쓰지 않게</strong> — 늦게 도착한 cancel/finally 가 새 점유자의 lock 을 풀어버리는 사고 방지.</p>',
+    },
+    {
+      id: 'get-holder',
+      title: 'getHolder — check 단계 표시용',
+      lines: [72, 75],
+      body: '<p>현재 점유자 조회. <code>checkAvailability</code> 가 이걸로 "{lockedBy} 님이 진행 중" 배너 데이터를 만든다(아래).</p>',
+    },
+  ]}
+/>
+
+## 점유 확인 + 중단 — 코드 투어
+
+획득/해제 외에 두 가지가 더 필요합니다: dump 시작 전 **점유 여부 미리보기**(`checkAvailability`)와, 진행 중 워커를 깨우기 위한 **`running` 맵**.
+
+<CodeTour
+  client:visible
+  language="java"
+  source="T32DumpService (lock 연동 + cancel)"
+  height={520}
+  code={cancelRaw}
+  steps={[
+    {
+      id: 'running-map',
+      title: 'running 맵 — 워커를 깨우기 위한 핸들',
+      lines: [12, 13],
+      body: '<p>lock 과 별개로 <strong>진행 중 워커</strong>를 <code>configId → RunningDump(future, userKey)</code> 로 보관. lock 은 "점유 사실", running 은 "그 워커를 interrupt 할 수단". 키가 같아 짝을 이룬다.</p>',
+    },
+    {
+      id: 'check',
+      title: 'checkAvailability — busy/lockedBy/lockedSince',
+      lines: [58, 72],
+      body: '<p>serverId → config 매핑 → <code>getHolder</code> 로 점유자 조회. <code>available</code>(config.enabled) + <code>busy</code> + <code>lockedBy</code> + <code>lockedSince</code> 를 반환해 프론트가 <strong>"Dump 시작" 누르기 전에</strong> amber 점유 배너를 띄운다.</p>',
+    },
+  ]}
+/>
+
+## 중단(cancel)의 전체 경로
+
+"중단" 버튼(또는 브라우저 연결 끊김)이 lock 을 어떻게 푸는지:
+
+1. 프론트가 **`POST /api/t32/dump/cancel?serverId=`** 호출 (SSE fetch 의 abort 만으로는 서버가 늦게/못 감지하므로 명시적 호출).
+2. `cancelDump(serverId, userKey)` → `resolveConfigId` → `running` 에서 워커 조회.
+3. **점유자 일치 확인** — `userKey` 가 다르면 무시(남의 dump 보호).
+4. `future.cancel(true)` 로 **워커 스레드 interrupt**.
+5. interrupt 가 `Thread.sleep`/blocking I/O 를 풀고, Step 3 루프의 `isInterrupted()` 체크가 즉시 빠져나옴.
+6. try-with-resources 가 **t32remote 세션 close**(→ Detach), 워커 **finally 가 lock 해제** + running 엔트리 제거.
+7. 워커는 `cancelled` 이벤트를 보낸다(error 로그 없음 — 정상 취소).
+
+`emitter.onError`/`onTimeout` 도 같은 `cancelDump` 를 호출하므로, **사용자가 페이지를 닫아 SSE 가 끊겨도** 동일 경로로 lock 이 풀립니다.
+
+:::caution[lock 해제는 반드시 한 곳에서]
+lock 해제를 cancel 경로와 정상 종료 경로 양쪽에 흩어 두면, 늦게 도착한 cancel 이 <strong>다음 사람의 lock</strong>을 풀어버리는 사고가 납니다. 그래서 해제는 워커 <code>finally</code> 단일 지점 + <code>release</code> 의 <strong>점유자 일치 검사</strong> 두 겹으로 보호합니다.
+:::
+
+## 이 패턴의 한계 (의도된 단순화)
+
+- **단일 인스턴스 전제** — 맵이 JVM 메모리라 멀티 인스턴스에선 안 통한다. 확장 시 DB row lock / Redis 로 승격.
+- **재시작 시 lock 소실** — 하지만 그 순간 진행 중 dump 도 같이 죽으니 "유령 lock" 은 안 생긴다.
+- **타임아웃 없는 lock** — 워커가 죽으면 finally 가 반드시 풀어주므로 stale lock 이 남지 않는다(SseEmitter 10분 timeout 이 안전망).
+
+## 직접 해보기
+
+- [ ] 같은 슬롯을 두 탭에서 동시에 "Dump 시작" → 두 번째가 amber "점유 중" 배너로 막히는지
+- [ ] dump 도중 다른 사용자로 로그인해 같은 장비 dump 시도 → `locked {lockedBy}` 가 오는지
+- [ ] dump 도중 다이얼로그를 닫고 → 서버 로그에서 `[T32DumpLock] 해제` 가 찍히는지
+- [ ] MOVE 로그에서 `tryAcquire`→`release` 가 같은 configId 로 짝을 이루는지 확인
+
+다음: [7. 결과 보관 (MinIO + cleanup)](/learn/l2-t32/07-results/) →

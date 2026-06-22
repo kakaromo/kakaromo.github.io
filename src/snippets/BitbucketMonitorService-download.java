@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/bitbucket/service/BitbucketMonitorService.java
 // @lines 117-224
 // @note downloadBranch 6단계 — 디렉토리 생성 → ZIP 스트리밍(1MB SSE 진행) → extractZip(Zip Slip 방지) → ZIP 삭제 → DB 업데이트
-// @synced 2026-05-01T01:10:31.174Z
+// @synced 2026-06-22T22:22:10.921Z
 
     public BitbucketBranch downloadBranch(BitbucketRepo repo, String branchName, String branchId, String commitId,
                                           org.springframework.web.servlet.mvc.method.annotation.SseEmitter emitter) {
@@ -92,9 +92,9 @@
                 sendSseEvent(emitter, "extract-done", java.util.Map.of("path", extractDir.toString()));
             }
 
-            // ZIP 파일 삭제 (압축 해제 완료 후)
-            Files.deleteIfExists(zipFile);
-            log.debug("[Bitbucket] Step 6: ZIP 파일 삭제 완료");
+            // ZIP 파일 삭제 (압축 해제 완료 후) — 원본 보존 요구사항으로 주석 처리
+            // Files.deleteIfExists(zipFile);
+            // log.debug("[Bitbucket] Step 6: ZIP 파일 삭제 완료");
 
             record.setStatus("DOWNLOADED");
             record.setFilePath(extractDir.toString()); // ZIP이 아닌 폴더 경로로 변경

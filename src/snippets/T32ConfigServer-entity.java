@@ -1,6 +1,6 @@
 // @source src/main/java/com/samsung/move/t32/entity/T32ConfigServer.java
 // @note portal_t32_config_servers — many-to-many (config ↔ portal_servers) + 복합 unique
-// @synced 2026-05-01T01:10:31.194Z
+// @synced 2026-06-22T22:22:10.943Z
 
 package com.samsung.move.t32.entity;
 

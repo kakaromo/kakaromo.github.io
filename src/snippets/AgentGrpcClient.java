@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/agent/grpc/AgentGrpcClient.java
 // @lines 20-100
 // @note ManagedChannel 설정 + blocking/async stub + subscribeJobProgressAsync
-// @synced 2026-05-01T01:10:31.156Z
+// @synced 2026-06-22T22:22:10.899Z
 
 public class AgentGrpcClient implements AutoCloseable {
 
@@ -79,8 +79,8 @@ public class AgentGrpcClient implements AutoCloseable {
                 SubscribeJobProgressRequest.newBuilder().setJobId(jobId).build(), observer);
     }
 
-    public GetBenchmarkResultResponse getBenchmarkResult(String jobId, String deviceId) {
-        return blockingStub.getBenchmarkResult(GetBenchmarkResultRequest.newBuilder()
-                .setJobId(jobId)
-                .setDeviceId(deviceId != null ? deviceId : "")
-                .build());
+    // ── Interactive Shell (PTY) ──
+
+    /**
+     * Open a bidi-streaming shell session on the device.
+     * Caller drives the returned request observer (start / input / resize),

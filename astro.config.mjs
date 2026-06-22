@@ -73,7 +73,7 @@ export default defineConfig({
               label: 'L2 — 기능 모듈',
               collapsed: true,
               items: [
-                { label: '🔎 L2 21종 비교', slug: 'learn/l2-compare' },
+                { label: '🔎 L2 22종 비교', slug: 'learn/l2-compare' },
                 {
                   label: '슬롯 모니터링 (Head TCP + SSE)',
                   autogenerate: { directory: 'learn/l2-slots' },
@@ -91,8 +91,12 @@ export default defineConfig({
                   autogenerate: { directory: 'learn/l2-metadata' },
                 },
                 {
-                  label: 'T32 Dump (Stepper + SSH × 2)',
+                  label: 'T32 Dump (5 Step · SSH + gRPC · 단독 점유 · MinIO)',
                   autogenerate: { directory: 'learn/l2-t32' },
+                },
+                {
+                  label: '└ t32remote (T32 백엔드 · TRACE32 gRPC 데몬 · cgo)',
+                  autogenerate: { directory: 'learn/l2-t32remote' },
                 },
                 {
                   label: 'Pre-Command (이벤트 훅 + SSH)',

@@ -1,7 +1,12 @@
 // @source src/main/proto/device_agent.proto
 // @lines 626-663
 // @note ReplayMacro/Screenshot — ocr_results map(스크린샷 이름 → 텍스트), metrics map(정규식 → 숫자)
-// @synced 2026-05-01T01:10:31.194Z
+// @synced 2026-06-22T22:22:10.942Z
+
+  repeated MacroEvent events = 2;
+  int32 device_width = 3;
+  int32 device_height = 4;
+}
 
 message ReplayMacroRequest {
   string device_id = 1;
@@ -36,8 +41,3 @@ message ScreenshotOcrRequest {
 }
 
 message ScreenshotOcrResponse {
-  bool success = 1;
-  string full_text = 2;               // 전체 OCR 텍스트
-  string extracted_value = 3;          // 정규식 매칭 결과
-  bytes image_data = 4;               // 스크린샷 PNG
-}

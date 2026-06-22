@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/auth/entity/PermissionRequest.java
 // @lines 1-47
 // @note permission_requests — userId/reason/status(PENDING/APPROVED/REJECTED)/reviewedBy/reviewComment
-// @synced 2026-05-01T01:10:31.192Z
+// @synced 2026-06-22T22:22:10.940Z
 
 package com.samsung.move.auth.entity;
 

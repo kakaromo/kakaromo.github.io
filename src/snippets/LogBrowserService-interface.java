@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/logbrowser/service/LogBrowserService.java
 // @lines 1-33
 // @note 공통 인터페이스 + FileEntry/FileContent/SearchResult record
-// @synced 2026-05-01T01:10:31.167Z
+// @synced 2026-06-22T22:22:10.915Z
 
 package com.samsung.move.logbrowser.service;
 
@@ -20,7 +20,12 @@ public interface LogBrowserService {
 
     FileContent readLastLines(String tentacleName, String path, int lineCount);
 
-    List<SearchResult> searchInFile(String tentacleName, String path, String pattern);
+    List<SearchResult> searchInFile(String tentacleName, String path, String pattern, boolean regex);
+
+    /** Backward compatible: 기본 리터럴 검색. */
+    default List<SearchResult> searchInFile(String tentacleName, String path, String pattern) {
+        return searchInFile(tentacleName, path, pattern, false);
+    }
 
     boolean isBinaryFile(String tentacleName, String path);
 
@@ -31,8 +36,3 @@ public interface LogBrowserService {
     default int getActiveSessionCount() { return 0; }
 
     record FileEntry(String name, boolean directory, long size, long lastModified) {}
-
-    record FileContent(String content, int startLine, int totalLines) {}
-
-    record SearchResult(int lineNumber, String text) {}
-}

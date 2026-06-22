@@ -1,0 +1,140 @@
+// @source t32remote:api/v1/t32remote.proto
+// @lines 1-135
+// @note T32Remote 서비스 정의 — Attach/ExecuteCommand(stream)/Eval/RunCommand + ProgressEvent oneof + AttachRequest/Response
+// @synced 2026-06-22T22:22:10.911Z
+
+syntax = "proto3";
+
+package t32remote.v1;
+
+option go_package = "t32remote/api/v1;t32remotev1";
+
+service T32Remote {
+  // 연결/해제
+  rpc Attach(AttachRequest) returns (AttachResponse);
+  rpc Detach(DetachRequest) returns (DetachResponse);
+  rpc Ping(PingRequest) returns (PingResponse);
+
+  // 실행 (서버 스트리밍으로 progress 송출)
+  rpc RunScript(RunScriptRequest) returns (stream ProgressEvent);
+  rpc ExecuteCommand(ExecuteCommandRequest) returns (stream ProgressEvent);
+
+  // 읽기 (unary)
+  rpc ReadVariable(ReadVariableRequest) returns (ReadVariableResponse);
+  rpc ReadMemory(ReadMemoryRequest) returns (ReadMemoryResponse);
+  rpc ReadRegister(ReadRegisterRequest) returns (ReadRegisterResponse);
+
+  // PRACTICE 함수/식 평가 (예: STATE.TARGET(), STATE.RUN())
+  rpc Eval(EvalRequest) returns (EvalResponse);
+
+  // OS(cmd) 명령 실행. t32remote 가 도는 세션에서 실행되므로, 그 세션의
+  // 매핑 드라이브(Z:)·자격증명을 그대로 쓴다(SSH/PsExec 세션 문제 우회).
+  rpc RunCommand(RunCommandRequest) returns (RunCommandResponse);
+
+  // DIALOG 자동화
+  rpc SetDialogValue(SetDialogValueRequest) returns (SetDialogValueResponse);
+  rpc ClickDialogButton(ClickDialogButtonRequest) returns (ClickDialogButtonResponse);
+  rpc GetDialogValue(GetDialogValueRequest) returns (GetDialogValueResponse);
+  rpc RegisterDialogPolicy(DialogPolicy) returns (DialogPolicyResponse);
+
+  // 윈도우 (위치/크기 지정 + 캡처)
+  rpc OpenWindow(OpenWindowRequest) returns (OpenWindowResponse);
+  rpc MoveWindow(MoveWindowRequest) returns (MoveWindowResponse);
+  rpc CloseWindow(CloseWindowRequest) returns (CloseWindowResponse);
+  rpc CaptureWindow(CaptureWindowRequest) returns (CaptureWindowResponse);
+
+  // 브레이크포인트
+  rpc SetBreakpoint(SetBreakpointRequest) returns (SetBreakpointResponse);
+  rpc DeleteBreakpoint(DeleteBreakpointRequest) returns (DeleteBreakpointResponse);
+  rpc ListBreakpoints(ListBreakpointsRequest) returns (ListBreakpointsResponse);
+
+  // 실행 제어
+  rpc Go(GoRequest) returns (stream ProgressEvent);
+  rpc Break(BreakRequest) returns (BreakResponse);
+  rpc Step(StepRequest) returns (StepResponse);
+}
+
+// ---------- 공통 ----------
+
+enum RunState {
+  RUN_STATE_UNKNOWN = 0;
+  RUN_STATE_RUNNING = 1;
+  RUN_STATE_STOPPED = 2;
+  RUN_STATE_ERROR   = 3;
+}
+
+message Position {
+  // T32 문자(character) 단위. 정수에 . 가 붙는 형태로 전송.
+  double x      = 1;
+  double y      = 2;
+  double width  = 3;
+  double height = 4;
+}
+
+// ---------- 진행상황 이벤트 ----------
+
+message StateChange {
+  RunState state   = 1;
+  string   reason  = 2; // "breakpoint", "step_done", "user_break", "script_done", "script_error"
+  string   pc_hex  = 3; // 정지 시 PC 값 (있을 때만)
+}
+
+message CurrentLine {
+  string script_path = 1;
+  int32  line_no     = 2;
+  string source      = 3; // 해당 줄 원문 (가능하면)
+}
+
+message AreaOutput {
+  string line = 1;
+}
+
+message UserProgress {
+  double percent = 1;   // 0.0 ~ 100.0
+  string label   = 2;   // .cmm이 함께 기록한 라벨 (예: "loading symbols")
+}
+
+message DialogOpened {
+  string header           = 1;
+  repeated string widgets = 2; // 감지된 위젯 라벨 목록
+}
+
+message Completed {
+  string message = 1;
+}
+
+message ErrorEvent {
+  string message = 1;
+  int32  code    = 2;
+}
+
+message ProgressEvent {
+  oneof event {
+    StateChange   state    = 1;
+    CurrentLine   line     = 2;
+    AreaOutput    area     = 3;
+    UserProgress  percent  = 4;
+    DialogOpened  dialog   = 5;
+    Completed     done     = 6;
+    ErrorEvent    err      = 7;
+  }
+  int64 ts_unix_ms = 100;
+}
+
+// ---------- 연결/해제 ----------
+
+message AttachRequest {
+  string node      = 1; // 보통 "localhost"
+  int32  port      = 2; // 보통 20002
+  int32  pack_len  = 3; // 보통 1024
+}
+message AttachResponse {
+  string t32_version = 1;
+}
+
+message DetachRequest {}
+message DetachResponse {}
+
+message PingRequest {}
+message PingResponse {}
+

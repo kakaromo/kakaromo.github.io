@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/guacamole/config/GuacamoleProperties.java
 // @lines 1-21
 // @note guacamole.* yaml 설정 바인딩
-// @synced 2026-05-01T01:10:31.158Z
+// @synced 2026-06-22T22:22:10.902Z
 
 package com.samsung.move.guacamole.config;
 

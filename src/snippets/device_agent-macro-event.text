@@ -1,8 +1,13 @@
 // @source src/main/proto/device_agent.proto
 // @lines 560-595
 // @note MacroEvent 19 필드 — 7 type(tap/swipe/key/wait/wait_until/screenshot/scroll_capture) + OcrRegion
-// @synced 2026-05-01T01:10:31.194Z
+// @synced 2026-06-22T22:22:10.942Z
 
+  uint64 total_bytes = 3;
+  uint64 used_bytes = 4;
+  uint64 available_bytes = 5;
+  double usage_percent = 6;
+}
 
 // ==================== App Macro ====================
 
@@ -34,8 +39,3 @@ message OcrRegion {
   int32 width = 3;
   int32 height = 4;
 }
-
-message ListInstalledAppsRequest {
-  string device_id = 1;
-}
-

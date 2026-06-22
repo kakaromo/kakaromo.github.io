@@ -1,7 +1,16 @@
 // @source src/main/java/com/samsung/move/logbrowser/service/SshLogBrowserService.java
 // @lines 302-369
 // @note getOrCreateCachedSession + execCommand (exit>1만 예외, rg no-match=1 허용)
-// @synced 2026-05-01T01:10:31.168Z
+// @synced 2026-06-22T22:22:10.916Z
+
+            throw new RuntimeException("Failed to delete file: " + e.getMessage(), e);
+        } finally {
+            if (channel != null) channel.disconnect();
+            if (session != null) session.disconnect();
+        }
+    }
+
+    // ── SSH session caching ───────────────────────────────────────────────
 
     private synchronized Session getOrCreateCachedSession(String tentacleName) throws Exception {
         PortalServer vm = findVm(tentacleName);
@@ -15,7 +24,7 @@
             username = vm.getUsername();
             password = vm.getPassword();
         } else {
-            host = tentacleName;
+            host = resolveTentacleHost(tentacleName);
             port = tentacleSshPort;
             username = tentacleUsername;
             password = tentaclePassword;
@@ -62,12 +71,3 @@
         }
 
         int exitStatus = channel.getExitStatus();
-        channel.disconnect();
-
-        // rg returns exit 1 for no matches — that's OK
-        if (exitStatus > 1) {
-            throw new RuntimeException("Command failed with exit status " + exitStatus);
-        }
-
-        return sb.toString();
-    }

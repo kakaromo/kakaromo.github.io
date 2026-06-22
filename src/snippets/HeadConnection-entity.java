@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/head/entity/HeadConnection.java
 // @lines 1-78
 // @note portal_head_connections 엔티티 + 포트 계산 헬퍼
-// @synced 2026-05-01T01:10:31.149Z
+// @synced 2026-06-22T22:22:10.893Z
 
 package com.samsung.move.head.entity;
 

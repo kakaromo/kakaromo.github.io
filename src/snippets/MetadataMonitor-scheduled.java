@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/metadata/service/MetadataMonitorService.java
 // @lines 134-234
 // @note @Scheduled checkSlotStateChanges + startMonitoring (TR 기반 제품→command 매핑 + 수집 주기)
-// @synced 2026-05-01T01:10:31.161Z
+// @synced 2026-06-22T22:22:10.905Z
 
             return elapsedSeconds.get();
         }
@@ -17,14 +17,14 @@
             String currentTestState = slot.getTestState();
             String currentTestTool = slot.getTestToolName();
 
-            boolean wasRunning = prev != null && isRunning(prev.testState());
-            boolean isRunning = isRunning(currentTestState);
+            boolean wasInProgress = prev != null && isProgressState(prev.testState());
+            boolean isInProgress = isProgressState(currentTestState);
 
-            if (!wasRunning && isRunning) {
+            if (!wasInProgress && isInProgress) {
                 startMonitoring(key, slot);
-            } else if (wasRunning && !isRunning) {
+            } else if (wasInProgress && !isInProgress) {
                 stopMonitoring(key, slot);
-            } else if (wasRunning && isRunning) {
+            } else if (wasInProgress && isInProgress) {
                 String prevTool = prev != null ? prev.testToolName() : null;
                 if (currentTestTool != null && !currentTestTool.equals(prevTool)) {
                     stopMonitoring(key, slot);

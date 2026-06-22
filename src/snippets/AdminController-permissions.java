@@ -1,7 +1,8 @@
 // @source src/main/java/com/samsung/move/admin/controller/AdminController.java
 // @lines 173-216
 // @note /users/{id}/permissions GET/PUT + /permissions/defaults + /users/{id}/head-access GET/PUT
-// @synced 2026-05-01T01:10:31.191Z
+// @synced 2026-06-22T22:22:10.939Z
+
 
     // ── User permissions ────────────────────────────────────────────
 
@@ -12,8 +13,9 @@
 
     @SuppressWarnings("unchecked")
     @PutMapping("/users/{id}/permissions")
-    public Map<String, Boolean> updateUserPermissions(@PathVariable Long id, @RequestBody Map<String, Boolean> permissions) {
-        return permissionService.updatePermissions(id, permissions);
+    public Map<String, Boolean> updateUserPermissions(@PathVariable Long id, @RequestBody Map<String, Boolean> permissions, HttpSession session) {
+        Map<String, Boolean> updated = permissionService.updatePermissions(id, permissions);
+        return updated;
     }
 
     @GetMapping("/permissions/defaults")
@@ -32,7 +34,7 @@
 
     @Transactional("portalTransactionManager")
     @PutMapping("/users/{id}/head-access")
-    public List<Long> updateUserHeadAccess(@PathVariable Long id, @RequestBody List<Long> headConnectionIds) {
+    public List<Long> updateUserHeadAccess(@PathVariable Long id, @RequestBody List<Long> headConnectionIds, HttpSession session) {
         userHeadAccessRepository.deleteByUserId(id);
         userHeadAccessRepository.flush();
         List<UserHeadAccess> entities = headConnectionIds.stream()
@@ -45,5 +47,3 @@
     // ── Session config ──────────────────────────────────────────��─
 
     @GetMapping("/session-config")
-    public Map<String, Integer> getSessionConfig() {
-        return sessionConfigService.getConfig();

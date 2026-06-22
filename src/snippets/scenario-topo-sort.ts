@@ -1,7 +1,7 @@
 // @source frontend/src/routes/agent/scenario-canvas/serializer.ts
 // @lines 371-412
 // @note topologicalSort — Kahn 알고리즘 + seenEdges 중복 방어 + 정렬 안 된 노드 뒤로
-// @synced 2026-05-01T01:10:31.190Z
+// @synced 2026-06-22T22:22:10.938Z
 
 // ── Internal helpers ──
 

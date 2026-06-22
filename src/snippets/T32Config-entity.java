@@ -1,6 +1,6 @@
 // @source src/main/java/com/samsung/move/t32/entity/T32Config.java
 // @note portal_t32_configs — 19 컬럼: 2 서버 ID(JTAG·T32PC) + 전용 계정 + 4 명령 + 4 경로 baseline
-// @synced 2026-05-01T01:10:31.194Z
+// @synced 2026-06-22T22:22:10.942Z
 
 package com.samsung.move.t32.entity;
 
@@ -54,6 +54,11 @@ public class T32Config {
     @Column(length = 500)
     private String t32PortCheckCommand;
 
+    /** T32 PowerView 자동 실행 명령 (예: C:\T32\bin\windows64\t32mp64.exe -c C:\T32\config.t32).
+     *  Step2 에서 프로세스가 없으면 SSH 로 이 명령을 실행한 뒤 attach 를 재시도한다. */
+    @Column(name = "t32_start_command", length = 500)
+    private String t32StartCommand;
+
     @Column(length = 500)
     private String dumpCommand;
 
@@ -71,6 +76,15 @@ public class T32Config {
 
     @Column(length = 500)
     private String description;
+
+    @Column(name = "t32_remote_host", length = 255)
+    private String t32RemoteHost;
+
+    @Column(name = "t32_remote_port")
+    private Integer t32RemotePort;
+
+    @Column(name = "core_scripts_json", columnDefinition = "TEXT")
+    private String coreScriptsJson;
 
     @Column(nullable = false)
     @Builder.Default

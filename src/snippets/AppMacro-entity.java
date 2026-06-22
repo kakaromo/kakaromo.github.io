@@ -1,6 +1,6 @@
 // @source src/main/java/com/samsung/move/agent/entity/AppMacro.java
 // @note portal_app_macros — eventsJson MEDIUMTEXT (단일 컬럼 JSON 저장 패턴 반복)
-// @synced 2026-05-01T01:10:31.193Z
+// @synced 2026-06-22T22:22:10.941Z
 
 package com.samsung.move.agent.entity;
 

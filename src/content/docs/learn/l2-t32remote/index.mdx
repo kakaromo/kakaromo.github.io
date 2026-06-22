@@ -1,0 +1,76 @@
+---
+title: t32remote — TRACE32를 gRPC로 감싼 Go 데몬
+description: PowerView의 네이티브 Remote API(t32api64.dll)를 cgo로 묶어 gRPC로 재노출하는 단일 세션 사이드카
+sidebar:
+  order: 0
+---
+
+import ArchitectureDiagram from '../../../../components/learn/ArchitectureDiagram.svelte';
+
+## 이 모듈에서 배울 것
+
+"Portal 의 [T32 Dump](/learn/l2-t32/) 가 Step 2·3 에서 호출하는 **t32remote** 는 무엇이고, 어떻게 Windows 의 **TRACE32 PowerView** 를 안정적으로 원격 조종하는가?"
+
+[L2 카탈로그](/learn/l1-overview/domain/#l2-카탈로그--22-모듈)의 **엔진 축 22번째 모듈**입니다. t32remote 는 **Go + gRPC 데몬**입니다. Lauterbach 의 네이티브 Remote API DLL(`t32api64.dll`)을 **cgo** 로 묶어, 그 위에 구조화된 gRPC 인터페이스를 씌웁니다. PowerView 와 **같은 Windows 머신**에서 돌아야 합니다(DLL 이 loopback NETASSIST 소켓으로 통신하고, 스크린샷이 로컬 GUI 창을 캡처하므로). 다른 엔진 축 모듈(BinMapper·Perf Generator·iotest)과 달리 **별도 레포·다른 언어(Go)** 라는 점이 특이.
+
+:::tip[왜 따로 떼었나]
+초기 Portal 은 PowerView 를 **SSH + PRACTICE 스크립트 복사 + AREA 텍스트 화면 긁기**로 다뤘습니다. 비동기 이벤트(진행률·상태 변화·다이얼로그)를 다룰 수 없고 깨지기 쉬웠습니다. t32remote 는 그 자리를 **서버 스트리밍 progress** 가 있는 안정적 RPC 표면으로 대체합니다. Portal 쪽 호출자는 [L2 T32 Dump 3. Step 실행자](/learn/l2-t32/03-steps/) 참고.
+:::
+
+## 한눈에 보는 데이터 경로
+
+<ArchitectureDiagram
+  client:visible
+  height={300}
+  caption="Portal(gRPC client) → t32remote(Go 데몬) → t32api64.dll → TRACE32 PowerView. 모두 같은 Windows PC."
+  altText="Portal 의 T32DumpService 가 gRPC 로 t32remote 데몬(포트 50551)을 호출합니다. t32remote 는 cgo 로 t32api64.dll 을 호출하고, 그 DLL 은 loopback NETASSIST 소켓(포트 20000)으로 같은 PC 의 TRACE32 PowerView 에 연결합니다. PowerView 는 JTAG 디버거를 통해 타겟 디바이스를 제어합니다. t32remote 와 PowerView 는 반드시 같은 Windows 머신에서 돌아야 합니다."
+  nodes={[
+    { id: 'cl', label: 'Portal',     sublabel: 'T32DumpService (gRPC client)', layer: 'be', x: 0,   y: 60 },
+    { id: 'd',  label: 't32remote',  sublabel: 'Go 데몬 :50551',               layer: 'tx', x: 220, y: 60, href: '/learn/l2-t32remote/02-grpc-api/' },
+    { id: 'dll',label: 't32api64.dll',sublabel: 'cgo 바인딩',                   layer: 'tx', x: 430, y: 60, href: '/learn/l2-t32remote/03-binding/' },
+    { id: 'pv', label: 'PowerView',  sublabel: 'TRACE32 (NETASSIST :20000)',   layer: 'hw', x: 640, y: 0 },
+    { id: 'tg', label: '타겟',       sublabel: 'JTAG 디바이스',                layer: 'hw', x: 640, y: 120 },
+  ]}
+  edges={[
+    { from: 'cl',  to: 'd',   label: 'gRPC',     kind: 'sync' },
+    { from: 'd',   to: 'dll', label: 'cgo',      kind: 'sync' },
+    { from: 'dll', to: 'pv',  label: 'loopback', kind: 'sync' },
+    { from: 'pv',  to: 'tg',  label: 'JTAG',     kind: 'sync' },
+  ]}
+/>
+
+## 핵심 설계 결정 (그리고 의도된 비목표)
+
+| 결정 | 이유 |
+|---|---|
+| **단일 세션** — 한 번에 한 PowerView | t32api 는 thread-safe 가 아니고, 한 PC = 한 디버거. 모든 호출을 **worker goroutine 하나**로 직렬화. |
+| **서버 스트리밍 progress** | AREA 출력·상태 변화·다이얼로그·진행률을 **poller 가 풀(pull)** 해 `ProgressEvent` 로 push. 화면 긁기 대신 구조화 이벤트. |
+| **cgo + DLL** | SSH/cmm 복사가 아니라 네이티브 Remote API 직접 호출. 안정적·동기적. |
+| **stub 백엔드** | 비Windows(개발 맥/리눅스)에서도 컴파일·테스트되도록 in-memory mock. |
+| **OS 명령도 RPC** | `RunCommand` 가 t32remote **자기 세션**에서 cmd 를 실행 → 매핑 드라이브(Z:)·자격증명 문제 우회. |
+
+**비목표(non-goals)**: 멀티 세션, Linux 측 T32 원격(UDP), TLS/인증(loopback·신뢰망 전제), 심볼 레벨 브레이크포인트 열거.
+
+## 학습 순서
+
+| 단계 | 제목 | 내용 |
+|---|---|---|
+| 1 | 개요 & 아키텍처 | 무엇을·왜·계층 구조 |
+| 2 | gRPC API | 26개 RPC + `ProgressEvent` oneof |
+| 3 | TRACE32 바인딩 | cgo vs stub, `API` 인터페이스, 멱등 Attach |
+| 4 | 런타임 | Session · Worker · Poller · Broker + 빌드 |
+
+## Portal이 실제로 쓰는 RPC는 6개
+
+proto 에 26개 RPC 가 정의돼 있지만, Portal 의 dump 흐름이 쓰는 건 소수입니다:
+
+- **`Attach`** — Step 2 (t32_version 으로 PowerView 실재 확인)
+- **`Eval`** — Step 2 (`STATE.TARGET()` 타겟 검증)
+- **`ExecuteCommand`** (stream) — Step 3 (core별 `CD.DO` + ProgressEvent)
+- **`CaptureWindow`** — Step 3 (core 스크린샷 PNG)
+- **`RunCommand`** — Step 3 (Canary robocopy·result ZIP)
+- **`Detach`** / **`Ping`** — 세션 정리·헬스체크
+
+나머지(메모리/레지스터 읽기, 브레이크포인트, 다이얼로그 자동화, Go/Step 실행 제어)는 **향후/범용** 용도로 정의만 돼 있습니다.
+
+다음: [1. 개요 & 아키텍처](/learn/l2-t32remote/01-overview/) →

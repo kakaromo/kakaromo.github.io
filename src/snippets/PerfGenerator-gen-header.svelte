@@ -1,7 +1,7 @@
 // @source frontend/src/lib/components/PerfGenerator.svelte
 // @lines 304-395
 // @note generateObjectOfArrays — interface 조립 + tabDefs + chartOption 문자열 템플릿 조립
-// @synced 2026-05-01T01:10:31.187Z
+// @synced 2026-06-22T22:22:10.934Z
 
 
 	function generateObjectOfArrays(hasDataFields: boolean, cyclePath: string[]): string {

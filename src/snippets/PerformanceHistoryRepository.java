@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/testdb/repository/PerformanceHistoryRepository.java
 // @lines 1-54
 // @note JpaSpecificationExecutor + @Query 대시보드 집계 (countByTr/TcAndResult)
-// @synced 2026-05-01T01:10:31.180Z
+// @synced 2026-06-22T22:22:10.927Z
 
 package com.samsung.move.testdb.repository;
 

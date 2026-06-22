@@ -1,0 +1,145 @@
+---
+title: 4. 런타임 — Poller · Broker · runWithProgress + 빌드
+description: 50ms 폴링이 상태를 끌어와 broker로 fan-out하고, 스트리밍 RPC가 그 이벤트를 흘리는 흐름 + 크로스 컴파일
+sidebar:
+  order: 4
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import SequenceTimeline from '../../../../components/learn/SequenceTimeline.svelte';
+import runRaw from '../../../../snippets/t32remote-runWithProgress.go?raw';
+
+## 30초 요약
+
+t32api 는 **이벤트를 push 해주지 않습니다.** 그래서 t32remote 는 직접 **풀(pull)** 합니다:
+
+- **Poller** (50ms 루프) — `GetState`/`GetPracticeState`/`GetMessage`/`STATE.TARGET()` 을 주기적으로 읽어 **변화가 있을 때만** 이벤트로 만든다. 동시에 **연결 헬스체크**(연속 5회 실패면 끊김 판정).
+- **Broker** — non-blocking pub/sub. poller 가 publish 하면 진행 중인 스트리밍 RPC 구독자에게 fan-out. **느린 구독자는 드롭**(poller 를 절대 안 막음).
+- **runWithProgress** — `ExecuteCommand`/`RunScript`/`Go` 의 공통 엔진. broker 구독 + worker goroutine + 이벤트 포워딩.
+
+## 폴링 → broker → 스트림
+
+<SequenceTimeline
+  client:visible
+  height={360}
+  autoplay={true}
+  caption="ExecuteCommand 한 번의 수명 — worker가 Cmd 실행, poller가 50ms마다 상태를 끌어와 broker로, RPC가 클라이언트로 스트림"
+  altText="클라이언트가 ExecuteCommand 를 호출하면 runWithProgress 가 broker 를 구독하고 worker goroutine 으로 Cmd 를 던집니다. 그동안 poller 는 50ms 마다 t32api 의 GetState 와 GetMessage 를 읽어 변화를 broker 에 publish 합니다. broker 는 그 이벤트를 구독자(이 RPC)에게 fan-out 하고, RPC 는 stream.Send 로 클라이언트에 흘립니다. Cmd 가 끝나면 PRACTICE 가 idle 로 돌아갈 때까지 기다린 뒤 Completed 이벤트를 보내고 스트림을 닫습니다."
+  lanes={[
+    { id: 'cl',  label: 'Client',  layer: 'be', sublabel: 'Portal' },
+    { id: 'rpc', label: 'RPC',     layer: 'tx', sublabel: 'runWithProgress' },
+    { id: 'wk',  label: 'worker',  layer: 'tx', sublabel: 'goroutine' },
+    { id: 'pl',  label: 'poller',  layer: 'tx', sublabel: '50ms' },
+    { id: 'bk',  label: 'broker',  layer: 'tx', sublabel: 'pub/sub' },
+  ]}
+  messages={[
+    { from: 'cl',  to: 'rpc', label: 'ExecuteCommand', t: 0,  kind: 'sync' },
+    { from: 'rpc', to: 'bk',  label: 'Subscribe(64)',  t: 4,  kind: 'sync' },
+    { from: 'rpc', to: 'wk',  label: 'go Cmd(...)',     t: 6,  kind: 'async' },
+    { from: 'pl',  to: 'bk',  label: 'publish area',    t: 20, kind: 'async' },
+    { from: 'bk',  to: 'rpc', label: 'event',           t: 22, kind: 'async' },
+    { from: 'rpc', to: 'cl',  label: 'stream.Send',     t: 24, kind: 'async' },
+    { from: 'pl',  to: 'bk',  label: 'publish state',   t: 40, kind: 'async' },
+    { from: 'bk',  to: 'rpc', label: 'event',           t: 42, kind: 'async' },
+    { from: 'rpc', to: 'cl',  label: 'stream.Send',     t: 44, kind: 'async' },
+    { from: 'wk',  to: 'rpc', label: 'Cmd done',        t: 60, kind: 'sync' },
+    { from: 'rpc', to: 'cl',  label: 'Completed',       t: 66, kind: 'async' },
+  ]}
+/>
+
+## Poller가 끌어오는 것들
+
+| 풀 대상 | → 이벤트 | 비고 |
+|---|---|---|
+| `GetState()` | `StateChange` | run-state 변화. **연결 헬스체크 겸함**(연속 5회 실패=끊김). |
+| `GetPracticeState()` | `DialogOpened` | 다이얼로그 진입 감지 → 정책 적용 트리거. |
+| `GetMessage()` | `AreaOutput` | DLL 이 "최신 메시지"만 주므로 변경분만. |
+| `PROGRESS_PCT`/`PROGRESS_LABEL` | `UserProgress` | .cmm 이 PRACTICE 변수로 진행률을 기록하는 규약. |
+| `STATE.TARGET()` | `AreaOutput`/`ErrorEvent` | 타겟 결함 감지(기본 on, `T32REMOTE_POLLER_TARGET=0` 로 off). |
+
+기본 간격 `defaultInterval = 50ms`, `T32REMOTE_POLL_MS` 로 조정. (패키지 doc-comment 는 "150ms" 라고 적혀 있지만 **코드 기본값은 50ms** — 문서 잔재.)
+
+## runWithProgress — 코드 투어
+
+스트리밍 RPC 의 심장. `T32_Cmd` 가 "수락 즉시" 리턴하는 문제를 어떻게 다루는지 보세요.
+
+<CodeTour
+  client:visible
+  language="go"
+  source="internal/server/handlers_run.go"
+  height={620}
+  code={runRaw}
+  steps={[
+    {
+      id: 'execute-command',
+      title: 'ExecuteCommand — not attached 가드',
+      lines: [6, 12],
+      body: '<p>attach 안 됐으면 즉시 에러. 그 외엔 <code>runWithProgress(ctx, stream, worker, cmd, waitIdle=false)</code> 위임.</p>',
+    },
+    {
+      id: 'subscribe',
+      title: 'broker 구독 + defer unsub',
+      lines: [24, 25],
+      body: '<p>버퍼 64 채널을 구독. <code>defer unsub()</code> 로 RPC 종료 시 자동 해지 — 구독 누수 없음.</p>',
+    },
+    {
+      id: 'go-cmd',
+      title: 'worker goroutine으로 Cmd 던지기',
+      lines: [27, 30],
+      body: '<p><code>go func(){ cmdDone &lt;- w.Cmd(ctx, cmd) }()</code>. 명령 실행과 <strong>이벤트 포워딩을 동시에</strong> 하려고 별도 goroutine. 명령이 스스로 유발한 이벤트도 같은 루프에서 흘릴 수 있다.</p>',
+    },
+    {
+      id: 'select-loop',
+      title: 'select — 이벤트 / ctx 취소 / 완료',
+      lines: [33, 53],
+      body: '<p><code>ctx.Done()</code>(클라이언트 취소) · 이벤트 수신(다이얼로그면 정책 적용 후 <code>stream.Send</code>) · <code>cmdDone</code> 셋 중 먼저. 다이얼로그는 5초 timeout 으로 best-effort 적용.</p>',
+    },
+    {
+      id: 'wait-idle',
+      title: 'Cmd 완료 → waitPracticeIdle → drain',
+      lines: [54, 69],
+      body: '<p><code>T32_Cmd</code> 는 <strong>수락 시점</strong>에 리턴. DO 스크립트는 그 후로도 한참 돈다. <code>waitIdle</code> 이면 PRACTICE 가 idle 로 갈 때까지 기다리고, 그 뒤 300ms drain 으로 늦은 AREA 이벤트까지 흘린 뒤 <code>Completed</code>.</p>',
+    },
+  ]}
+/>
+
+## 빌드 — 호스트 stub vs Windows 크로스 컴파일
+
+cgo + DLL 이라 빌드가 두 갈래입니다.
+
+```bash
+# 1) 호스트(맥/리눅스) — stub 백엔드, 컴파일·테스트 sanity
+make build-host          # CGO_ENABLED=0 → bin/t32remote-host, bin/t32cli-host
+make test                # go test ./...  (stub로 핸들러 검증)
+
+# 2) Windows 크로스 컴파일 — 진짜 DLL 백엔드
+make build-win           # CGO_ENABLED=1 GOOS=windows GOARCH=amd64 CC=x86_64-w64-mingw32-gcc
+make dist                # build-win + exe·examples·README를 zip으로
+
+# (Windows 네이티브 빌드는 build.ps1 -Target all)
+```
+
+- **import 라이브러리** `third_party/t32/libt32api64.a` 는 `t32api64.def` 에서 `dlltool` 로 만든 **스텁 import lib** — 링크 타임엔 함수 이름만 필요하고, 진짜 DLL 은 **런타임에 Windows 호스트에서** 로드됩니다.
+- 그래서 빌드 머신엔 DLL 이 없어도 되고, **실행 머신**(PowerView PC)에만 있으면 됩니다.
+
+## Broker가 느린 구독자를 드롭하는 이유
+
+`Broker.Publish` 는 **non-blocking** 입니다. 구독자 채널이 꽉 차 있으면 그 이벤트를 **버립니다.** 왜?
+
+- poller 는 50ms 마다 돌아야 하는데, 한 느린 구독자(예: 네트워크가 느린 클라이언트) 때문에 **poller 전체가 막히면** 상태 감지·헬스체크가 멈춥니다.
+- 진행률·AREA 는 "최신이 중요"한 데이터라 몇 건 누락돼도 치명적이지 않습니다(상태/완료/에러는 별도로 보장).
+
+**"전체 정확성보다 전체 가용성"** 을 택한 트레이드오프입니다.
+
+## 직접 해보기
+
+- [ ] `T32REMOTE_POLL_MS=200` 으로 띄워 progress 갱신 주기가 느려지는지
+- [ ] `T32REMOTE_POLLER_TARGET=0` 으로 STATE.TARGET() 폴링을 끄고 차이 확인
+- [ ] `make build-host && make test` 가 비Windows 에서 통과하는지
+- [ ] 긴 `RunScript` 도중 클라이언트를 끊어 → `ctx.Done()` 분기로 스트림이 깔끔히 닫히는지
+
+---
+
+**L2 t32remote 모듈 완료**. 돌아가기:
+
+- [t32remote 개요](/learn/l2-t32remote/) · [이 데몬을 호출하는 Portal 쪽 — L2 T32 Dump](/learn/l2-t32/) · [L2 비교](/learn/l2-compare/)

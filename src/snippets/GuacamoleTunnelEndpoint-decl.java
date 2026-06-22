@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/guacamole/endpoint/GuacamoleTunnelEndpoint.java
 // @lines 30-82
 // @note @ServerEndpoint 선언 + 필드 + 생성자
-// @synced 2026-05-01T01:10:31.158Z
+// @synced 2026-06-22T22:22:10.902Z
 
  * WebSocket endpoint that connects directly to guacd daemon.
  *

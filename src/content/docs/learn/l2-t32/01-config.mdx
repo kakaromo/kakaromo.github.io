@@ -10,13 +10,18 @@ import configRaw from '../../../../snippets/T32Config-entity.java?raw';
 
 ## 30초 요약
 
-`T32Config`는 **서버 그룹 한 개당 한 행**입니다. 그 안에 "이 그룹의 장비를 dump하려면 어떻게 해야 하는가"에 필요한 **세 범주의 설정**이 모여 있습니다.
+`T32Config`는 **서버 그룹 한 개당 한 행**입니다. 그 안에 "이 그룹의 장비를 dump하려면 어떻게 해야 하는가"에 필요한 **네 범주의 설정**이 모여 있습니다.
 
 - **연결 정보**: `jtagServerId` + `t32PcId`(각 `PortalServer` 외래키) + 각자의 전용 계정(선택)
-- **명령 템플릿**: `jtagCommand` / `t32PortCheckCommand` / `dumpCommand` / `jtagSuccessPattern`
+- **명령 템플릿**: `jtagCommand` / `jtagSuccessPattern` / `t32PortCheckCommand` / `dumpCommand`(legacy) / `t32StartCommand`(PowerView 재시작)
 - **경로 매핑**: `fwCodeLinuxBase ↔ fwCodeWindowsBase` / `resultBasePath ↔ resultWindowsBasePath`
+- **gRPC(t32remote) 경로**: `t32RemoteHost` + `t32RemotePort` + `coreScriptsJson`(core별 cmm 스크립트)
 
 추가로 `T32ConfigServer`라는 M:N 테이블이 "이 Config가 적용되는 구체적 tentacle들"을 묶어줍니다.
+
+:::tip[경로 분기의 스위치]
+`t32RemoteHost`/`t32RemotePort`가 **둘 다 채워져 있으면 gRPC 경로**(t32remote), 비어 있으면 **legacy SSH+bat 경로**로 동작합니다. 이 한 쌍이 Step 2·3의 구현을 통째로 가릅니다 — [3. Step 실행자](/learn/l2-t32/03-steps/) 참고.
+:::
 
 ## 왜 Config 하나에 다 모으는가
 
@@ -63,20 +68,26 @@ import configRaw from '../../../../snippets/T32Config-entity.java?raw';
     },
     {
       id: 'command-templates',
-      title: '명령 템플릿 4종',
-      lines: [44, 54],
-      body: '<p><code>jtagCommand</code> (Step 1) + <code>jtagSuccessPattern</code>(regex) + <code>t32PortCheckCommand</code> (Step 2) + <code>dumpCommand</code> (Step 3). 각 500자 제한 — 길어지면 wrapper 스크립트로.</p>',
+      title: '명령 템플릿',
+      lines: [44, 59],
+      body: '<p><code>jtagCommand</code>(Step 1) + <code>jtagSuccessPattern</code>(regex) + <code>t32PortCheckCommand</code>(gRPC 경로에선 RCL 포트 번호로 재해석) + <code>t32StartCommand</code>(JTAG 변경 후 PowerView 재시작) + <code>dumpCommand</code>(legacy SSH+bat 전용). 각 500자 제한.</p>',
     },
     {
       id: 'path-mapping',
       title: '경로 매핑 — Linux ↔ Windows',
-      lines: [56, 66],
-      body: '<p><code>fwCodeLinuxBase</code>와 <code>fwCodeWindowsBase</code> 쌍 + <code>resultBasePath</code>와 <code>resultWindowsBasePath</code> 쌍. 둘은 같은 폴더를 가리키지만 <strong>OS마다 경로 문법이 다름</strong>(예: <code>/mnt/fw/...</code> vs <code>Z:\\fw\\...</code>). Step 3에서 이 둘을 변환해 Windows 명령에 끼워 넣음.</p>',
+      lines: [61, 74],
+      body: '<p><code>fwCodeLinuxBase</code>와 <code>fwCodeWindowsBase</code> 쌍 + <code>resultBasePath</code>와 <code>resultWindowsBasePath</code> 쌍. 둘은 같은 폴더를 가리키지만 <strong>OS마다 경로 문법이 다름</strong>(예: <code>/appdata/.../FW_Code</code> vs <code>F:\\FW_Code</code>). Step 3에서 이 둘을 변환해 Windows 명령에 끼워 넣음.</p>',
+    },
+    {
+      id: 'grpc-fields',
+      title: 'gRPC(t32remote) 경로 — host/port + coreScriptsJson',
+      lines: [76, 83],
+      body: '<p><code>t32_remote_host</code> + <code>t32_remote_port</code> 가 <strong>둘 다 채워지면 Step 2·3을 gRPC(t32remote)</strong> 로 수행. <code>core_scripts_json</code>(TEXT) 은 core별 <code>{core, cmmRelPath, optionalCommands}</code> 배열을 JSON 으로 담는다 — Step 3에서 core마다 <code>CD.DO "&lt;cmm&gt;"</code> 로 실행. 비어 있으면 legacy SSH+bat 의 단일 <code>dumpCommand</code> 사용.</p>',
     },
     {
       id: 'flags',
       title: 'enabled + timestamps',
-      lines: [68, 86],
+      lines: [85, 101],
       body: '<p>전체 killswitch + 생성·수정 시각 자동. 다른 엔티티와 동일 패턴.</p>',
     },
   ]}

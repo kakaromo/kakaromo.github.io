@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/minio/service/MinioStorageService.java
 // @lines 1-150
 // @note 버킷/오브젝트 CRUD — list/listRecursive/upload/download/stat/createFolder/delete
-// @synced 2026-05-01T01:10:31.175Z
+// @synced 2026-06-22T22:22:10.922Z
 
 package com.samsung.move.minio.service;
 
@@ -36,6 +36,19 @@ public class MinioStorageService {
             throw new IllegalArgumentException("Bucket already exists: " + bucketName);
         }
         minioClient.makeBucket(MakeBucketArgs.builder().bucket(bucketName).build());
+    }
+
+    /**
+     * 버킷이 없으면 만들고 있으면 그대로 둔다(멱등). 업로드 전 "버킷 보장"용.
+     * createBucket 과 달리 이미 존재해도 예외를 던지지 않는다.
+     */
+    public void ensureBucket(String bucketName) throws Exception {
+        boolean exists = minioClient.bucketExists(
+                BucketExistsArgs.builder().bucket(bucketName).build());
+        if (!exists) {
+            minioClient.makeBucket(MakeBucketArgs.builder().bucket(bucketName).build());
+            log.info("Created bucket: {}", bucketName);
+        }
     }
 
     public void deleteBucket(String bucketName) throws Exception {
@@ -135,21 +148,8 @@ public class MinioStorageService {
                         .build());
     }
 
-    public StatObjectResponse statObject(String bucket, String objectName) throws Exception {
-        return minioClient.statObject(
-                StatObjectArgs.builder()
-                        .bucket(bucket)
-                        .object(objectName)
-                        .build());
-    }
-
     /**
-     * 파일 크기를 아는 경우의 PUT. partSize 64MB 로 RTT/요청 횟수 감소.
-     * size>0 이면 .stream(s, size, partSize) — SDK 가 size/partSize 로 part 수 결정.
+     * HTTP Range-GET — offset 부터 length 바이트만 fetch.
+     * 거대 로그 파일에서 시간 범위만 잘라보는 LogSearchService 등에서 사용.
+     * length<=0 이면 offset 부터 끝까지.
      */
-    public void uploadObject(String bucket, String objectName, InputStream stream, long size, String contentType) throws Exception {
-        long partSize = size >= 0 ? PART_SIZE_BYTES : -1;
-        minioClient.putObject(
-                PutObjectArgs.builder()
-                        .bucket(bucket)
-                        .object(objectName)

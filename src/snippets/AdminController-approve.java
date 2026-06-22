@@ -1,7 +1,18 @@
 // @source src/main/java/com/samsung/move/admin/controller/AdminController.java
 // @lines 568-610
 // @note /permission-requests/{id}/approve — findByIdForUpdate(비관적락) + 권한·Head access 저장 + 요청 상태 전이
-// @synced 2026-05-01T01:10:31.192Z
+// @synced 2026-06-22T22:22:10.939Z
+
+                        map.put("email", user.getEmail());
+                    } catch (Exception ignored) {}
+                    return map;
+                }).toList();
+    }
+
+    @GetMapping("/permission-requests/count")
+    public Map<String, Long> getPermissionRequestCount() {
+        return Map.of("count", permissionRequestRepository.countByStatus("PENDING"));
+    }
 
     @SuppressWarnings("unchecked")
     @Transactional("portalTransactionManager")
@@ -35,14 +46,3 @@
         req.setReviewedBy(admin != null ? admin.getId() : null);
         req.setReviewedAt(java.time.LocalDateTime.now());
         permissionRequestRepository.save(req);
-        adminNotificationService.notifyPermissionRequestResolved();
-        return Map.of("success", true);
-    }
-
-    @Transactional("portalTransactionManager")
-    @PutMapping("/permission-requests/{id}/reject")
-    public Map<String, Object> rejectPermissionRequest(@PathVariable Long id,
-            @RequestBody Map<String, String> body, HttpSession session) {
-        PermissionRequest req = permissionRequestRepository.findByIdForUpdate(id)
-                .orElseThrow(() -> new IllegalArgumentException("요청을 찾을 수 없습니다: " + id));
-        if (!"PENDING".equals(req.getStatus())) {

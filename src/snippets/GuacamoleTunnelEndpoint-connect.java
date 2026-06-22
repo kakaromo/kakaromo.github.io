@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/guacamole/endpoint/GuacamoleTunnelEndpoint.java
 // @lines 180-273
 // @note connectDirect + buildConfig + readFromTunnel
-// @synced 2026-05-01T01:10:31.159Z
+// @synced 2026-06-22T22:22:10.903Z
 
     /**
      * SSH/VNC: 1:1 직접 연결

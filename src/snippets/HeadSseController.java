@@ -1,8 +1,9 @@
 // @source src/main/java/com/samsung/move/head/controller/HeadSseController.java
 // @lines 31-168
 // @note EmitterWrapper + stream + @Scheduled pushUpdates + buildPayload
-// @synced 2026-05-01T01:10:31.152Z
+// @synced 2026-06-22T22:22:10.896Z
 
+import java.util.concurrent.CopyOnWriteArrayList;
 
 @RestController
 @RequestMapping("/api/head")
@@ -38,7 +39,15 @@ public class HeadSseController {
     }
 
     @GetMapping(value = "/slots/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public SseEmitter stream(@RequestParam(required = false) String source) {
+    public SseEmitter stream(
+            @RequestParam(required = false) String source,
+            HttpServletResponse response) {
+        // nginx 가 SSE 응답을 buffering 해서 명령 후 UI 갱신이 1~2초 늦게 도착하는 케이스 방지.
+        // EntityChangeSseController 와 동일 패턴.
+        response.setHeader("X-Accel-Buffering", "no");
+        response.setHeader("Cache-Control", "no-cache, no-transform");
+        response.setHeader("Connection", "keep-alive");
+
         // timeout 0L = 무제한 — 클라이언트가 연결을 끊을 때까지 유지
         // 유한 timeout 사용 시 AsyncRequestTimeoutException WARN 로그가 주기적으로 발생
         SseEmitter emitter = new SseEmitter(0L);
@@ -132,12 +141,3 @@ public class HeadSseController {
 
         for (EmitterWrapper wrapper : emitters) {
             try {
-                // payload를 항상 만들어 해시로 변화 감지.
-                // version이 그대로라도 SlotInfomation(DB) 병합 결과가 바뀌었으면 push.
-                // 평가 완료 시 HEAD TCP가 재전송 없이 DB만 갱신되는 케이스를 커버.
-                String json = objectMapper.writeValueAsString(buildPayload(wrapper.source));
-                int hash = json.hashCode();
-                if (wrapper.lastVersion >= currentVersion && wrapper.lastPayloadHash == hash) continue;
-
-                wrapper.emitter.send(SseEmitter.event()
-                        .name("update")

@@ -1,7 +1,9 @@
 // @source src/main/java/com/samsung/move/minio/controller/MinioController.java
 // @lines 152-206
 // @note /download-folder (ZipOutputStream recursive) + /download (InputStreamResource + UTF-8 filename)
-// @synced 2026-05-01T01:10:31.176Z
+// @synced 2026-06-22T22:22:10.923Z
+
+    }
 
     @GetMapping("/buckets/{bucket}/download-folder")
     public void downloadFolder(
@@ -39,22 +41,20 @@
         }
     }
 
-    @GetMapping("/buckets/{bucket}/download")
-    public ResponseEntity<?> downloadObject(
+    /**
+     * Presigned GET URL 발급. 브라우저가 nginx → MinIO 직행으로 다운로드.
+     * Content-Disposition 을 presigned URL 의 응답에 강제하므로 파일명 보존.
+     * 폴더 다운로드(downloadFolder)는 ZIP 묶기가 필요해 spring 경유 유지.
+     * /minio-upload/ 가 막힌 환경에서는 프론트가 fallback 으로 /download 를 사용.
+     */
+    @GetMapping("/buckets/{bucket}/download-url")
+    public ResponseEntity<?> downloadUrl(
             @PathVariable String bucket,
-            @RequestParam String objectName) throws Exception {
-        long size = storageService.statObject(bucket, objectName).size();
-        InputStream is = storageService.downloadObject(bucket, objectName);
+            @RequestParam String objectName) {
         String fileName = objectName.contains("/")
                 ? objectName.substring(objectName.lastIndexOf('/') + 1)
                 : objectName;
-        String encodedName = URLEncoder.encode(fileName, StandardCharsets.UTF_8);
-
-        return ResponseEntity.ok()
-                .header(HttpHeaders.CONTENT_DISPOSITION,
-                        "attachment; filename*=UTF-8''" + encodedName)
-                .contentLength(size)
-                .contentType(MediaType.APPLICATION_OCTET_STREAM)
-                .body(new InputStreamResource(is));
+        String url = presignService.presignSingleGet(bucket, objectName, fileName);
+        return ResponseEntity.ok(java.util.Map.of("url", url, "fileName", fileName));
     }
-}
+

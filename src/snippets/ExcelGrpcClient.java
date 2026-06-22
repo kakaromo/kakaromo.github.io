@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/testdb/excel/ExcelGrpcClient.java
 // @lines 1-30
 // @note GrpcChannelFactory → BlockingStub + generateExcel 빌더 호출
-// @synced 2026-05-01T01:10:31.170Z
+// @synced 2026-06-22T22:22:10.918Z
 
 package com.samsung.move.testdb.excel;
 

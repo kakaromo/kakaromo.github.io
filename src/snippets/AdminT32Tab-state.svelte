@@ -1,7 +1,8 @@
 // @source frontend/src/routes/admin/AdminT32Tab.svelte
 // @lines 25-67
 // @note state · derived(groupServers) · loadAll(Promise.all) — 3 fetch 병렬
-// @synced 2026-05-01T01:10:31.195Z
+// @synced 2026-06-22T22:22:10.943Z
+
 
 	// ── State ──
 	let configs = $state<T32Config[]>([]);
@@ -45,4 +46,3 @@
 		}
 	}
 
-	loadAll();

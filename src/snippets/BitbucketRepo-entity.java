@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/bitbucket/entity/BitbucketRepo.java
 // @lines 1-67
 // @note portal_bitbucket_repos — serverUrl/projectKey/repoSlug/PAT(평문)/autoDownload/controller
-// @synced 2026-05-01T01:10:31.172Z
+// @synced 2026-06-22T22:22:10.919Z
 
 package com.samsung.move.bitbucket.entity;
 

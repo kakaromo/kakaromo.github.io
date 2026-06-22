@@ -10,7 +10,13 @@ import DataFlowPath from '../../../../components/learn/DataFlowPath.svelte';
 
 ## 30초 요약
 
-`T32DumpDialog.svelte`는 **Stepper 4줄 + 실시간 로그 접기 + 완료 후 파일 탐색**이 한 다이얼로그에 들어 있습니다. SSE 이벤트를 받아 각 step의 상태(`pending/running/success/failed`)를 갱신하고, 완료 후에는 `/api/log-browser/files`로 폴더 내용을 조회해 **Canary 보고서 미리보기 + ZIP 다운로드** 링크를 제공합니다.
+`T32DumpDialog.svelte`는 **점유 배너 + Stepper 4줄 + 실시간 로그 접기 + 완료 후 파일 탐색**이 한 다이얼로그에 들어 있습니다. SSE 이벤트를 받아 각 step의 상태(`pending/running/success/failed`)를 갱신하고, 완료 후에는 `/api/log-browser/files`로 폴더 내용을 조회해 **Canary 보고서 미리보기 + 다운로드** 링크를 제공합니다.
+
+핵심 동작 셋:
+
+- **점유 배너** — `check` 가 `busy` 면 `"{lockedBy} 님이 dump 진행 중"` amber 카드로 "Dump 시작" 차단 ([6. lock](/learn/l2-t32/06-lock/))
+- **SSE 수신** — `EventSource` 가 아니라 `fetch` + ReadableStream 으로 수동 파싱 (CSRF 토큰 헤더를 보내야 해서)
+- **두 가지 다운로드** — "전체 다운로드"(log-browser 로 폴더 ZIP) + "S3에서 다운로드"(MinIO 아티팩트, [7. 결과 보관](/learn/l2-t32/07-results/))
 
 ## Stepper 상태 모델
 
@@ -193,13 +199,16 @@ function hintFor(step: number, output: string): string {
 - 힌트 문구 변경에 배포가 필요 없음 (프론트만 수정)
 - 같은 output에서 다양한 힌트를 보이고 싶을 때 유연
 
-## 결과 폴더 탐색
+## 결과 폴더 탐색 + 두 다운로드 경로
 
 dump 완료 후 `/api/log-browser/files?path=${resultPath}`로 폴더 내용을 조회해 트리 UI에 표시:
 
-- **Canary 폴더** — 자동 감지해 강조
-- **`*_report.html`** — 클릭 시 새 탭에서 SSH 프록시로 미리보기
-- **전체 ZIP 다운로드** — `/api/log-browser/download-dir?path=...`로 폴더 통째
+- **Canary 폴더** — 자동 감지해 강조, `*_report.html` 은 "Report 보기"(새 탭 SSH 프록시) + "Canary.zip"
+- **이미지** — 클릭 시 인라인 미리보기 (core별 스크린샷 PNG)
+- **전체 다운로드** — `/api/log-browser/download-dir?path=...` 로 폴더 통째 (T32 PC 파일시스템에서 즉석 ZIP)
+- **S3에서 다운로드** — `historyId`+`testType` 이 있으면 노출. `GET /api/t32/results/latest` 로 최신 `COMPLETED` 아티팩트를 받아 MinIO 의 zip 을 presigned 로 다운로드 (업로드 완료까지 3회 재시도)
+
+"전체 다운로드"는 **지금 이 PC 의 result 폴더**, "S3에서 다운로드"는 **MinIO 에 보관된 영속 백업**입니다. 둘이 공존하는 이유와 보존 정책은 [7. 결과 보관](/learn/l2-t32/07-results/)에서.
 
 **log-browser 모듈**(별도 L2 후보)이 이미 SSH/Local 모드로 파일 접근을 추상화해둔 덕에 T32는 **한 API만 호출**하면 됨. 재사용성의 좋은 예.
 
@@ -229,10 +238,10 @@ dump 완료 후 `/api/log-browser/files?path=${resultPath}`로 폴더 내용을 
 - [ ] Step 1이 `running`인 동안 경과 시간이 1초씩 증가하는지 UI 확인
 - [ ] 일부러 Step 2를 실패시켜 ⚠ Debug Port Fail 힌트가 Step 2의 접기 영역에 나오는지
 - [ ] 완료 후 `전체 ZIP 다운로드` 버튼 → 브라우저가 .zip 받기 시작하는지
-- [ ] 다이얼로그를 dump 도중 닫아 → fetch reader가 cancel되고 서버 로그에 emitter.IOException이 나오는지
+- [ ] 다이얼로그를 dump 도중 닫아 → fetch reader가 cancel되고 `/cancel` 이 호출돼 lock 이 풀리는지
 
 ---
 
-**L2 T32 Dump 튜토리얼 완료**. 돌아가기:
+다음: [6. 단독 점유 lock + 중단](/learn/l2-t32/06-lock/) → 이어서 [7. 결과 보관 (MinIO + cleanup)](/learn/l2-t32/07-results/)
 
-- [L2 4종 비교](/learn/l2-compare/) · [슬롯 L2](/learn/l2-slots/) · [벤치마크 L2](/learn/l2-benchmark/) · [원격 L2](/learn/l2-remote/) · [Metadata L2](/learn/l2-metadata/)
+돌아가기: [L2 비교](/learn/l2-compare/) · [t32remote (gRPC) 모듈](/learn/l2-t32remote/)

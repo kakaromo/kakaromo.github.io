@@ -1,7 +1,7 @@
 // @source frontend/src/lib/components/JsonTreeView.svelte
 // @lines 1-60
 // @note parseResult $derived + auto-expand $effect (depth≤2, array limit 5)
-// @synced 2026-05-01T01:10:31.187Z
+// @synced 2026-06-22T22:22:10.935Z
 
 <script lang="ts">
 	import { untrack } from 'svelte';

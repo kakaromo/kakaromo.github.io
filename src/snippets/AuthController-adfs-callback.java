@@ -1,8 +1,9 @@
 // @source src/main/java/com/samsung/move/auth/controller/AuthController.java
 // @lines 181-252
 // @note POST /adfs/callback — id_token 파싱 + claims 추출 + PortalUser 생성/갱신 + 세션 저장
-// @synced 2026-05-01T01:10:31.177Z
+// @synced 2026-06-22T22:22:10.925Z
 
+                + "&response_type=" + URLEncoder.encode("code id_token", StandardCharsets.UTF_8)
                 + "&scope=" + URLEncoder.encode(adfsProperties.getScope(), StandardCharsets.UTF_8)
                 + "&nonce=" + URLEncoder.encode(nonce, StandardCharsets.UTF_8);
 
@@ -74,4 +75,3 @@
         // HTML 응답으로 SPA 이동 (redirect 대신 — 세션 쿠키 확실히 설정)
         String redirectTarget = (baseUrl != null && !baseUrl.isBlank()) ? baseUrl + "/" : "/";
         response.setContentType("text/html;charset=UTF-8");
-        response.getWriter().write(

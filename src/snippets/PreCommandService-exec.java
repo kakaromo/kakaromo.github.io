@@ -1,7 +1,30 @@
 // @source src/main/java/com/samsung/move/head/precmd/service/PreCommandService.java
 // @lines 190-250
 // @note executeSync + parseCommands + resolveCommand(adb -s usbId) + extractVmName
-// @synced 2026-05-01T01:10:31.166Z
+// @synced 2026-06-22T22:22:10.914Z
+
+
+                    // 슬롯의 모든 명령이 끝나면 결과를 슬롯 로그 디렉토리에 저장. 실패해도 로그는 남김.
+                    try {
+                        writeSlotLog(vmName, tentacleIp, slotIdx, slotLog.toString());
+                    } catch (Exception logEx) {
+                        // 로그 저장 실패는 메인 흐름을 막지 않음 — 진단용 SSE 이벤트만 전송
+                        sendEvent(emitter, "log-write-failed", Map.of(
+                                "slotIndex", slotIdx,
+                                "error", logEx.getMessage() != null ? logEx.getMessage() : "log write failed"));
+                    }
+
+                    if (slotFailed) failed++;
+                    sendEvent(emitter, "slot-done", Map.of(
+                            "slotIndex", slotIdx, "slotLabel", slotLabel,
+                            "status", slotFailed ? "failed" : "success"));
+                    sendSummary(emitter, total, ++completed, failed, skipped);
+                }
+
+                sendEvent(emitter, "done", Map.of(
+                        "total", total, "failed", failed, "skipped", skipped,
+                        "success", total - failed - skipped));
+                emitter.complete();
 
             } catch (Exception e) {
                 // error handled via SSE
@@ -37,30 +60,7 @@
             String tentacleIp = slotData.getTentacleIp();
             if (vmName == null && (tentacleIp == null || tentacleIp.isBlank())) continue;
 
+            StringBuilder slotLog = new StringBuilder();
+            appendLogHeader(slotLog, preCommand, slotData.getSetLocation(), slotIdx);
+            int cmdIdx = 0;
             for (String rawCmd : commands) {
-                String resolvedCmd = resolveCommand(rawCmd, usbId);
-                try {
-                    CommandResult result = executeSshCommand(vmName, tentacleIp, resolvedCmd);
-                    if (result.exitCode != 0) break;
-                } catch (Exception e) {
-                    break;
-                }
-            }
-        }
-    }
-
-    // ── 내부 메서드 ──
-
-    private List<String> parseCommands(String json) {
-        try {
-            return new ObjectMapper().readValue(json, new TypeReference<>() {});
-        } catch (Exception e) {
-            throw new IllegalArgumentException("명령어 파싱 실패: " + e.getMessage());
-        }
-    }
-
-    String resolveCommand(String command, String usbId) {
-        if (usbId == null || usbId.isBlank()) return command;
-        Matcher m = ADB_PREFIX.matcher(command);
-        if (m.find()) {
-            return "adb -s " + usbId + " " + command.substring(m.end());

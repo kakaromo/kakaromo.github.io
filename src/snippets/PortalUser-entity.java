@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/auth/entity/PortalUser.java
 // @lines 1-62
 // @note portal_users — username / adfsUserId / role(USER/ADMIN) / enabled
-// @synced 2026-05-01T01:10:31.177Z
+// @synced 2026-06-22T22:22:10.924Z
 
 package com.samsung.move.auth.entity;
 

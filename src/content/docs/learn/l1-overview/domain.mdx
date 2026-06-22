@@ -45,9 +45,9 @@ MOVE는 이 작업을 한 곳에 모으고, 기계가 할 수 있는 일(반복 
   </a>
 </div>
 
-## L2 카탈로그 — 21 모듈
+## L2 카탈로그 — 22 모듈
 
-21 L2를 **5 축**으로 나눠 한눈에 보여줍니다. 자기 업무에 가까운 모듈부터 골라 읽으면 됩니다. 모든 모듈은 같은 N단계 여정 템플릿을 따릅니다.
+22 L2를 **5 축**으로 나눠 한눈에 보여줍니다. 자기 업무에 가까운 모듈부터 골라 읽으면 됩니다. 모든 모듈은 같은 N단계 여정 템플릿을 따릅니다.
 
 ### 기능 축 — 도메인별 완결 모듈 (11)
 
@@ -56,7 +56,7 @@ MOVE는 이 작업을 한 곳에 모으고, 기계가 할 수 있는 일(반복 
   <a class="learn-path-card" href="/learn/l2-benchmark/"><span class="learn-path-card__tag">Job</span><h3 class="learn-path-card__title">Agent 벤치마크</h3><p class="learn-path-card__desc">Go Agent gRPC 호출 → 진행률 스트림 → SSE 재중계.</p></a>
   <a class="learn-path-card" href="/learn/l2-remote/"><span class="learn-path-card__tag">터미널</span><h3 class="learn-path-card__title">원격 터미널</h3><p class="learn-path-card__desc">WebSocket + guacd. 인증 후 BE 우회, 브라우저 ↔ guacd 직결.</p></a>
   <a class="learn-path-card" href="/learn/l2-metadata/"><span class="learn-path-card__tag">실시간</span><h3 class="learn-path-card__title">UFS Metadata</h3><p class="learn-path-card__desc">TC running 감지 자동 수집. 7 command_type + f2fs 3 전용 뷰.</p></a>
-  <a class="learn-path-card" href="/learn/l2-t32/"><span class="learn-path-card__tag">절차</span><h3 class="learn-path-card__title">T32 Dump</h3><p class="learn-path-card__desc">SSH × 2 + 4-Step Stepper + 도메인 키워드 fail 감지.</p></a>
+  <a class="learn-path-card" href="/learn/l2-t32/"><span class="learn-path-card__tag">절차</span><h3 class="learn-path-card__title">T32 Dump</h3><p class="learn-path-card__desc">SSH(JTAG) + gRPC(T32) 5-Step Stepper + 단독 점유 lock + MinIO 결과 보관.</p></a>
   <a class="learn-path-card" href="/learn/l2-precmd/"><span class="learn-path-card__tag">절차</span><h3 class="learn-path-card__title">Pre-Command</h3><p class="learn-path-card__desc">StateStore 훅 + TC/Slot 우선순위 + 비동기 SSH.</p></a>
   <a class="learn-path-card" href="/learn/l2-logbrowser/"><span class="learn-path-card__tag">재사용 레이어</span><h3 class="learn-path-card__title">Log Browser</h3><p class="learn-path-card__desc">SSH/Local 두 구현 + @ConditionalOnProperty 전략 패턴.</p></a>
   <a class="learn-path-card" href="/learn/l2-excel/"><span class="learn-path-card__tag">데이터 통합</span><h3 class="learn-path-card__title">Excel Export</h3><p class="learn-path-card__desc">Go gRPC Unary로 xlsx byte[] 생성. 단일 진입점 DataService 공유.</p></a>
@@ -72,12 +72,13 @@ MOVE는 이 작업을 한 곳에 모으고, 기계가 할 수 있는 일(반복 
   <a class="learn-path-card" href="/learn/l2-testdb/"><span class="learn-path-card__tag">데이터 축</span><h3 class="learn-path-card__title">📊 TestDB</h3><p class="learn-path-card__desc">TR/TC/History 트리플 + DB 메타 + 원격 JSON 이원 저장. 6 L2가 공유.</p></a>
 </div>
 
-### 엔진 축 — 단방향 파이프라인 (3)
+### 엔진 축 — 단방향 파이프라인 (4)
 
 <div class="learn-path-cards">
   <a class="learn-path-card" href="/learn/l2-binmapper/"><span class="learn-path-card__tag">백엔드 · 순수</span><h3 class="learn-path-card__title">🧬 BinMapper</h3><p class="learn-path-card__desc">C struct 텍스트 → Lexer → Parser → ByteBuffer → 트리. 컴파일러 파이프라인.</p></a>
   <a class="learn-path-card" href="/learn/l2-perfgen/"><span class="learn-path-card__tag">프론트 · 순수</span><h3 class="learn-path-card__title">⚙ Perf Generator</h3><p class="learn-path-card__desc">JSON → analyzeJson → generateCode → Svelte 소스. "코드를 만드는 코드".</p></a>
   <a class="learn-path-card" href="/learn/l2-iotest/"><span class="learn-path-card__tag">분산 · 부작용</span><h3 class="learn-path-card__title">🔬 iotest</h3><p class="learn-path-card__desc">syscall DSL → Agent goroutine → 실제 Android 디바이스 syscall.</p></a>
+  <a class="learn-path-card" href="/learn/l2-t32remote/"><span class="learn-path-card__tag">Go · cgo 데몬</span><h3 class="learn-path-card__title">🔌 t32remote</h3><p class="learn-path-card__desc">TRACE32 PowerView 를 t32api64.dll(cgo)로 감싼 gRPC 데몬. 단일 세션 + 폴링 progress. T32 Dump 의 백엔드.</p></a>
 </div>
 
 ### Orchestration 축 — DAG 편집·실행 (1, 개척)
@@ -93,7 +94,7 @@ MOVE는 이 작업을 한 곳에 모으고, 기계가 할 수 있는 일(반복 
   <a class="learn-path-card" href="/learn/l2-serveradmin/"><span class="learn-path-card__tag">운영</span><h3 class="learn-path-card__title">🖥 Server Admin</h3><p class="learn-path-card__desc">portal_servers 10 컬럼 + 비트마스크 3 프로토콜 + 5 L2 공용 인프라.</p></a>
 </div>
 
-축 분류와 공통 원칙이 궁금하면 [**L2 21종 비교**](/learn/l2-compare/)를 보세요. 같은 패턴이 모듈마다 어떤 두께로 달라지는지 한 페이지로 정리됩니다.
+축 분류와 공통 원칙이 궁금하면 [**L2 22종 비교**](/learn/l2-compare/)를 보세요. 같은 패턴이 모듈마다 어떤 두께로 달라지는지 한 페이지로 정리됩니다.
 
 ## 주요 외부 연동
 

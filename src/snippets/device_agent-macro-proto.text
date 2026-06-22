@@ -1,7 +1,7 @@
 // @source src/main/proto/device_agent.proto
 // @lines 42-60
 // @note 6 RPC: ListInstalledApps · StartRecording · StopRecording · ReplayMacro · TakeScreenshot · ScreenshotOcr
-// @synced 2026-05-01T01:10:31.193Z
+// @synced 2026-06-22T22:22:10.942Z
 
 
   // App Macro (이벤트 녹화/재생 + OCR)
@@ -14,11 +14,11 @@
 
   // Trace Reparse
   rpc ReparseTrace(ReparseTraceRequest) returns (ReparseTraceResponse);
+
+  // Interactive shell (PTY) — bidi-streaming.
+  // 첫 메시지는 반드시 ShellClientMsg.start (device_id, cols, rows) 이어야 한다.
+  // 이후 input / resize 메시지로 양방향 통신. 종료 시 server 가 ShellServerMsg.exit 전송.
+  rpc Shell(stream ShellClientMsg) returns (stream ShellServerMsg);
 }
 
 // ==================== Device ====================
-
-enum DeviceState {
-  DEVICE_STATE_UNKNOWN = 0;
-  DEVICE_STATE_ONLINE = 1;
-  DEVICE_STATE_OFFLINE = 2;

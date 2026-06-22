@@ -1,0 +1,139 @@
+---
+title: 2. gRPC API
+description: 26개 RPC를 6묶음으로 + ProgressEvent oneof 계약
+sidebar:
+  order: 2
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import DataFlowPath from '../../../../components/learn/DataFlowPath.svelte';
+import protoRaw from '../../../../snippets/t32remote-proto.proto?raw';
+
+## 30초 요약
+
+`api/v1/t32remote.proto`, package `t32remote.v1`, service `T32Remote`. RPC 26개를 **6묶음**으로:
+
+| 묶음 | RPC | 형태 |
+|---|---|---|
+| **수명** | `Attach` · `Detach` · `Ping` | unary |
+| **실행** | `RunScript` · `ExecuteCommand` | **server-stream** `ProgressEvent` |
+| **읽기/평가** | `ReadVariable` · `ReadMemory` · `ReadRegister` · `Eval` | unary |
+| **OS 명령** | `RunCommand` | unary |
+| **다이얼로그** | `SetDialogValue` · `ClickDialogButton` · `GetDialogValue` · `RegisterDialogPolicy` | unary |
+| **윈도우** | `OpenWindow` · `MoveWindow` · `CloseWindow` · `CaptureWindow` | unary |
+| **브레이크포인트/실행제어** | `SetBreakpoint` · `DeleteBreakpoint` · `ListBreakpoints` · `Go`(stream) · `Break` · `Step` | unary/stream |
+
+Portal dump 가 실제 쓰는 6개는 [개요](/learn/l2-t32remote/)에 정리. 나머지는 범용/향후용.
+
+## 핵심 계약: ProgressEvent oneof
+
+스트리밍 RPC(`RunScript`/`ExecuteCommand`/`Go`)는 모두 **`ProgressEvent`** 를 흘립니다. 한 이벤트는 **정확히 하나**의 case 를 담는 `oneof` 입니다.
+
+<DataFlowPath
+  client:visible
+  caption="ProgressEvent oneof — 7가지 case 중 하나 + ts_unix_ms"
+  altText="ProgressEvent 는 oneof 로 7가지 중 하나를 담습니다. state 는 실행 상태 변화(RUNNING/STOPPED/ERROR)와 이유·PC, area 는 PowerView AREA 창의 출력 한 줄, percent 는 0~100 진행률과 라벨, dialog 는 열린 다이얼로그의 헤더와 위젯 목록, done 은 완료 메시지, err 은 오류 메시지와 코드를 담습니다. 모든 이벤트에 ts_unix_ms 타임스탬프가 붙습니다."
+  stages={[
+    {
+      id: 'state',
+      label: 'state',
+      layer: 'be',
+      language: 'text',
+      sample: 'RunState RUNNING|STOPPED|ERROR\nreason "breakpoint" ...\npc_hex',
+      note: '실행 상태 변화',
+    },
+    {
+      id: 'area',
+      label: 'area',
+      layer: 'tx',
+      language: 'text',
+      sample: 'AREA 창 출력 한 줄\n(poller가 변경 감지)',
+      note: '콘솔 출력',
+    },
+    {
+      id: 'pct',
+      label: 'percent',
+      layer: 'tx',
+      language: 'text',
+      sample: 'percent 0~100\nlabel "loading symbols"',
+      note: 'PRACTICE 변수 규약',
+    },
+    {
+      id: 'done',
+      label: 'done / err',
+      layer: 'fe',
+      language: 'text',
+      sample: 'Completed{ message }\nErrorEvent{ message, code }',
+      note: '종료',
+    },
+  ]}
+  transforms={[
+    { label: 'poll' },
+    { label: 'poll' },
+    { label: 'poll' },
+    { label: 'finish' },
+  ]}
+/>
+
+`oneof` 의 7 case: `state`(StateChange) · `line`(CurrentLine) · `area`(AreaOutput) · `percent`(UserProgress) · `dialog`(DialogOpened) · `done`(Completed) · `err`(ErrorEvent). Portal 의 `formatEvent` 가 이 case 들을 사람이 읽는 한 줄로 바꿔 `step-output` 으로 전송합니다([L2 T32 Dump 4](/learn/l2-t32/04-sse/)).
+
+## proto 코드 투어
+
+<CodeTour
+  client:visible
+  language="proto"
+  source="api/v1/t32remote.proto"
+  height={620}
+  code={protoRaw}
+  steps={[
+    {
+      id: 'service',
+      title: 'service T32Remote — 수명 + 실행',
+      lines: [12, 21],
+      body: '<p><code>Attach/Detach/Ping</code> 은 unary, <code>RunScript/ExecuteCommand</code> 는 <strong>returns (stream ProgressEvent)</strong>. 스트리밍이 이 서비스의 정체성 — 비동기 progress 를 위해.</p>',
+    },
+    {
+      id: 'eval-oscmd',
+      title: 'Eval + RunCommand',
+      lines: [27, 33],
+      body: '<p><code>Eval</code> 은 PRACTICE 식 평가(<code>STATE.TARGET()</code>). <code>RunCommand</code> 는 OS cmd 를 <strong>t32remote 자기 세션</strong>에서 실행 — 매핑 드라이브 Z:/자격증명을 그대로 써서 SSH/PsExec 세션 격리 문제를 우회(주석 참고).</p>',
+    },
+    {
+      id: 'runstate',
+      title: 'RunState enum',
+      lines: [58, 63],
+      body: '<p>UNKNOWN/RUNNING/STOPPED/ERROR. poller 가 이 coarse 상태의 변화를 감지해 <code>StateChange</code> 이벤트로 보낸다.</p>',
+    },
+    {
+      id: 'progress-event',
+      title: 'ProgressEvent — oneof + 타임스탬프',
+      lines: [111, 122],
+      body: '<p>스트리밍 RPC 의 단위. 7가지 중 <strong>하나</strong>의 case + <code>ts_unix_ms = 100</code>. case 번호와 필드는 클라이언트(Portal)의 <code>getEventCase()</code> 분기와 1:1 대응.</p>',
+    },
+    {
+      id: 'attach-msg',
+      title: 'AttachRequest / AttachResponse',
+      lines: [126, 133],
+      body: '<p><code>node</code>(보통 localhost) + <code>port</code>(RCL) + <code>pack_len</code>(1024). 응답의 <code>t32_version</code> 이 <strong>비어 있으면 PowerView 미attach</strong> — Portal Step 2 의 핵심 판정.</p>',
+    },
+  ]}
+/>
+
+## 왜 ExecuteCommand는 스트리밍인가
+
+`T32_Cmd` 는 PRACTICE 가 명령을 **수락한 순간** 리턴합니다 — 스크립트가 끝난 게 아닙니다. 그래서 단순 unary 면 "명령은 갔지만 결과는 모르는" 상태가 됩니다. t32remote 는:
+
+1. worker goroutine 으로 `Cmd` 를 던지고
+2. 그동안 broker 가 모아온 **AREA 출력·상태 변화** 를 스트림으로 계속 흘리고
+3. PRACTICE 가 idle 로 돌아갈 때까지 기다린 뒤(`waitPracticeIdle`)
+4. `Completed` 를 보냅니다.
+
+이 흐름은 [4. 런타임](/learn/l2-t32remote/04-runtime/)의 `runWithProgress` 에서 코드로 봅니다.
+
+## 직접 해보기
+
+- [ ] `t32cli exec 'PRINT "hi"'` → `[area] hi` + `[done] ok` 가 순서대로 찍히는지 (stub/실기)
+- [ ] `t32cli eval 'STATE.TARGET()'` 의 반환 문자열 확인
+- [ ] proto 의 `oneof event` case 번호(1~7)와 Portal `formatEvent` 의 분기를 대조
+
+다음: [3. TRACE32 바인딩](/learn/l2-t32remote/03-binding/) →

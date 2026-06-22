@@ -1,8 +1,13 @@
 // @source src/main/proto/device_agent.proto
 // @lines 96-164
 // @note BenchmarkTool enum(IOTEST=4) + RunBenchmarkRequest(params map) + JobProgress(stream용)
-// @synced 2026-05-01T01:10:31.189Z
+// @synced 2026-06-22T22:22:10.937Z
 
+
+message DisconnectDeviceRequest {
+  string serial = 1;
+}
+message DisconnectDeviceResponse {
   bool success = 1;
 }
 
@@ -67,8 +72,3 @@ message SubscribeJobProgressRequest {
   string job_id = 1;
 }
 
-message JobProgress {
-  string job_id = 1;
-  string device_id = 2;
-  JobState state = 3;
-  string message = 4;

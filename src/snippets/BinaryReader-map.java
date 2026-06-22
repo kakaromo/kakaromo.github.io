@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/binmapper/service/BinaryReaderService.java
 // @lines 1-72
 // @note map 엔트리 + resolveEndianness + calculateStructSize (union vs struct, pack 분기)
-// @synced 2026-05-01T01:10:31.184Z
+// @synced 2026-06-22T22:22:10.931Z
 
 package com.samsung.move.binmapper.service;
 

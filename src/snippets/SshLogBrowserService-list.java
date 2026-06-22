@@ -1,7 +1,13 @@
 // @source src/main/java/com/samsung/move/logbrowser/service/SshLogBrowserService.java
 // @lines 59-97
 // @note SSH listFiles — ChannelSftp.ls + 폴더 먼저 정렬
-// @synced 2026-05-01T01:10:31.168Z
+// @synced 2026-06-22T22:22:10.916Z
+
+        this.logPrefix = logPrefix;
+        scheduler.scheduleAtFixedRate(this::cleanupSessions, 60, 60, TimeUnit.SECONDS);
+    }
+
+    // ── Existing methods (file browsing) ──────────────────────────────────
 
     @Override
     public List<FileEntry> listFiles(String tentacleName, String path) {
@@ -36,9 +42,3 @@
             return result;
         } catch (Exception e) {
             log.error("SFTP list failed [vm={}, path={}]: {}", tentacleName, remotePath, e.getMessage());
-            throw new RuntimeException("Failed to list files: " + e.getMessage(), e);
-        } finally {
-            if (channel != null) channel.disconnect();
-            if (session != null) session.disconnect();
-        }
-    }

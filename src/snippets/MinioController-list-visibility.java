@@ -1,7 +1,8 @@
 // @source src/main/java/com/samsung/move/minio/controller/MinioController.java
 // @lines 28-80
 // @note GET /buckets — Admin은 visibility 토글 전체, User는 visible 만
-// @synced 2026-05-01T01:10:31.176Z
+// @synced 2026-06-22T22:22:10.923Z
+
 
 @Slf4j
 @RestController
@@ -11,6 +12,7 @@ public class MinioController {
 
     private final MinioStorageService storageService;
     private final BucketVisibilityRepository bucketVisibilityRepository;
+    private final S3PresignService presignService;
 
     @GetMapping("/buckets")
     public ResponseEntity<?> listBuckets(HttpSession session) throws Exception {
@@ -54,5 +56,3 @@ public class MinioController {
         if (visible == null) {
             throw new IllegalArgumentException("visible is required");
         }
-
-        BucketVisibility bv = bucketVisibilityRepository.findByBucketName(bucketName)

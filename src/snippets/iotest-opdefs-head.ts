@@ -1,7 +1,7 @@
 // @source frontend/src/routes/agent/iotest/opDefs.ts
 // @lines 1-75
 // @note OpDef 인터페이스 + 20+ op 등록 — open/close/read/write 필드 스펙 (fd · offset 템플릿 · pattern)
-// @synced 2026-05-01T01:10:31.188Z
+// @synced 2026-06-22T22:22:10.936Z
 
 /** Operation definitions — fields, defaults, help text */
 

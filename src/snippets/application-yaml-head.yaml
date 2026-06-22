@@ -1,7 +1,7 @@
 # @source src/main/resources/application.yaml
 # @lines 10-30
 # @note head.* + tentacle.* 설정
-# @synced 2026-05-01T01:10:31.146Z
+# @synced 2026-06-22T22:22:10.890Z
 
 # Tomcat 응답 gzip 압축
 # 특히 /api/trace/chart 의 Arrow IPC 바이너리(수십 MB) 가 사내망에서 다운로드만으로
@@ -16,11 +16,11 @@ server:
 head:
   reconnect-delay-ms: 5000
   sse:
-    push-interval-ms: 1000
+    # batch 주기 — HEAD TCP 수신 → SSE 푸시까지 최대 지연. 짧을수록 UI 반응 빠름.
+    # 200ms = HEAD 명령(initslot/settr/settc 등) 후 UI 갱신을 ~0.2초 안에 보장.
+    push-interval-ms: 200
     timeout-ms: 300000
 
 tentacle:
   access-mode: ssh
   log-prefix: /home/octo/tentacle
-  ssh:
-    username: samsung

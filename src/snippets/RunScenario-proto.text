@@ -1,8 +1,13 @@
 // @source src/main/proto/device_agent.proto
 // @lines 215-285
 // @note ScenarioStep/ScenarioLoop/ConditionalBranch + RunScenarioRequest (has_branching + edges[])
-// @synced 2026-05-01T01:10:31.191Z
+// @synced 2026-06-22T22:22:10.938Z
 
+message CancelJobRequest {
+  string job_id = 1;
+}
+
+message CancelJobResponse {
   bool success = 1;
   string message = 2;
 }
@@ -69,8 +74,3 @@ message RunScenarioRequest {
   repeated ScenarioStep steps = 3;
   repeated ScenarioLoop loops = 4;
   int32 repeat = 5;                  // 전체 시나리오 반복 (기본 1)
-  string busy_policy = 6;           // "reject"(default), "wait", "force"
-  int32 retry_count = 7;            // 실패 시 재시도 횟수 (0=재시도 없음)
-  int32 retry_delay_seconds = 8;    // 재시도 간격 (기본 60초)
-  bool has_branching = 9;            // true면 DAG 실행 모드 (edges 사용)
-  repeated StepEdge edges = 10;      // DAG 모드용 엣지 목록

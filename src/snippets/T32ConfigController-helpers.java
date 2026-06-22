@@ -1,7 +1,18 @@
 // @source src/main/java/com/samsung/move/t32/controller/T32ConfigController.java
 // @lines 123-145
 // @note saveAssignedServers + loadDto — 매핑 deleteAll → saveAll 패턴
-// @synced 2026-05-01T01:10:31.195Z
+// @synced 2026-06-22T22:22:10.943Z
+
+    // ── Delete ──
+
+    @DeleteMapping("/configs/{id}")
+    public ResponseEntity<Void> deleteConfig(@PathVariable Long id, HttpSession session) {
+        if (!configRepository.existsById(id)) {
+            return ResponseEntity.notFound().build();
+        }
+        configRepository.deleteById(id);
+        return ResponseEntity.noContent().build();
+    }
 
     // ── Helpers ──
 
@@ -13,16 +24,5 @@
                     .toList();
             configServerRepository.saveAll(mappings);
         }
-    }
-
-    private T32ConfigDto loadDto(Long configId) {
-        T32Config config = configRepository.findById(configId).orElseThrow();
-
-        Map<Long, PortalServer> serverMap = serverRepository.findAll().stream()
-                .collect(Collectors.toMap(PortalServer::getId, Function.identity()));
-        Map<Long, ServerGroup> groupMap = serverGroupRepository.findAll().stream()
-                .collect(Collectors.toMap(ServerGroup::getId, Function.identity()));
-
-        return toDto(config, serverMap, groupMap);
     }
 

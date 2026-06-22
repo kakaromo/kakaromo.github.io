@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/testdb/entity/PerformanceHistory.java
 // @lines 1-68
 // @note 실행 결과 스냅샷 — logPath(원격 JSON 포인터) + result + ManyToOne TR/TC
-// @synced 2026-05-01T01:10:31.179Z
+// @synced 2026-06-22T22:22:10.927Z
 
 package com.samsung.move.testdb.entity;
 
@@ -70,4 +70,4 @@ public class PerformanceHistory implements Serializable {
 
     @Column(name = "FILE_SYSTEM")
     private String fileSystem;
-}
+

@@ -1,17 +1,23 @@
 // @source src/main/java/com/samsung/move/logbrowser/service/LocalLogBrowserService.java
 // @lines 206-312
 // @note Local searchInFile (ProcessBuilder rg) + resolveLocalPath (path traversal 방어)
-// @synced 2026-05-01T01:10:31.169Z
+// @synced 2026-06-22T22:22:10.917Z
 
-    public List<SearchResult> searchInFile(String tentacleName, String path, String pattern) {
+    public List<SearchResult> searchInFile(String tentacleName, String path, String pattern, boolean regex) {
         String vmName = findVm(tentacleName).getName();
         Path localPath = resolveLocalPath(vmName, path);
 
         try {
-            ProcessBuilder pb = new ProcessBuilder(
-                    "rg", "-n", "--no-heading", "--encoding", "auto",
-                    pattern, localPath.toString()
-            );
+            // -e 로 패턴을 지정해야 "-110" 같은 dash-prefix 패턴이 옵션으로 오인되지 않음.
+            // 리터럴 모드(기본)에서는 -F 추가하여 정규식 메타 문자(. * + ? 등)를 그대로 매칭.
+            List<String> cmd = new ArrayList<>(List.of(
+                    "rg", "-n", "--no-heading", "--encoding", "auto"
+            ));
+            if (!regex) cmd.add("-F");
+            cmd.add("-e");
+            cmd.add(pattern);
+            cmd.add(localPath.toString());
+            ProcessBuilder pb = new ProcessBuilder(cmd);
             pb.redirectErrorStream(true);
             Process process = pb.start();
             String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
@@ -104,9 +110,3 @@
             baseDir = Paths.get(mountPath, vmName).normalize();
         }
         Path resolved = baseDir.resolve(path).normalize();
-
-        if (!resolved.startsWith(baseDir)) {
-            throw new SecurityException("Path traversal detected: " + path);
-        }
-        return resolved;
-    }

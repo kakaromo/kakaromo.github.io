@@ -1,7 +1,7 @@
 // @source src/main/java/com/samsung/move/agent/controller/AgentController.java
 // @lines 1064-1100
 // @note macro/installed-apps + start-recording + stop-recording — Go Agent gRPC 프록시
-// @synced 2026-05-01T01:10:31.193Z
+// @synced 2026-06-22T22:22:10.941Z
 
     // ══════════════════════════════════════════════════════════════
     // App Macro Recording / Replay / OCR (gRPC → Go Agent)

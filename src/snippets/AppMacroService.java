@@ -1,6 +1,6 @@
 // @source src/main/java/com/samsung/move/agent/service/AppMacroService.java
 // @note CRUD + duplicate (이름 + "(복사)") — Service 패턴 단순
-// @synced 2026-05-01T01:10:31.193Z
+// @synced 2026-06-22T22:22:10.941Z
 
 package com.samsung.move.agent.service;
 

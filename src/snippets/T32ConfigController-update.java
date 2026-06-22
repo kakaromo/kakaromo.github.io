@@ -1,10 +1,17 @@
 // @source src/main/java/com/samsung/move/t32/controller/T32ConfigController.java
 // @lines 77-110
 // @note updateConfig — 비밀번호 마스킹 패턴(공백이면 기존 값 유지)
-// @synced 2026-05-01T01:10:31.194Z
+// @synced 2026-06-22T22:22:10.943Z
+
+        saveAssignedServers(config.getId(), request.assignedServerIds());
+
+        return loadDto(config.getId());
+    }
+
+    // ── Update ──
 
     @PutMapping("/configs/{id}")
-    public ResponseEntity<T32ConfigDto> updateConfig(@PathVariable Long id, @RequestBody CreateRequest request) {
+    public ResponseEntity<T32ConfigDto> updateConfig(@PathVariable Long id, @RequestBody CreateRequest request, HttpSession session) {
         return configRepository.findById(id)
                 .map(existing -> {
                     existing.setServerGroupId(request.serverGroupId());
@@ -28,12 +35,5 @@
                     existing.setResultBasePath(request.resultBasePath());
                     existing.setResultWindowsBasePath(request.resultWindowsBasePath());
                     existing.setDescription(request.description());
-                    existing.setEnabled(request.enabled());
-                    configRepository.save(existing);
-
-                    saveAssignedServers(id, request.assignedServerIds());
-
-                    return ResponseEntity.ok(loadDto(id));
-                })
-                .orElse(ResponseEntity.notFound().build());
-    }
+                    existing.setT32RemoteHost(request.t32RemoteHost());
+                    existing.setT32RemotePort(request.t32RemotePort());

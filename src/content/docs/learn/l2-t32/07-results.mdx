@@ -1,0 +1,199 @@
+---
+title: 7. 결과 보관 — MinIO + DB 아티팩트 + cleanup
+description: dump 결과 ZIP을 MinIO에 올리고 (testType,source,historyId) 튜플로 추적, 60일 후 자동 삭제
+sidebar:
+  order: 7
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import DataFlowPath from '../../../../components/learn/DataFlowPath.svelte';
+import uploadRaw from '../../../../snippets/T32DumpService-upload.java?raw';
+import artifactRaw from '../../../../snippets/T32ResultArtifact-entity.java?raw';
+
+## 30초 요약
+
+Step 3 에서 만든 **result 폴더 ZIP** 을 Step 4 가 **MinIO 에 업로드**하고, 그 위치를 DB 한 행(`T32ResultArtifact`)으로 남깁니다. 나중에 호환성/성능 테스트 화면에서 "그때 그 dump" 를 다시 받을 수 있게.
+
+- **objectKey** = `{testType}/{source}/{historyId|nohistory}/{resultDirName}.zip`
+- **상태 전이** = `UPLOADING` → `COMPLETED` (또는 `FAILED`)
+- **history 매칭** = `(testType, source, historyId)` **튜플** — 하드 FK 가 아니라 (cross-datasource)
+- **보존** = `uploadedAt` 기준 **60일**, 매일 04:00 KST 에 S3 객체 + DB row 함께 삭제
+- **로컬 결과는 보존** — 업로드 후에도 result 폴더/ZIP 을 지우지 않음 (완료 직후 다이얼로그가 그 폴더를 listdir)
+
+## 업로드 데이터 흐름
+
+<DataFlowPath
+  client:visible
+  caption="result 폴더 → ZIP → MinIO → DB 아티팩트 행 (UPLOADING → COMPLETED)"
+  altText="Step 3 에서 생성된 result 폴더의 ZIP 파일을 읽어, 먼저 status UPLOADING 으로 DB 아티팩트 행을 만듭니다. 그다음 MinIO 버킷이 있는지 보장하고 objectKey 로 ZIP 을 업로드합니다. 업로드가 끝나면 sizeBytes 와 uploadedAt 을 채우고 status 를 COMPLETED 로 바꿉니다. 업로드가 실패하면 status 를 FAILED 로 두고 errorMessage 를 기록하되 dump 자체는 이미 완료로 처리합니다."
+  stages={[
+    {
+      id: 's1',
+      label: 'result.zip',
+      layer: 'hw',
+      language: 'text',
+      sample: '{branchPath}/\n  {datetime}_{set}_{tool}_{tr}.zip',
+      note: 'Step 3가 만든 ZIP',
+    },
+    {
+      id: 's2',
+      label: 'DB row UPLOADING',
+      layer: 'state',
+      language: 'json',
+      sample: '{\n  "status": "UPLOADING",\n  "bucket": "t32-results",\n  "objectKey": "COMPATIBILITY/..."\n}',
+      note: '먼저 행을 만든다',
+    },
+    {
+      id: 's3',
+      label: 'MinIO uploadObject',
+      layer: 'tx',
+      language: 'text',
+      sample: 'PUT t32-results/\n  COMPATIBILITY/INTERNAL/\n  42/{dir}.zip',
+      note: 'ensureBucket 후 업로드',
+    },
+    {
+      id: 's4',
+      label: 'DB row COMPLETED',
+      layer: 'state',
+      language: 'json',
+      sample: '{\n  "status": "COMPLETED",\n  "sizeBytes": 18234221,\n  "uploadedAt": "..."\n}',
+      note: '크기·시각 기록',
+    },
+  ]}
+  transforms={[
+    { label: 'zip' },
+    { label: 'pre-insert' },
+    { label: 'put' },
+    { label: 'commit' },
+  ]}
+/>
+
+## uploadResultArtifact — 코드 투어
+
+"행을 먼저 만들고(UPLOADING) → 업로드 → 성공 시 COMPLETED" 순서가 핵심. 업로드 도중 죽어도 **UPLOADING 행이 남아** 추적 가능합니다.
+
+<CodeTour
+  client:visible
+  language="java"
+  source="T32DumpService.uploadResultArtifact"
+  height={560}
+  code={uploadRaw}
+  steps={[
+    {
+      id: 'object-key',
+      title: 'objectKey 조립',
+      lines: [17, 19],
+      body: '<p><code>{testType}/{source}/{historyId 또는 nohistory}/{resultDirName}.zip</code>. history 컨텍스트가 없으면 <code>nohistory</code> 로 둬도 업로드는 진행 — 사후 매칭은 setLocation/toolName 보조 컬럼으로.</p>',
+    },
+    {
+      id: 'pre-insert',
+      title: 'UPLOADING 행 선삽입',
+      lines: [21, 33],
+      body: '<p>업로드 <strong>전에</strong> <code>status=UPLOADING</code> 행을 저장. 중간에 프로세스가 죽어도 "시도했다"는 흔적이 DB 에 남는다(고아 객체/누락 추적).</p>',
+    },
+    {
+      id: 'upload',
+      title: 'ensureBucket + uploadObject',
+      lines: [35, 46],
+      body: '<p>버킷이 없으면 <code>NoSuchBucket</code> 으로 실패하므로 <code>ensureBucket</code>(멱등) 먼저. 그다음 ZIP 스트림을 <code>uploadObject(bucket, key, in, size, "application/zip")</code>. 진행 상황은 step-output 으로도 전송.</p>',
+    },
+    {
+      id: 'complete',
+      title: 'COMPLETED — 크기·시각 기록',
+      lines: [47, 54],
+      body: '<p>성공하면 <code>sizeBytes</code> + <code>uploadedAt</code>(= 60일 보관 기준) 을 채우고 <code>status=COMPLETED</code>. 이제 <code>/results/latest</code> 조회 대상이 된다.</p>',
+    },
+    {
+      id: 'soft-fail',
+      title: '업로드 실패는 soft — 결과 폴더 보존',
+      lines: [60, 67],
+      body: '<p>업로드가 실패해도 <code>status=FAILED</code> + errorMessage 만 기록하고 <strong>dump 자체는 성공</strong>으로 둔다. ZIP/폴더를 지우지 않는 이유: 완료 직후 다이얼로그가 그 폴더를 listdir 해 스크린샷·Canary report 를 보여주기 때문(지우면 "No such file"). S3 는 백업/장기보관용.</p>',
+    },
+  ]}
+/>
+
+## T32ResultArtifact — 엔티티 코드 투어
+
+<CodeTour
+  client:visible
+  language="java"
+  source="T32ResultArtifact.java"
+  height={520}
+  code={artifactRaw}
+  steps={[
+    {
+      id: 'index',
+      title: '복합 인덱스 2종',
+      lines: [27, 31],
+      body: '<p><code>(testType,source,historyId)</code> 인덱스로 "이 history 의 dump 결과" 조회를 빠르게, <code>uploadedAt</code> 인덱스로 cleanup 의 만료 스캔을 빠르게.</p>',
+    },
+    {
+      id: 'tuple',
+      title: 'testType + source — 매칭 튜플의 두 축',
+      lines: [42, 50],
+      body: '<p><code>testType</code>(COMPATIBILITY/PERFORMANCE) + <code>source</code>(INTERNAL/OUTSOURCED, 지금은 항상 INTERNAL 이지만 외주 대비 선반영). enum 은 STRING 으로 저장해 가독성·확장성 확보.</p>',
+    },
+    {
+      id: 'history-id',
+      title: 'historyId — 하드 FK 가 아닌 보조 컬럼',
+      lines: [52, 57],
+      body: '<p>history 테이블은 <strong>testdb 데이터소스</strong>에 있어 cross-datasource FK 를 못 건다. 그래서 튜플 참조 + nullable. dump 시점에 history 컨텍스트가 없으면 NULL 로 두고 사후 매칭.</p>',
+    },
+    {
+      id: 'object-key-col',
+      title: 'bucket + objectKey',
+      lines: [62, 64],
+      body: '<p>다운로드에 필요한 건 이 둘 뿐 — 프론트는 <code>/results/latest</code> 로 받은 <code>bucket</code>+<code>objectKey</code> 를 기존 MinIO presigned 다운로드에 그대로 넘긴다.</p>',
+    },
+    {
+      id: 'status-col',
+      title: 'status — UPLOADING/COMPLETED/FAILED',
+      lines: [83, 89],
+      body: '<p><code>status</code> + <code>errorMessage</code>(FAILED 시) + <code>uploadedAt</code>(보관 기준). <code>/results/latest</code> 는 <strong>COMPLETED</strong> 중 최신만 돌려준다.</p>',
+    },
+  ]}
+/>
+
+## 조회 + 다운로드 (프론트)
+
+```
+GET /api/t32/results/latest?testType=COMPATIBILITY&source=INTERNAL&historyId=42
+  → 최신 COMPLETED 아티팩트 1건 (없으면 404)
+  → { bucket, objectKey, sizeBytes, resultDirName, status, uploadedAt }
+  → 프론트가 bucket+objectKey 로 MinIO presigned 다운로드
+```
+
+다이얼로그의 **"S3에서 다운로드"** 버튼이 이 흐름입니다. 방금 끝난 dump 는 업로드가 완료될 때까지 잠깐 시간이 걸리므로 **3회 재시도**합니다. `historyId`+`testType` 컨텍스트가 있을 때만 버튼이 노출됩니다.
+
+## cleanup — 매일 04:00 KST
+
+```java
+@Scheduled(cron = "0 0 4 * * *", zone = "Asia/Seoul")
+public void runCleanup() {
+    if (!enabled) return;                          // t32.result.cleanup-enabled
+    var cutoff = LocalDateTime.now().minusDays(retentionDays);  // 기본 60
+    for (var a : artifactRepository.findByUploadedAtBefore(cutoff)) {
+        storage.deleteObject(a.getBucket(), a.getObjectKey());  // S3 먼저
+        artifactRepository.delete(a);                            // DB row 같이
+    }
+}
+```
+
+**버킷 lifecycle 대신 스케줄러**를 쓰는 이유: S3 객체와 **DB row 를 동시에** 정리해야 둘이 어긋나지 않기 때문. Trace 의 `TraceExportCleanupTask` 와 같은 패턴입니다.
+
+:::note[운영 메모 — DDL 수동 적용]
+모든 프로파일이 `ddl-auto: validate` 라 신규 테이블 `portal_t32_result_artifacts`(및 `portal_t32_configs` 의 신규 컬럼 `t32_remote_host`/`t32_remote_port`, `core_scripts_json`, `t32_start_command`)는 `sql/add-*.sql` / `sql/alter-*.sql` 로 운영자가 **수동 적용**해야 합니다. 빠뜨리면 validate 가 부팅을 막습니다.
+:::
+
+## 직접 해보기
+
+- [ ] dump 완료 후 DB `portal_t32_result_artifacts` 에 `status=COMPLETED` 행이 생기는지
+- [ ] MinIO 콘솔에서 `t32-results/COMPATIBILITY/INTERNAL/{historyId}/...zip` 객체 확인
+- [ ] MinIO 를 잠깐 꺼두고 dump → 행이 `FAILED` + errorMessage 인데 dump 는 success 로 끝나는지
+- [ ] `retention-days` 를 0 으로 두고 cleanup 을 수동 실행 → S3·DB 가 같이 비는지
+
+---
+
+**L2 T32 Dump 튜토리얼 완료**. 돌아가기:
+
+- [T32 Dump 개요](/learn/l2-t32/) · [t32remote (Go gRPC) 모듈](/learn/l2-t32remote/) · [L2 비교](/learn/l2-compare/)

@@ -20,8 +20,14 @@ const __dirname = dirname(__filename);
 const REPO_ROOT = resolve(__dirname, '..');
 const SNIPPETS_DIR = join(REPO_ROOT, 'src', 'snippets');
 const PORTAL_ROOT = process.env.MOVE_PORTAL_ROOT ?? '/Users/songhyun/project/portal';
+// t32remote 는 portal 과 별도 레포라 root 를 따로 둔다. manifest 의 `repo: 't32remote'`
+// 항목은 PORTAL_ROOT 대신 이 경로를 기준으로 source 를 찾는다.
+const REPO_ROOTS = {
+  portal: PORTAL_ROOT,
+  t32remote: process.env.T32REMOTE_ROOT ?? '/Users/songhyun/project/t32remote',
+};
 
-/** @type {Array<{id: string, source: string, lines?: [number, number], language: string, note?: string}>} */
+/** @type {Array<{id: string, source: string, lines?: [number, number], language: string, note?: string, repo?: 'portal' | 't32remote'}>} */
 const manifest = [
   {
     id: 'application-yaml-head',
@@ -226,48 +232,110 @@ const manifest = [
     note: 'REST API — types / for-tr / slot 상태 / slot 데이터',
   },
 
-  // ── T32 Dump (L2 t32) ──
+  // ── T32 Dump (L2 t32) — gRPC(t32remote) 경로 + 5 Step + 단독 점유 lock + MinIO 결과 ──
   {
     id: 'T32Config-entity',
     source: 'src/main/java/com/samsung/move/t32/entity/T32Config.java',
-    lines: [1, 88],
+    lines: [1, 102],
     language: 'java',
-    note: 'portal_t32_configs — 서버 그룹·JTAG/T32PC·명령 템플릿·경로 매핑',
+    note: 'portal_t32_configs — 서버 그룹·JTAG/T32PC·명령 템플릿·경로 매핑 + t32RemoteHost/Port + coreScriptsJson + t32StartCommand',
   },
   {
     id: 'T32DumpController',
     source: 'src/main/java/com/samsung/move/t32/controller/T32DumpController.java',
-    lines: [1, 52],
+    lines: [1, 80],
     language: 'java',
-    note: 'POST /api/t32/dump/execute — SSE 반환 + DumpRequest record',
+    note: 'POST /execute(SSE) + /cancel + /check — DumpRequest record + 점유 lock 키 산출',
   },
   {
     id: 'T32DumpService-executeDump',
     source: 'src/main/java/com/samsung/move/t32/service/T32DumpService.java',
-    lines: [78, 220],
+    lines: [172, 396],
     language: 'java',
-    note: 'executeDump 오케스트레이션 — 4 Step 순차 + 경로 변환 + Canary ZIP',
+    note: 'executeDump — lock 획득 → 워커 submit → Step1~4 디스패치(gRPC/SSH) → finally lock 해제',
   },
   {
-    id: 'T32DumpService-step1-2',
+    id: 'T32DumpService-lock-cancel',
     source: 'src/main/java/com/samsung/move/t32/service/T32DumpService.java',
-    lines: [222, 282],
+    lines: [95, 168],
     language: 'java',
-    note: 'Step 1 JTAG (success pattern regex) + Step 2 Attach (Down 감지)',
+    note: 'RunningDump 맵 + checkAvailability(busy/lockedBy) + cancelDump(점유자만 interrupt)',
   },
   {
-    id: 'T32DumpService-step3',
+    id: 'T32DumpService-step2-grpc',
     source: 'src/main/java/com/samsung/move/t32/service/T32DumpService.java',
-    lines: [284, 326],
+    lines: [603, 701],
     language: 'java',
-    note: 'Step 3 Dump — {result_path}/{branch_path} 치환 + fail 키워드 감지',
+    note: 'Step 2 gRPC Attach — t32remote.attach(t32_version 검증) + STATE.TARGET() 타겟 판정',
   },
   {
-    id: 'T32DumpService-ssh',
+    id: 'T32DumpService-step3-grpc',
     source: 'src/main/java/com/samsung/move/t32/service/T32DumpService.java',
-    lines: [332, 391],
+    lines: [807, 924],
     language: 'java',
-    note: 'JSch SSH 실행 — stdout/stderr 실시간 step-output 전송 + timeout',
+    note: 'Step 3 gRPC Dump — core별 CD.DO + 스크린샷/Canary 후처리 + zip',
+  },
+  {
+    id: 'T32DumpService-upload',
+    source: 'src/main/java/com/samsung/move/t32/service/T32DumpService.java',
+    lines: [1107, 1169],
+    language: 'java',
+    note: 'Step 4 결과 업로드 — UPLOADING→COMPLETED/FAILED, MinIO objectKey, 결과 보존',
+  },
+  {
+    id: 'T32DumpLockService',
+    source: 'src/main/java/com/samsung/move/t32/service/T32DumpLockService.java',
+    lines: [1, 71],
+    language: 'java',
+    note: '단독 점유 lock — configId 키 putIfAbsent + 점유자 일치 시에만 release',
+  },
+  {
+    id: 'T32RemoteClient',
+    source: 'src/main/java/com/samsung/move/t32/grpc/T32RemoteClient.java',
+    lines: [28, 130],
+    language: 'java',
+    note: 'gRPC 어댑터 — Session(RAII ManagedChannel) + ping/attach/eval',
+  },
+  {
+    id: 'T32ResultArtifact-entity',
+    source: 'src/main/java/com/samsung/move/t32/entity/T32ResultArtifact.java',
+    lines: [1, 97],
+    language: 'java',
+    note: 'portal_t32_result_artifacts — (testType,source,historyId) 튜플 + status + objectKey',
+  },
+
+  // ── t32remote (Go gRPC 서비스, 별도 레포) — L2 t32remote ──
+  {
+    id: 't32remote-proto',
+    repo: 't32remote',
+    source: 'api/v1/t32remote.proto',
+    lines: [1, 135],
+    language: 'proto',
+    note: 'T32Remote 서비스 정의 — Attach/ExecuteCommand(stream)/Eval/RunCommand + ProgressEvent oneof + AttachRequest/Response',
+  },
+  {
+    id: 't32remote-session',
+    repo: 't32remote',
+    source: 'internal/session/session.go',
+    lines: [25, 133],
+    language: 'go',
+    note: 'Session — idempotent Attach(Ping 먼저, 이미 붙어있으면 Attach 생략) + MarkDisconnected',
+  },
+  {
+    id: 't32remote-runWithProgress',
+    repo: 't32remote',
+    source: 'internal/server/handlers_run.go',
+    lines: [44, 130],
+    language: 'go',
+    note: 'ExecuteCommand → runWithProgress: broker 구독 + worker goroutine + 이벤트 포워딩',
+  },
+  {
+    id: 't32remote-main',
+    repo: 't32remote',
+    source: 'cmd/t32remote/main.go',
+    lines: [1, 48],
+    language: 'go',
+    note: '서버 진입점 — :50551 listen + graceful shutdown, cgo(Windows)/stub(host) 백엔드',
   },
 
   // ── Pre-Command (L2 precmd) ──
@@ -987,7 +1055,8 @@ async function main() {
   let ok = 0;
   let fail = 0;
   for (const entry of manifest) {
-    const srcPath = join(PORTAL_ROOT, entry.source);
+    const root = REPO_ROOTS[entry.repo ?? 'portal'] ?? PORTAL_ROOT;
+    const srcPath = join(root, entry.source);
     try {
       const raw = await readFile(srcPath, 'utf8');
       const extracted = await extractLines(raw, entry.lines);
@@ -995,7 +1064,7 @@ async function main() {
       const cmt = isYaml ? '#' : '//';
       const header =
         [
-          `${cmt} @source ${entry.source}`,
+          `${cmt} @source ${entry.repo && entry.repo !== 'portal' ? entry.repo + ':' : ''}${entry.source}`,
           entry.lines ? `${cmt} @lines ${entry.lines[0]}-${entry.lines[1]}` : null,
           entry.note ? `${cmt} @note ${entry.note}` : null,
           `${cmt} @synced ${new Date().toISOString()}`,

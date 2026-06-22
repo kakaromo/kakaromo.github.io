@@ -1,0 +1,135 @@
+---
+title: 3. TRACE32 바인딩 — cgo vs stub, 멱등 Attach
+description: API 인터페이스 한 개를 두 백엔드(실제 DLL / mock)가 구현하고, Attach를 멱등으로 만든 #FF 회피기
+sidebar:
+  order: 3
+---
+
+import CodeTour from '../../../../components/learn/CodeTour.svelte';
+import SequenceTimeline from '../../../../components/learn/SequenceTimeline.svelte';
+import sessionRaw from '../../../../snippets/t32remote-session.go?raw';
+
+## 30초 요약
+
+저수준 바인딩의 뼈대는 **`API` 인터페이스 한 개**입니다(`internal/t32/api.go`). 두 빌드가 이걸 구현:
+
+- **`api_cgo.go`** (`//go:build windows`) — 진짜 `t32api64.dll` 호출. cgo 헤더가 `T32_*` 함수를 forward-declare 하고 `-lt32api64` 로 링크.
+- **`api_stub.go`** (`//go:build !windows`) — in-memory mock. 명령을 기록하고 `PRINT` 를 에코하며 가짜 변수/레지스터/bp 를 들고 있어, **맥/리눅스에서 컴파일·테스트** 가능.
+
+그 위에 **`Worker`** 가 모든 호출을 **단일 goroutine** 으로 직렬화하고(t32api 는 thread-safe 가 아님), **`Session`** 이 단일 attach 수명을 관리합니다.
+
+```go
+type API interface {
+    Config(node string, port, packLen int) error
+    Init() error;  Attach(devID int) error;  Exit() error;  Ping() error
+    Cmd(cmd string) error;  EvalExpression(expr string) (string, error)
+    GetState() (PracticeRunState, error);  GetPracticeState() (PracticeState, error)
+    GetMessage() (text string, mode int, err error)
+    // ... ReadVariableString / ReadMemory / ReadRegisterByName / WriteBreakpoint / Stop / Step
+}
+```
+
+## 왜 인터페이스 + 두 빌드인가
+
+TRACE32 는 Windows 전용 DLL 입니다. 그대로 두면 **개발 머신(맥/리눅스)에서 빌드조차 안 됩니다.** `API` 인터페이스로 경계를 그으면:
+
+- 상위 계층(server/session/worker/poller)은 **인터페이스에만 의존** → 어디서든 컴파일
+- Windows 에서만 cgo 백엔드가 진짜 DLL 을 호출
+- CI/단위테스트는 stub 으로 빠르게 (`server_test.go` 가 stub 백엔드로 핸들러 검증)
+
+**의존성 역전의 교과서적 적용** — 플랫폼 종속 코드를 인터페이스 뒤로.
+
+## #FF 회피기: 멱등 Attach
+
+이 모듈에서 가장 중요한 도메인 지식입니다. TRACE32 PowerView 는 잘못된 순서로 연결하면 **`fatal error #FF`** 를 냅니다. `Session.Attach` 는 그걸 피하도록 정교하게 짜여 있습니다.
+
+<SequenceTimeline
+  client:visible
+  height={340}
+  autoplay={true}
+  caption="Attach 시퀀스 — Config → Init(실패 시만 Exit 후 재시도) → Ping 먼저 → 붙어있으면 T32_Attach 생략"
+  altText="Session.Attach 는 먼저 Config 로 node/port/packLen 을 설정합니다. 다음 Init 을 호출하는데, 무조건 Exit 를 먼저 하지 않습니다. 살아있는 RCL 링크를 Exit 로 끊으면 PowerView 가 #FF 를 내기 때문입니다. Init 이 실패할 때만 Exit 후 한 번 재시도합니다. 그다음 Ping 을 먼저 합니다. PowerView 가 이미 RCL 로 연결돼 있으면 Ping 이 성공하고, 이 경우 T32_Attach 를 건너뜁니다. 이미 붙은 디버거에 다시 Attach 하면 USB 재연결을 유발해 #FF 가 나기 때문입니다. Ping 이 실패할 때만 Attach 를 호출하고 다시 Ping 으로 확인합니다."
+  lanes={[
+    { id: 'ss',  label: 'Session', layer: 'be', sublabel: 'Attach()' },
+    { id: 'api', label: 't32api',  layer: 'tx', sublabel: 'DLL' },
+    { id: 'pv',  label: 'PowerView', layer: 'hw', sublabel: 'RCL' },
+  ]}
+  messages={[
+    { from: 'ss',  to: 'api', label: 'Config(node,port,len)', t: 0,  kind: 'sync' },
+    { from: 'ss',  to: 'api', label: 'Init',                  t: 6,  kind: 'sync' },
+    { from: 'api', to: 'ss',  label: 'ok (실패면 Exit+재시도)', t: 12, kind: 'sync' },
+    { from: 'ss',  to: 'api', label: 'Ping (먼저!)',          t: 18, kind: 'sync' },
+    { from: 'api', to: 'pv',  label: 'remote ping',           t: 22, kind: 'sync' },
+    { from: 'pv',  to: 'ss',  label: 'pong → 이미 연결',       t: 28, kind: 'sync' },
+    { from: 'ss',  to: 'ss',  label: 'T32_Attach 생략 ✓',     t: 32, kind: 'async' },
+  ]}
+/>
+
+## Session 코드 투어
+
+<CodeTour
+  client:visible
+  language="go"
+  source="internal/session/session.go"
+  height={620}
+  code={sessionRaw}
+  steps={[
+    {
+      id: 'struct',
+      title: 'Session — mutex로 단일 attach 보호',
+      lines: [6, 11],
+      body: '<p><code>api</code> + <code>worker</code> + <code>attached</code> 를 <code>sync.Mutex</code> 로 감싼다. 단일 PowerView 라 동시 attach/detach 를 직렬화.</p>',
+    },
+    {
+      id: 'idempotent',
+      title: 'Attach가 멱등 — 이미 붙었으면 nil',
+      lines: [32, 37],
+      body: '<p><code>if s.attached { return nil }</code>. 호출자가 <strong>매 작업 전에 안심하고 attach</strong> 를 부를 수 있다(연결 상태 추적 불필요). Portal 이 Step 2 마다 attach 하는 근거.</p>',
+    },
+    {
+      id: 'init-retry',
+      title: 'Init — 실패할 때만 Exit 후 재시도',
+      lines: [49, 57],
+      body: '<p>무조건 <code>Exit</code> 를 먼저 하면 <strong>살아있는 RCL 링크를 끊어 #FF</strong>. 그래서 Init 을 먼저 시도하고, 실패(leftover 소켓 등)할 때만 Exit 로 정리 후 1회 재시도. 주석에 "fatal error #FF" 가 명시.</p>',
+    },
+    {
+      id: 'ping-first',
+      title: 'Ping 먼저 — 붙어있으면 Attach 생략',
+      lines: [63, 76],
+      body: '<p>PowerView 가 이미 RCL 연결돼 있으면 Ping 이 성공("remote ping received"). 그 경우 <strong>T32_Attach 를 건너뛴다</strong> — 이미 붙은 디버거에 재Attach 하면 USB 재연결("try USB connect")을 유발해 #FF. Ping 실패 시에만 Attach.</p>',
+    },
+    {
+      id: 'detach',
+      title: 'Detach — Exit + worker 해제',
+      lines: [83, 93],
+      body: '<p>정상 종료: <code>Exit</code> 후 attached=false, worker=nil. 다음 Attach 가 깨끗이 다시 시작.</p>',
+    },
+    {
+      id: 'mark-disconnected',
+      title: 'MarkDisconnected — poller가 끊김 감지 시',
+      lines: [103, 114],
+      body: '<p>PowerView 가 사라지면(닫힘 등) poller 가 호출. peer 가 없어도 <strong>로컬 t32api 의 소켓 상태를 풀어야</strong>(best-effort Exit) 다음 재attach 가 가능. 멱등.</p>',
+    },
+  ]}
+/>
+
+## Worker — 단일 goroutine 직렬화
+
+`t32api` 는 thread-safe 가 아니므로 **모든 호출이 worker goroutine 하나**를 거칩니다.
+
+```go
+// 모든 t32api 호출은 Do()로 제출 → worker goroutine에서 순차 실행
+worker.Do(ctx, func(api API) (any, error) {
+    return nil, api.Cmd("Go.direct")
+})
+```
+
+요청 채널(버퍼 32)로 들어온 작업을 한 goroutine 이 꺼내 실행하고 결과를 돌려줍니다. gRPC 핸들러는 여러 goroutine 에서 동시에 들어와도 **worker 가 줄을 세워** 경합을 없앱니다. `Cmd`/`EvalExpression`/`GetState`/`GetMessage` 등은 모두 이 `Do` 의 편의 래퍼.
+
+## 직접 해보기
+
+- [ ] `api_stub.go` 의 `stubAPI` 가 `Commands()` 로 실행된 명령을 기록하는지 — `server_test.go` 에서 확인
+- [ ] Windows 에서 PowerView 를 이미 띄운 채 `t32cli attach` 두 번 → 두 번째도 #FF 없이 성공(멱등)
+- [ ] dump 도중 PowerView 를 강제 종료 → poller 가 `MarkDisconnected` 를 부르고 이후 RPC 가 "not attached" 로 거절되는지
+
+다음: [4. 런타임 (Session·Worker·Poller·Broker)](/learn/l2-t32remote/04-runtime/) →
