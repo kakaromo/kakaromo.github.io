@@ -135,7 +135,7 @@ CREATE TABLE portal_t32_configs (
     -- gRPC (t32remote) 경로
     t32_remote_host VARCHAR(255),         -- 채워지면 gRPC 경로 사용
     t32_remote_port INT,                  -- t32remote.exe 포트 (예: 50551)
-    core_scripts_json TEXT,               -- [{core, cmmRelPath, optionalCommands}, ...]
+    core_scripts_json TEXT,               -- controller 그룹: [{controller, canaryRelPath, cores:[{core, cmmRelPath, optionalCommands}]}] (구 flat 포맷 호환)
 
     -- 기타
     description VARCHAR(500),
@@ -284,11 +284,16 @@ sequenceDiagram
 
         Note over S: 결과 폴더 경로 생성 + Linux→Windows 변환
 
-        loop coreScriptsJson 각 core
-            S->>R: Step 3: ExecuteCommand "CD.DO cmm" (stream)
-            R-->>S: ProgressEvent (area/percent/done)
-            S-->>B: step-output / dump-progress {core, phase, status}
-            S->>R: CaptureWindow PNG (또는 Canary robocopy)
+        Note over S: controller 그룹 선택 (slot.controller)
+        alt controller 결정 불가
+            S-->>B: controller-needed {options} + done {failedStep:3}
+        else 그룹 선택됨
+            loop 선택 그룹의 각 core
+                S->>R: Step 3: ExecuteCommand "CD.DO cmm" (stream)
+                R-->>S: ProgressEvent (area/percent/done)
+                S-->>B: step-output / dump-progress {core, phase, status}
+                S->>R: CaptureWindow PNG (또는 canaryRelPath Canary robocopy)
+            end
         end
         S->>R: RunCommand: result 폴더 ZIP (PowerShell)
         S-->>B: step-done {step:3, success}
@@ -357,9 +362,39 @@ resultWindowsPath = branchWindowsPath + "\\" + dirName;
 
 폴더명에 날짜만이 아니라 **시·분·초**까지 들어가 같은 브랜치로 여러 번 dump해도 구분됩니다.
 
-### Step 3 명령 조립 (gRPC 경로)
+### Controller 그룹 선택 (gRPC 경로)
 
-`coreScriptsJson`의 각 core마다 `CD.DO`로 cmm을 실행하고, `optionalCommands`의 각 줄을 개별 `ExecuteCommand`로 보냅니다(멀티라인을 한 번에 보내지 않음).
+`coreScriptsJson`은 controller(SoC)마다 cmm 위치·Canary 경로가 다른 점을 반영해 **controller 그룹** 배열로 저장합니다:
+
+```json
+[{ "controller": "S5E9945",
+   "canaryRelPath": "00_BUILD\\00_SIMULATOR\\CANARY",
+   "cores": [{ "core": "H-Core", "cmmRelPath": "scripts/h_core.cmm", "optionalCommands": "" }] }]
+```
+
+Step 3 시작 전 `controller`(slot/HEAD 유래)로 그룹을 고릅니다(`selectControllerScript`, 대소문자 무시):
+
+```mermaid
+flowchart TD
+    A["coreScriptsJson 파싱\nparseControllerScripts"] --> B{controller 매칭?}
+    B -->|정확히 매칭| G["그 그룹 선택"]
+    B -->|불일치/미지정| C{그룹 1개?}
+    C -->|예| G2["단일 그룹 자동 선택"]
+    C -->|여러 개| D{controller 빈 그룹?}
+    D -->|있음| G3["fallback 그룹 선택"]
+    D -->|없음| E["controller-needed 이벤트\n사용자 선택 요청 → 중단"]
+    G --> H["선택 그룹 cores 로 Step 3 진행"]
+    G2 --> H
+    G3 --> H
+```
+
+- **구 포맷 호환**: flat core 목록 `[{core, cmmRelPath, optionalCommands}]`도 controller 없는 단일 그룹으로 감싸져 그대로 동작. 스키마/마이그레이션 변경 없음.
+- **`canaryRelPath`**: Canary 폴더의 branch base 기준 상대경로(controller별). 비면 기본값 `00_BUILD\00_SIMULATOR\CANARY`. 기존 하드코딩 제거.
+- **`controller-needed`**: 매칭 실패 + 여러 그룹이면 후보(`options`)를 SSE로 보내고 `done {failedStep:3}`로 중단. 다이얼로그가 드롭다운으로 controller를 받아 재실행.
+
+### Step 3 명령 조립
+
+선택된 그룹의 각 core마다 `CD.DO`로 cmm을 실행하고, `optionalCommands`의 각 줄을 개별 `ExecuteCommand`로 보냅니다(멀티라인을 한 번에 보내지 않음).
 
 ```
 core: H-Core, cmmRelPath: scripts/h_core.cmm
@@ -427,6 +462,7 @@ Content-Type: application/json → text/event-stream;charset=UTF-8
 | 이벤트 | 데이터 | 시점 |
 |--------|--------|------|
 | `locked` | `{lockedBy, since}` | 다른 사용자가 이미 점유 중 (작업 없이 종료) |
+| `controller-needed` | `{message, slotController, options}` | controller 그룹 결정 불가 → 사용자 선택 후 재실행 |
 | `step-start` | `{step, name}` | 각 Step 시작 |
 | `step-output` | `{step, line}` | 실시간 출력 라인 (SSH stdout / ProgressEvent) |
 | `dump-progress` | `{step, core, phase, status}` | Step 3 core별 진행 |
@@ -491,8 +527,10 @@ idle 상태:
 ├── configLoading → T32 설정 로드 중 (스피너)
 ├── !t32Available → "설정 없음" 안내
 ├── busy → "{lockedBy} 님이 진행 중" amber 배너 (시작 차단)
+├── controllerNeeded → controller 선택 드롭다운 (controller-needed 이벤트 후, 선택해 재실행)
 ├── branchPath 미선택 → Bitbucket 브랜치 리스트
 │   ├── 열 때 캐시 표시 → 백그라운드 폴링으로 자동 최신화 + "새로고침" 버튼
+│   │   (폴링/재조회 실패는 toast + console.error 로 노출 — 조용히 무시 안 함)
 │   ├── bbSearch → 실시간 필터링 (bbFiltered derived)
 │   ├── DOWNLOADED 클릭 → selectBranch()
 │   ├── DETECTED "다운로드" → SSE → 완료 후 자동 선택

@@ -65,28 +65,42 @@ PACKLEN=1024
 | **T32 Remote Port** | t32remote.exe 포트 | `50551` |
 | **T32 Port Check Command** | gRPC 경로에선 **RCL 포트 번호**로 사용 | `20000` |
 | **T32 Start Command** | JTAG 변경 후 PowerView 재시작 명령 | `C:\T32\bin\windows64\t32mp64.exe -c C:\T32\config.t32` |
-| **Core Scripts** | core별 cmm 스크립트 (JSON) | 아래 참고 |
+| **Core Scripts** | controller 그룹별 cmm 스크립트 (JSON) | 아래 참고 |
 | **Dump Command** | legacy(SSH+bat) 전용 | `cmd /c C:\T32\dump.bat {branch_path} {result_path}` |
 
 :::note
 명령어 필드는 textarea로 되어 있어 긴 명령어도 전체 내용을 확인할 수 있습니다.
 :::
 
-#### Core Scripts (gRPC 경로)
+#### Core Scripts (gRPC 경로) — controller 그룹
 
-gRPC 경로에서는 core별로 실행할 cmm을 JSON 배열로 등록합니다. Step 3에서 core마다 `CD.DO`로 실행됩니다.
+controller(SoC)마다 cmm 위치·Canary 경로가 달라, Core Scripts는 **controller 그룹** 단위로 등록합니다. Admin 코어 에디터에서 controller 그룹을 추가하고(이름은 UFSinfo controller 목록 자동완성), 그 안에 core를 넣습니다.
 
 ```json
 [
-  { "core": "H-Core",  "cmmRelPath": "scripts/h_core.cmm",  "optionalCommands": "" },
-  { "core": "CM-Core", "cmmRelPath": "scripts/cm_core.cmm", "optionalCommands": "" },
-  { "core": "Canary",  "cmmRelPath": "scripts/canary.cmm",  "optionalCommands": "" }
+  {
+    "controller": "S5E9945",
+    "canaryRelPath": "00_BUILD\\00_SIMULATOR\\CANARY",
+    "cores": [
+      { "core": "H-Core",  "cmmRelPath": "scripts/h_core.cmm",  "optionalCommands": "" },
+      { "core": "CM-Core", "cmmRelPath": "scripts/cm_core.cmm", "optionalCommands": "" },
+      { "core": "Canary",  "cmmRelPath": "scripts/canary.cmm",  "optionalCommands": "" }
+    ]
+  }
 ]
 ```
 
-- `cmmRelPath`는 선택한 브랜치 폴더 기준 상대 경로 (Windows 경로로 변환되어 `CD.DO`에 전달)
-- `optionalCommands`는 cmm 실행 후 보낼 추가 PRACTICE 명령 (줄마다 개별 전송)
+- **controller**: slot/HEAD의 controller와 매칭하는 키(대소문자 무시). 비우면 controller 없는 slot의 fallback 그룹
+- **canaryRelPath**: Canary 폴더의 branch base 기준 상대경로. 비우면 기본값 `00_BUILD\00_SIMULATOR\CANARY`
+- **cores[].cmmRelPath**: 선택한 브랜치 폴더 기준 상대 경로 (Windows 경로로 변환되어 `CD.DO`에 전달)
+- **cores[].optionalCommands**: cmm 실행 후 보낼 추가 PRACTICE 명령 (줄마다 개별 전송)
 - **Canary** core는 report 생성 대기 + robocopy 복사 등 별도 후처리가 동작
+
+:::note[구 포맷 호환]
+controller 없는 flat 목록 `[{core, cmmRelPath, optionalCommands}]`도 그대로 동작합니다(controller 없는 단일 그룹으로 처리). 기존 config는 수정 불필요.
+:::
+
+**controller 선택**: dump 시 slot의 controller로 그룹을 자동 선택합니다. 그룹이 하나뿐이면 자동, slot에 controller가 없거나 안 맞으면 다이얼로그가 **controller 드롭다운**으로 선택을 요청합니다(아래 5단계 참고).
 
 #### 경로 매핑
 
@@ -191,6 +205,8 @@ Dialog가 열리면 다음 정보가 표시됩니다:
 
 다이얼로그를 열면 캐시된 브랜치를 **즉시 표시**하고, 백그라운드로 Bitbucket을 폴링해 **최신 브랜치를 자동으로 받아와 목록을 갱신**합니다(scheduled 5분 폴링을 기다리지 않음). 헤더의 **"새로고침"** 버튼으로 수동 재폴링도 가능합니다.
 
+폴링/재조회가 실패하면(인증 만료·네트워크·PAT 오류 등) 조용히 무시하지 않고 **toast로 원인을 노출**합니다. 등록된 Bitbucket 저장소가 없으면 그 사실을 안내합니다("새 브랜치가 안 떠도 단서가 남지 않던" 증상 개선).
+
 브랜치를 선택하는 3가지 방법:
 
 #### 방법 1: Bitbucket 브랜치 리스트에서 선택 (권장)
@@ -221,7 +237,7 @@ Bitbucket에 브랜치가 없으면 안내 메시지와 함께 "파일 시스템
 | 1 | **JTAG 연결** | JTAG 서버 | SSH | `jtagSuccessPattern` → "Measured Voltage" > 0 → exitCode=0 |
 | — | *(PowerView 재시작)* | T32 PC | SSH+PsExec | best-effort (`t32StartCommand` 있을 때) |
 | 2 | **T32 Attach** | t32remote | gRPC | `t32_version` ≠ 빈값 + `STATE.TARGET()` 정상 |
-| 3 | **Dump 실행** | t32remote | gRPC | core별 `ExecuteCommand` 전부 성공 |
+| 3 | **Dump 실행** | t32remote | gRPC | 선택된 controller 그룹의 core별 `ExecuteCommand` 전부 성공 |
 | 4 | **결과 업로드** | MinIO | S3 | (soft) ZIP 업로드 — 실패해도 dump는 성공 |
 
 각 Step의 동작:
@@ -230,13 +246,17 @@ Bitbucket에 브랜치가 없으면 안내 메시지와 함께 "파일 시스템
 - **실패**: 로그 자동 펼침 + "다시 시도" 버튼 표시
 - **중단**: "중단" 버튼 → 워커 interrupt → lock 해제
 
+#### controller 선택 (gRPC 경로)
+
+Step 3 직전, slot의 controller로 Core Scripts의 controller 그룹을 자동 선택합니다. 그룹이 하나뿐이면 자동, slot에 controller가 없거나 등록된 그룹과 안 맞으면 다이얼로그에 **controller 드롭다운**이 나타납니다. 후보에서 controller를 골라 다시 "Dump 시작"을 누르면 그 그룹으로 진행합니다.
+
 #### PowerView 재시작이 필요한 이유
 
 JTAG 연결을 바꾸면 이미 떠 있던 PowerView가 fatal `#FF` 상태가 됩니다. 그래서 Step 2 전에 `taskkill` → **PsExec**로 활성 세션에 GUI로 재시작합니다(`t32StartCommand`가 비면 건너뜀, 수동 운영).
 
 #### Step 3 상세 — core별 진행
 
-`coreScriptsJson`의 core마다 `CD.DO`로 cmm을 실행하고, dump 직후 PowerView 창 스크린샷(PNG)을 저장합니다(Canary core는 report 대기 + robocopy 후처리). 모든 core가 끝나면 result 폴더를 PowerShell `Compress-Archive`로 ZIP 압축합니다.
+선택된 controller 그룹의 core마다 `CD.DO`로 cmm을 실행하고, dump 직후 PowerView 창 스크린샷(PNG)을 저장합니다(Canary core는 그룹의 `canaryRelPath` 폴더에서 report 대기 + robocopy 후처리). 모든 core가 끝나면 result 폴더를 PowerShell `Compress-Archive`로 ZIP 압축합니다.
 
 ### 결과 확인
 
@@ -298,7 +318,10 @@ JTAG 서버, T32 PC 모두 동일한 동작입니다.
 | Step 2 실패 (t32_version 없음) | PowerView 미실행 / RCL 미설정 | T32 PC에서 PowerView 실행 + `config.t32`의 `RCL=NETASSIST PORT=20000` 확인 |
 | Step 2 실패 (target error) | 타겟 디버그 연결 실패 | JTAG 케이블/전원/Hang 명령 실행 여부 확인 |
 | Step 2 gRPC 연결 실패 | t32remote.exe 미실행 | T32 PC에서 t32remote.exe(:50551) 실행 확인, Host/Port 설정 확인 |
+| "controller를 선택하세요" 드롭다운 | slot.controller가 없거나 Core Scripts 그룹과 안 맞음 | 드롭다운에서 controller 선택 후 재실행 / Admin > T32에서 controller 그룹 이름 확인 |
+| Step 3 실패 (cores 비어있음) | 선택된 controller 그룹에 core 없음 | Admin > T32 Core Scripts에서 해당 controller 그룹에 core 추가 |
 | Step 3 실패 | core cmm 경로 오류 / 명령 실패 | Core Scripts의 `cmmRelPath` 확인, 출력 로그 점검 |
+| Canary 후처리 실패 | `canaryRelPath` 경로 불일치 | controller 그룹의 `canaryRelPath`(branch base 기준 상대경로) 확인 |
 | Step 4 (S3 업로드 실패) | MinIO 연결/버킷 문제 | dump는 성공 처리됨. "전체 다운로드"로 로컬 결과 받기, MinIO 상태 확인 |
 | 브랜치 목록 안 보임 | Bitbucket 저장소 미등록 | Admin > Bitbucket에서 저장소 등록 (다이얼로그 "새로고침"으로 재폴링) |
 | 경로 변환 오류 | FW Code 경로 매핑 미설정 | Admin > T32에서 Linux/Windows 경로 확인 |
