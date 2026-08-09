@@ -16,6 +16,7 @@ libbpf + CO-RE 기반 eBPF tracer. (소스: bpftrace repo)
 - 빌드 가이드: [빌드 (NDK + Bionic)](/fsiotrace/build/)
 - 사용법 / 트러블슈팅: [사용법](/fsiotrace/usage/)
 - TSV 출력 형식 (Rust 분석기 연동): [TSV 출력 형식](/fsiotrace/output-format/)
+- 기기 없이 검증: [QEMU 테스트베드](/fsiotrace/qemu-testbed/)
 - 폐쇄망 환경: [폐쇄망 환경 가이드](/fsiotrace/offline/)
 - 수집된 trace 의 분석 단계: [Trace Analysis](/guide/trace-analysis/)
 
@@ -30,10 +31,12 @@ bpftrace/
 │   ├── DESIGN.md                 # 비트 정의, hook 선정, cross-layer 전파, GKI 이슈
 │   ├── BUILD.md                  # Docker / Ubuntu 네이티브 빌드 (aarch64-linux-gnu cross)
 │   ├── USAGE.md                  # 시나리오별 사용법, 출력 해석, 트러블슈팅
+│   ├── BPF.md                    # eBPF 동작 원리 (발표/온보딩용)
 │   ├── OUTPUT_FORMAT.md          # TSV 출력 형식 (Rust 분석기 연동)
 │   └── OFFLINE.md                # 폐쇄망 환경 빌드 절차
 ├── scripts/
 │   ├── build.sh                  # 한 줄 빌드 (NDK 감지 + BTF + libelf + make + push)
+│   ├── qemu/                     # 기기 없이 검증하는 QEMU 테스트베드
 │   ├── build_libelf_ndk.sh       # libelf cross-compile (third_party/elfutils 빌드)
 │   ├── bionic_libbpf_compat.h    # libbpf Bionic 호환 force-include 헤더
 │   ├── android_check.sh          # device feasibility 점검
@@ -125,6 +128,7 @@ make push
 --no-fs          FS-internal hook off
 --no-blk         Block hook off
 --no-ufs         UFS hook off
---wb-inode       writeback inode_ctx fallback 활성
+--rb-size=MB     ringbuf 크기 (기본 256MB). 유실 시 ↑, load 실패 시 ↓
+--poll-ms=MS     ringbuf poll 주기 (기본 50ms)
 -v               libbpf verbose
 ```

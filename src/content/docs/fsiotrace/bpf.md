@@ -2,9 +2,8 @@
 title: eBPF 동작 원리
 description: eBPF 가 무엇인지(verifier·CO-RE·maps·ringbuf·attach) + fsiotrace 가 그 위에서 빌드·로드·실행되는 전체 흐름. 발표/온보딩용 다이어그램 포함
 ---
-
 > **최종 수정**: 2026-05-28 · **대상**: 내부 팀 발표/온보딩용. eBPF 기초 + fsiotrace 가
-> 그 위에서 어떻게 동작하는지. 우리 구현 상세는 [설계 문서](/fsiotrace/design/) 로 분담.
+> 그 위에서 어떻게 동작하는지. 우리 구현 상세는 [DESIGN.md](/fsiotrace/design/) 로 분담.
 
 ## 1. eBPF 란?
 
@@ -29,7 +28,7 @@ fsiotrace 는 이걸로 Android device 의 IO 경로(VFS→FS→Block→UFS)를 
 | 요소 | 설명 | fsiotrace 에서 |
 |---|---|---|
 | **BPF program** | hook 에 붙어 실행되는 코드 (C → BPF 바이트코드) | `fsiotrace.bpf.c` 의 각 `SEC(...)` 함수 (VFS/FS/BLK/UFS hook) |
-| **hook (attach point)** | 프로그램이 붙는 커널 지점 | kprobe(`vfs_read`), tracepoint(`f2fs_*`), tp_btf(`block_rq_issue`) |
+| **hook (attach point)** | 프로그램이 붙는 커널 지점 | kprobe(`vfs_read`), tp_btf(`f2fs_*`, `block_rq_issue`) |
 | **maps** | 커널↔유저 / 호출 간 데이터를 공유하는 key-value 저장소 | task_ctx, rq_ctx, ringbuf 등 9개 |
 | **verifier** | 로드 시 안전성 정적 검증 (루프/메모리/종료) | 통과 못 하면 `-EACCES`/`-EINVAL` (→ [DESIGN §5](/fsiotrace/design/)) |
 | **JIT** | 검증된 바이트코드를 native 명령으로 변환 | 커널이 자동 처리 |
@@ -161,12 +160,29 @@ BPF 프로그램은 stack 이 512B 로 작고 호출 간 상태가 없다. **map
 | 타입 | 붙는 곳 | 특징 | fsiotrace 예 |
 |---|---|---|---|
 | **kprobe / kretprobe** | 임의 커널 함수 진입/리턴 | 유연하나 함수 시그니처 의존 | `vfs_read`, `vfs_write`, `vfs_fsync_range` |
-| **tracepoint** | 커널이 정의한 안정적 trace 지점 | 안정적, 낮은 오버헤드 | `f2fs_*`, `ext4_*`, `jbd2_*`, `ufs:*` |
-| **tp_btf** | tracepoint + BTF 타입으로 인자 자동 파싱 | 인자 접근 편리 | `block_rq_issue`, `scsi_dispatch_cmd_start` |
+| **tracepoint** (`SEC("tracepoint/…")`) | 커널이 정의한 안정적 trace 지점 | 인자를 raw 레코드 offset 으로 읽어야 함. **재진입 가드가 전역** ↓ | **fsiotrace 는 쓰지 않는다** |
+| **tp_btf** (raw tracepoint) | 같은 지점 + BTF 타입으로 인자 자동 파싱 | 인자 접근 편리, 가드가 **프로그램별** | `f2fs_*`, `ext4_*`, `jbd2_*`, `block_rq_issue`, `ufshcd_command` |
+
+### ⚠ `tracepoint` 와 `tp_btf` 의 결정적 차이 — `bpf_prog_active`
+
+둘은 "같은 지점에 붙는 두 표기" 정도로 보이지만, **재진입 방지 가드의 범위가 다르다.**
+
+- `SEC("tracepoint/…")` 는 `trace_call_bpf()` 를 거치며 실행 동안 **전역**
+  per-cpu 카운터 `bpf_prog_active` 를 점유한다. 그래서 그 프로그램에 자기 손실이
+  없어도 **같은 CPU 의 다른 훅을 통째로 스킵시킨다.**
+- `tp_btf` 는 프로그램별 가드라 이런 상호 간섭이 없다.
+
+이게 실제로 물렸다. UFS complete 이벤트가 계속 누락됐는데, 원인은 우리 핸들러가
+아니라 **같은 CPU 의 다른 tracepoint 훅**이었다. 전 훅을 `tp_btf` 로 옮기고,
+send 와 complete 를 **별도 프로그램으로 분리**하자(가드가 프로그램 단위라 한 프로그램이
+둘 다 처리하면 send 처리 중 들어온 complete 가 스킵된다) 손실 377 → 0 이 됐다.
+
+> **규칙**: BTF 에 `btf_trace_<name>` 이 있으면 `tp_btf` 로 쓴다(대부분 있다).
+> 자세한 경위는 [DESIGN §5.2](/fsiotrace/design/).
 
 이 Android GKI 6.6 device 에서는 **fentry/fexit/lsm 같은 trampoline 기반 attach 가
-전부 막혀**(-EACCES) kprobe/tracepoint 만 쓴다. 그 외 verifier 제약과 우회는
-→ [DESIGN §5·§15](/fsiotrace/design/).
+전부 막혀**(`CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS` 부재 → -EACCES) kprobe/tp_btf 만
+쓴다. 그 외 verifier 제약과 우회는 → [DESIGN §5·§15](/fsiotrace/design/).
 
 ## 8. 더 보기
 
@@ -174,4 +190,4 @@ BPF 프로그램은 stack 이 512B 로 작고 호출 간 상태가 없다. **map
 - [kernel.org BPF 문서](https://docs.kernel.org/bpf/) — verifier, maps, helpers 레퍼런스
 - [libbpf-bootstrap](https://github.com/libbpf/libbpf-bootstrap) — skeleton/CO-RE 예제 (우리가 vendoring)
 - [BPF CO-RE 가이드 (Andrii Nakryiko)](https://nakryiko.com/posts/bpf-portability-and-co-re/)
-- 우리 구현: [설계](/fsiotrace/design/) · [사용법](/fsiotrace/usage/) · [TSV 출력 형식](/fsiotrace/output-format/) · [빌드](/fsiotrace/build/)
+- 우리 구현: [설계(DESIGN)](/fsiotrace/design/) · [사용법(USAGE)](/fsiotrace/usage/) · [TSV 출력 형식](/fsiotrace/output-format/) · [빌드](/fsiotrace/build/)

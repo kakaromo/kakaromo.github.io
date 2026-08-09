@@ -2,9 +2,8 @@
 title: fsiotrace TSV 출력 형식
 description: 17컬럼 TSV 명세 — BLK/UFS row 파싱, UPIU extra, io_flags 비트, Rust 분석기 연동
 ---
-
-Rust 분석기([Trace Analysis](/guide/trace-analysis/))가 fsiotrace 로그에서 **BLK row** 와
-**UFS Cmd row** 두 종류만 파싱하는 경우의 형식 명세.
+`trace/` (Rust) 분석기가 fsiotrace 로그에서 **BLK row** 와 **UFS Cmd row**
+두 종류만 파싱하는 경우의 형식 명세.
 
 ## 1. 공통 사항
 
@@ -33,9 +32,9 @@ Rust 분석기([Trace Analysis](/guide/trace-analysis/))가 fsiotrace 로그에�
 | 12 | `ino` | u64 | `983241` | 없으면 `0` |
 | 13 | `size` | u64 | `16384` | bytes |
 | 14 | `sec` | u64 | `8192000` | BLK 는 sector(512B), UFS 는 LBA |
-| 15 | `name` | string | `ibdata1` 또는 `ino:42` 또는 빈 | filename. TAB 은 `_` 로 sanitize |
+| 15 | `name` | string | `/data/app/ibdata1` 또는 `ino:42` 또는 빈 | **풀패스** filename. TAB 은 `_` 로 sanitize |
 | 16 | `io_flags` | hex u64 | `0x0000010040002102` | 항상 `0x` + 16자리 hex |
-| 17 | `extra` | string | `lun=0 tag=7 ...` (UFS) / `""` (BLK 은 현재 빈 값) | row 종류별 추가 key=value packed |
+| 17 | `extra` | string | `lun=0 tag=7 ...` (UFS) / `rwbs=WS` (BLK) | row 종류별 추가 key=value packed |
 
 ### 컬럼 split 예 (awk)
 
@@ -63,13 +62,24 @@ $8 == "block_rq_issue" || $8 == "block_rq_complete"
 
 | action | 의미 | extra 패턴 |
 |---|---|---|
-| `block_rq_issue` | request 디스크 발급 | `""` (빈 값) |
-| `block_rq_complete` | request 완료 | `""` (빈 값) |
+| `block_rq_issue` | request 디스크 발급 | `rwbs=<문자열>` |
+| `block_rq_complete` | request 완료 | `rwbs=<문자열>` (자기 `cmd_flags` 로 독립 합성) |
 
-> **BLK row 의 `extra`(col 17)는 현재 비어 있다.** block layer 의 rwbs 문자열
-> 구성을 시도했으나 이 device verifier 가 거부(`R3 bitwise |= on pointer`)해
-> revert 됐다 (DESIGN.md §5). READ/WRITE/DISCARD/FLUSH 구분은 `io_flags` 비트로
-> 한다 (§5). request command flag(rwbs)가 필요하면 향후 별도 경로로 재시도해야 함.
+> **BLK row 의 `extra`(col 17)는 `rwbs=<문자열>`.**
+> **합성은 전적으로 userspace 에서 한다.** BPF 는 `rq->cmd_flags` **raw u32** 를
+> 이벤트에 실을 뿐이고(`fsio_event.cmd_flags`), userspace 가 비트를 풀어
+> `rwbs=WS` 를 만든다. BPF 안에서 문자열을 조립하려던 과거 시도(`fill_rwbs()`,
+> 고정 슬롯 + `-` 패딩)는 verifier 에 거부돼 제거됐다 — 그 함수는 더 이상 없다.
+>
+> 디코드 규칙 (커널 6.6 표준 `REQ_*`):
+> - op = `cmd_flags & 0xff` → `1`=W, `3`/`9`=D, `2`=F, 그 외=R
+>   (READ 는 op 값이 0 이라 `cmd_flags` 가 통째로 0 일 수 있다. 그래서 가드는
+>   `cmd_flags` 가 아니라 `layer==BLK` 로 건다 — plain READ 도 `rwbs=R` 로 나온다.)
+> - flag 글자: FUA `1<<14`=F, SYNC `1<<11`=S, META `1<<13`=M, RAHEAD `1<<17`=A
+>
+> `block_rq_issue` 와 `block_rq_complete` **둘 다 자기 `cmd_flags` 를 싣는다**
+> (complete 가 issue 의 stash 를 재사용하지 않는다 → rq_ctx miss 여도 rwbs 는 나온다).
+> READ/WRITE/DISCARD/FLUSH 의 큰 분류는 `io_flags` 비트로도 가능 (§5).
 
 ### 핵심 컬럼
 
@@ -81,18 +91,16 @@ $8 == "block_rq_issue" || $8 == "block_rq_complete"
 - `ino` — VFS 흡수된 inode. writeback 시 fs hook 이 채울 수도
 - `size` — request bytes (`rq->__data_len`)
 - `sec` — 512B sector. flush 등 sector 무의미한 경우 `0` 으로 정규화 (BPF 측은 `u64=-1`)
-- `name` — VFS 흡수된 filename (마지막 component) 또는 `ino:N`
+- `name` — VFS 흡수된 filename (**풀패스**) 또는 `ino:N`
 - `io_flags` — 비트마스크 (§5)
-- `extra` — **빈 값** (위 참조)
+- `extra` — `rwbs=<문자열>` (위 참조)
 
 ### 예시
 
 ```
-12345.678920	BLK	4521	4521	3	mysqld	vfs_write	block_rq_issue	ext4	8	32	983241	16384	8192000	ibdata1	0x0000010000000102	
-12345.679230	BLK	4521	4521	1	mysqld	vfs_write	block_rq_complete	ext4	8	32	983241	16384	8192000	ibdata1	0x0000010000000102	
+12345.678920	BLK	4521	4521	3	mysqld	vfs_write	block_rq_issue	ext4	8	32	983241	16384	8192000	/data/ibdata1	0x0000010000000102	rwbs=WS
+12345.679230	BLK	4521	4521	1	mysqld	vfs_write	block_rq_complete	ext4	8	32	983241	16384	8192000	/data/ibdata1	0x0000010000000102	rwbs=WS
 ```
-
-(마지막 컬럼 `extra` 는 빈 문자열 — 줄은 여전히 17컬럼, col17 뒤에 값 없음.)
 
 같은 IO 의 Q/C 매칭: `(dev_major, dev_minor, sec, size)` + 시간 인접도. 또는
 `io_flags` 의 SAW_BLK 비트와 `pid`.
@@ -137,12 +145,12 @@ lun=<u8>  tag=<u8>  hwq=<i32>  ufs_op=0x<u8>  grp=0x<u8>  txn=0x<u8>  flags=0x<u
 
 | key | 출처 | 의미 |
 |---|---|---|
-| `lun` | tracepoint `lun` | UFS logical unit (0-7) |
+| `lun` | UPIU hdr[2] (없으면 tag→lun 복원) | UFS logical unit. ⚠ **미상이면 `lun=?`** — UPIU 도 없고 tag→lun 복원도 실패한 경우. 예전엔 이걸 `0` 으로 찍어 실제 LU0 과 구분이 안 됐다(내부적으론 `UFS_LUN_UNKNOWN`=0xff). 파서는 `?` 를 숫자로 파싱하지 말 것 |
 | `tag` | tracepoint `tag` | UPIU task tag (0-31 보통) |
 | `hwq` | tracepoint `hwq_id` | hardware queue id. -1 가능 (signed) |
 | `ufs_op` | tracepoint `opcode` | SCSI opcode. **이게 핵심**: `0x28`=READ_10, `0x2A`=WRITE_10, `0x42`=UNMAP(discard), `0x35`=SYNC_CACHE_10, `0x88`=READ_16, `0x8A`=WRITE_16 |
 | `grp` | tracepoint `group_id` | UFS group ID (WriteBooster / multi-stream) |
-| `txn` | UPIU hdr[0] | Transaction code. send 시 `0x01` (Cmd), complete 시 `0x21` (Data-In) 또는 `0x26` (Response) |
+| `txn` | UPIU hdr[0] | Transaction code. 요청 Cmd UPIU `0x01`. **send_req row 에만** 붙는다 (주의 2) |
 | `flags` | UPIU hdr[1] | UPIU flags. bit 5=R, bit 6=W, bit 2=CP (spec base) |
 | `func` | UPIU hdr[5] | tm_function 또는 query_function (Cmd UPIU 에선 보통 0) |
 | `attr` | flags bit 0-1 | `Simple` / `Ordered` / `HoQ` / `ACA` |
@@ -151,17 +159,20 @@ lun=<u8>  tag=<u8>  hwq=<i32>  ufs_op=0x<u8>  grp=0x<u8>  txn=0x<u8>  flags=0x<u
 > **주의 1**: UPIU header 흡수 못 한 경우 (드물게) `txn/flags/func/attr/cp`
 > 키가 빠집니다. 그럼 extra 는 `lun=... grp=0x...` 까지만.
 >
-> **주의 2**: complete 시점의 `txn` 은 `0x01` 이 아니라 `0x21` (Data-In) 또는
-> `0x26` (Response UPIU). 이건 응답 UPIU 의 transaction code.
+> **주의 2**: BPF 가 stash 하는 UPIU 는 **요청 Cmd UPIU(`txn=0x01`)뿐**이라
+> (`ufshcd_upiu` hook 의 `txn==0x01` 분기), `txn/flags/func/attr/cp` 는
+> **send_req row 에만** 붙고 complete_rsp row 엔 빠진다. 응답 UPIU(`0x21`/`0x26`)는
+> 잡지 않는다. send 와 complete 를 짝지어 요청 UPIU 메타를 complete 에도 보고
+> 싶으면 같은 `tag` 로 pairing 한다 (trace 의 fsio_ufs processor 가 이렇게 채운다).
 
 ### 예시
 
 ```
 # send_req (Cmd UPIU 흡수됨)
-12345.678935	UFS	4521	4521	3	mysqld	vfs_write	ufshcd_command:send_req	ext4	8	32	983241	16384	1024000	ibdata1	0x0000080040002102	lun=0 tag=7 hwq=0 ufs_op=0x2a grp=0x0 txn=0x01 flags=0x42 func=0x00 attr=Simple cp=0
+12345.678935	UFS	4521	4521	3	mysqld	vfs_write	ufshcd_command:send_req	ext4	8	32	983241	16384	1024000	/data/ibdata1	0x0000080040002102	lun=0 tag=7 hwq=0 ufs_op=0x2a grp=0x0 txn=0x01 flags=0x42 func=0x00 attr=Simple cp=0
 
-# complete_rsp
-12345.679210	UFS	4521	4521	1	mysqld	vfs_write	ufshcd_command:complete_rsp	ext4	8	32	983241	16384	1024000	ibdata1	0x0000080040002102	lun=0 tag=7 hwq=0 ufs_op=0x2a grp=0x0 txn=0x26 flags=0x00 func=0x00 attr=Simple cp=0
+# complete_rsp (응답 UPIU 는 stash 안 함 → txn/flags/func/attr/cp 빠짐)
+12345.679210	UFS	4521	4521	1	mysqld	vfs_write	ufshcd_command:complete_rsp	ext4	8	32	983241	16384	1024000	/data/ibdata1	0x0000080040002102	lun=0 tag=7 hwq=0 ufs_op=0x2a grp=0x0
 
 # UFS_TAG_CTX miss (cross-layer 정보 없음) — comm/ino/name 비어있음
 12399.123456	UFS	0	0	0	swapper/0	-	ufshcd_command:send_req		8	0	0	4096	2048000		0x0000080000000001	lun=0 tag=12 hwq=0 ufs_op=0x28 grp=0x0
@@ -231,7 +242,7 @@ pub struct FsioBlock {
     pub sector: u64,
     pub name: String,
     pub io_flags: u64,
-    // 현재 BLK extra 는 빈 값이라 항상 "" (DESIGN §5 rwbs revert). io 종류는 io_flags 로.
+    // BLK extra 의 "rwbs=" 값. issue/complete 모두 채워진다.
     pub rwbs: String,
 }
 
@@ -312,7 +323,9 @@ if layer != "BLK" && layer != "UFS" { return None; }
   `[WRITE|O_SYNC|DATA|...]` 로 푼 컬럼이 17컬럼 **뒤에** 붙는다. 분석기는 `cols.len() >= 17`
   로 검사하고 17번째까지만 읽으면 영향 없다(18번째는 무시). 기본(`-x` 없음)은 17컬럼.
 - `comm` 길이 ≤ 16, TAB 없음 (sanitize 보장)
-- `name` 길이 ≤ 64 (FNAME_LEN). TAB 없음
+- `name` 은 **풀패스**(`/data/user/0/pkg/files/x.db`). 길이 ≤ 192 (FPATH_LEN) +
+  userspace 가 앞에 붙이는 마운트포인트. TAB 없음.
+  ⚠ **예전 명세는 ≤64(마지막 컴포넌트만)였다** — 고정폭 버퍼로 파싱하던 분석기는 확인 필요.
 - `extra` 길이 ≤ 256
 - `dev_major` `dev_minor` 가 모두 0 인 row 가 BLK 에 있다면 BPF 가 dev 못 읽은 것 (드뭄)
 - `sec` = 0 이면 flush/discard 또는 BLK 가 sector 의미 없는 경우 (BPF 가

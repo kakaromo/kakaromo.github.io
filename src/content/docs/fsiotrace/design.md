@@ -2,24 +2,24 @@
 title: fsiotrace 설계
 description: VFS→FS→Block→UFS cross-layer 전파, io_flags 비트, hook 목록, verifier 제약, task_ctx 라이프사이클
 ---
-
-> **최종 수정**: 2026-05-27 · **대상 커널**: Android 15 GKI 6.6 (userdebug+root+Permissive)
-> · **정본**: 이 문서의 source of truth 는 bpftrace repo 의 `docs/`. 이 사이트는 렌더 사본이며
+> **최종 수정**: 2026-08-10 · **대상 커널**: Android 15 GKI 6.6 (userdebug+root+Permissive)
+> · **정본**: 이 문서는 repo `docs/` 가 source of truth. Confluence 사본은 렌더용이며
 > 변경은 항상 repo 먼저. 동작 서술은 `src/fsiotrace.bpf.c` / `.h` / `.c` 기준.
-> · 최근 갱신 반영: task_ctx pid_tgid key, dev=rq->part->bd_dev, UFS lun=UPIU hdr[2],
-> rwbs revert, f2fs_dataread_start offset 교정 (commit 2185f1b‥1e12563).
+> · 최근 갱신 반영: **전 훅 `tp_btf` 전환 + UFS send/complete 프로그램 분리**(complete 손실
+> 377→0), **filename 풀패스**(dentry walk + 마운트포인트 결합), **rwbs 재도입**(cmd_flags raw
+> → userspace 합성), ringbuf 기본 256MB, `--wb-inode` 제거(항상 ON), QEMU 테스트베드 편입.
 
 ## 0. 한눈에 (먼저 읽기)
 
 fsiotrace 는 **하나의 IO 가 앱(syscall)에서 디스크(UFS)까지 내려가는 길을 층(layer)마다
-한 줄씩 찍는** 도구다. eBPF 가 처음이라면 먼저 [eBPF 동작 원리](/fsiotrace/bpf/) 를 보면 이 문서가 훨씬 쉽다.
+한 줄씩 찍는** 도구다. eBPF 가 처음이라면 먼저 [BPF.md](/fsiotrace/bpf/) 를 보면 이 문서가 훨씬 쉽다.
 
 - **무엇을**: VFS(syscall) → FS(ext4/f2fs) → Block → UFS(저장장치) 4개 층의 IO 이벤트.
 - **어떻게 한 줄에 다 보이나**: 위층에서 알아낸 정보(파일명·PID·sync 여부)를 아래층 row 가
   **이어받는다**(cross-layer 전파, §4). 그래서 맨 아래 UFS row 만 봐도 "어느 파일의,
   누가 낸, 어떤 IO 인가"를 알 수 있다.
 - **출력 한 줄**: `층 | 누가(pid/comm) | 무슨 syscall | 어떤 파일 | 얼마나(size) | 어디(sector)
-  | IO 성격(io_flags 비트)`. 자세한 컬럼은 §3, 전체 형식은 [TSV 출력 형식](/fsiotrace/output-format/).
+  | IO 성격(io_flags 비트)`. 자세한 컬럼은 §3, 전체 형식은 [OUTPUT_FORMAT.md](/fsiotrace/output-format/).
 - **원칙**: 커널은 안 건드린다(eBPF). 짝짓기(요청↔완료) 같은 후처리는 tracer 가 아니라
   바깥 도구가 한다.
 
@@ -37,7 +37,7 @@ Android device 에서 IO 하나가 **VFS → FS(f2fs/ext4) → block → UFS(SCS
 - **어떤 성격의 IO 인가** — read/write, sync, direct, metadata, GC, discard, ...
 - **어디까지 내려갔나** — VFS 에서 멈췄나, block 까지 갔나, UFS 까지 갔나
 
-이를 **커널 수정 없이** libbpf + CO-RE eBPF 로 한다 (왜 eBPF 로 가능한지는 [eBPF 동작 원리](/fsiotrace/bpf/)).
+이를 **커널 수정 없이** libbpf + CO-RE eBPF 로 한다 (왜 eBPF 로 가능한지는 [BPF.md](/fsiotrace/bpf/)).
 
 타겟: **Android 15 GKI kernel 6.6** (userdebug + root + Permissive 가정).
 
@@ -87,13 +87,15 @@ io_flags  [decoded bits]  ufs={...}  req=0x...
 | `ino` | inode 번호 | writeback FS-only 도 채워짐 |
 | `size` | bytes — VFS=count/retval, BLK=`__data_len`, UFS=`transfer_len` | flush/discard 는 0 |
 | `sec` | BLK=sector(512B), UFS=LBA | flush 의 `u64=-1` 은 0 으로 정규화 |
-| `name` | dentry 마지막 component | 풀패스는 verifier 가 거부 (§5) |
+| `name` | **풀패스** — BPF dentry walk + userspace 마운트포인트 결합 | 예: `/data/user/0/pkg/files/x.db`. 자세한 건 §5.1 |
 | `io_flags` | u64 bitmask | hex 출력. `-x` 로 비트 이름 풀이 |
 | `ufs={...}` | UFS row only | lun/tag/hwq/opcode/grp |
 | `req=` | BLK + UFS row | request 포인터, BLK↔UFS pairing key |
 
-> `rwbs=` 는 현재 **미emit**. block layer 의 rwbs 문자열 구성을 시도했으나 이 device
-> verifier 가 거부해 revert 됨 (§5 참조). BLK row 의 `extra` 는 현재 비어 있다.
+> `rwbs=` 는 BLK row 의 `extra` 에 **emit 된다**. 단 BPF 안에서 문자열을 합성하지 않는다 —
+> 과거 그 시도가 verifier 에 거부됐다(§5). 지금은 BPF 가 `rq->cmd_flags` **raw 를 그대로**
+> 싣고, userspace 가 비트를 풀어 `rwbs=WS` 를 만든다. `cmd_flags` 는 기존 `_pad0` 자리를
+> 써서 `fsio_event` 크기가 변하지 않았다(ABI 호환).
 
 ### io_flags u64 비트
 
@@ -181,7 +183,7 @@ UFS 태그(lun+tag). 아래 흐름도가 그 연결이다. (그림으로 먼저 
    ↓ Cmd UPIU(txn=0x01) 면 upiu_hdr_ctx[(str_t<<8)|tag] = UPIU hdr 12B 로 stash
    ↓ 그 외(Query/TM/NOP 등)는 자체 row emit
 
-[UFS hook: ufshcd_command (legacy tracepoint)]
+[UFS hook: ufshcd_command (tp_btf, send/complete 별도 프로그램)]
    ↓ upiu_hdr_ctx 에서 UPIU hdr 꺼내 lun = hdr[2] 로 확정 (lun 순회 추측 없음)
    ↓ lookup ufs_tag_ctx[lun<<16|tag]
    ↓ hit 시 io_ctx 흡수 → comm/filename/inode/syscall/io_flags 모두 보존
@@ -200,7 +202,7 @@ UFS 태그(lun+tag). 아래 흐름도가 그 연결이다. (그림으로 먼저 
 ```mermaid
 flowchart TD
     VFS["VFS hook<br/>vfs_read/write/fsync"]
-    FS["FS hook<br/>f2fs/ext4/jbd2 tracepoint"]
+    FS["FS hook<br/>f2fs/ext4/jbd2 tp_btf"]
     BLK["block_rq_issue"]
     SCSI["scsi_dispatch_cmd_start"]
     UPIU["ufshcd_upiu"]
@@ -213,7 +215,7 @@ flowchart TD
     INC[("inode_ctx<br/>key=i_ino (LRU)")]
 
     VFS -->|reset+fill| TC
-    VFS -.->|--wb-inode mirror| INC
+    VFS -.->|inode_ctx mirror| INC
     TC -->|lookup, io_flags OR| FS
     INC -.->|writeback 보강| FS
     TC -->|lookup → copy| BLK
@@ -267,11 +269,11 @@ sequenceDiagram
 | `rq_ctx` | HASH (8K) | `request *` (u64) | `io_ctx` | BLK → SCSI dispatch |
 | `ufs_tag_ctx` | HASH (256) | `(lun<<16)\|tag` (u32) | `io_ctx` | SCSI → UFS |
 | `upiu_hdr_ctx` | HASH (256) | `(str_t<<8)\|tag` (u32) | UPIU hdr 12B | ufshcd_upiu → ufshcd_command (lun·UPIU 전달) |
-| `inode_ctx` | LRU_HASH (4K) | `i_ino` (u64) | `io_ctx` | writeback fallback. `--wb-inode` 시 vfs_write 가 mirror → f2fs_submit_write 가 lookup |
+| `inode_ctx` | LRU_HASH (4K) | `i_ino` (u64) | `io_ctx` | writeback fallback. vfs_write 가 **항상** mirror → f2fs_submit_write 가 lookup (`--wb-inode` 토글은 제거됨) |
 | `ufs_hba_slot` | ARRAY[1] | 0 | `(u64)hba` | ufshcd_send_command 가 stash. 현재 hba→lrb fallback 비활성 |
 | `io_ctx_zero` | PERCPU_ARRAY[1] | 0 | `io_ctx` | task_ctx 초기 zero buffer (stack 512B 회피) |
-| `events` | RINGBUF (1MB) | — | `fsio_event` | userspace 로 전달 |
-| `diag_count` | PERCPU_ARRAY[16] | idx | counter | hook 호출/hit 진단 |
+| `events` | RINGBUF (기본 256MB) | — | `fsio_event` | userspace 로 전달. bpf.c 선언은 1MiB 지만 load 전에 `--rb-size` 값으로 덮어씀 |
+| `diag_count` | PERCPU_ARRAY[DIAG__MAX] | `enum fsio_diag` | counter | hook 호출/hit 진단. 슬롯은 `fsiotrace.h` 의 enum 이 정본 — BPF/userspace 가 같이 쓴다 |
 
 **TASK_STORAGE 안 씀**: kprobe context 에서 verifier reject 흔함. 일반 HASH 가 호환성 좋음.
 
@@ -286,26 +288,79 @@ Android 15 GKI 6.6 device 의 BPF verifier 가 거부한 것들. 다른 device �
 
 | 거부된 것 | 원인 | 우회 |
 |---|---|---|
-| `bpf_d_path()` | kprobe context cannot use helper | 코드에서 제거. `d_name.name` 만 |
+| `bpf_d_path()` | kprobe context cannot use helper. allowlist 에 vfs_read/write 없음 + trampoline 부재로 attach_btf_id 검사 통과 불가 | dentry 직접 walk (§5.1) |
 | `BPF_MAP_TYPE_TASK_STORAGE` + `bpf_task_storage_get(F_CREATE)` | kprobe 일부에서 reject | HASH(pid) 로 교체 |
-| fentry/vfs_read 등 | -ENOTSUPP (trampoline 미지원) | kprobe 유지 |
-| manual `d_parent` walk (depth 4~8) | -EACCES (instruction/loop 제한) | 마지막 컴포넌트만 |
+| fentry/fexit/lsm | -EACCES / -ENOTSUPP (`CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS` 부재) | kprobe / tp_btf 만 사용 |
 | `__builtin_memset(io_ctx, 0, 332)` | stack-size warning | 필드별 zero |
-| `tp_btf/ufshcd_command` | enum/int BTF type mismatch | legacy tracepoint + struct |
 | ufshcd_command 안의 hba→lrb 깊은 chain | instruction limit | fallback 제거 |
-| FNAME_LEN 256 + io_ctx + fname[256] | stack 512B 초과 | FNAME_LEN = 64 |
-| `block_rq_issue` 에 inline helper(`fill_rwbs`) 추가 | `R3 bitwise operator \|= on pointer prohibited` (-EACCES). 함수 인라인이 레지스터/명령어 배치를 바꿔 verifier 가 `tmp.io_flags \|= ...` 스칼라 OR 을 포인터 연산으로 오인. 호출 주석 처리해도 동일 | rwbs 수집 revert (block extra 빈 값). **block tp_btf hook 에는 inline helper·복잡 분기 추가 금지** |
+| io_ctx 안의 FNAME_LEN 256 + fname[256] | stack 512B 초과 | io_ctx 는 FNAME_LEN=64 유지. 풀패스는 별도 per-cpu scratch (§5.1) |
+| 가변 offset + 고정 길이 복사 (dentry walk) | 가변 스택 write 거부 | 2의 거듭제곱 마스크로 상한 못박기. ⚠ 조건 분기 `break` 로 막으면 루프가 1회도 안 돌 수 있다 |
+| `block_rq_issue` 에 inline helper(`fill_rwbs`) 추가 | `R3 bitwise operator \|= on pointer prohibited` (-EACCES). 함수 인라인이 레지스터/명령어 배치를 바꿔 verifier 가 `tmp.io_flags \|= ...` 스칼라 OR 을 포인터 연산으로 오인 | **BPF 안에서 rwbs 문자열을 만들지 않는다.** `cmd_flags` raw 만 싣고 userspace 가 합성 — 이 형태로 rwbs 는 다시 동작한다 |
 
 배운 점:
-- **stack 512B 한계**가 가장 자주 걸린다. struct io_ctx 자체 크기 조심.
-- **`tp_btf` 는 vendor BTF 매칭에 까다롭다**. legacy `tracepoint/` + 자체 struct
-  CO-RE 가 더 호환성 좋다.
+- **stack 512B 한계**가 가장 자주 걸린다. struct io_ctx 자체 크기 조심 —
+  키우면 VFS 훅이 *조용히* attach 실패한다(증상: syscall 컬럼이 전부 `-`).
+- **문자열·비트 조립은 userspace 로 미룬다.** BPF 는 raw 값만 싣는 게 verifier 마찰이 적다.
 - **`bpf_d_path` 같이 "helper context 제약" 있는 헬퍼는 kprobe 에서 거의 안 받음.**
   fentry 가 받지만 trampoline 없으면 ENOTSUPP.
 
+> ⚠ **폐기된 서술**: 예전 이 문서는 "`tp_btf` 는 vendor BTF 매칭에 까다로우니 legacy
+> `tracepoint/` + `___local` struct 가 호환성이 낫다"고 적었다. **지금은 반대다.**
+> `SEC("tracepoint/…")` 는 실행 동안 *전역* `bpf_prog_active` 를 점유해 같은 CPU 의
+> 다른 훅을 통째로 스킵시킨다. 전 훅을 `tp_btf` 로 전환한 뒤 UFS complete 손실이
+> 377 → 178 로 줄었고, send/complete 프로그램 분리까지 더해 **0** 이 됐다(§5.2).
+> `___local` struct 6개는 그 과정에서 죽은 코드가 되어 제거됐다.
+
+### 5.1 filename 풀패스 (verifier 를 통과시킨 방법)
+
+`bpf_d_path()` 가 막혀 있어 **dentry 를 직접 walk** 한다. 통과 조건은 두 가지였다:
+
+1. **범위를 마스크로 증명** — `pos`/`len` 을 2의 거듭제곱 마스크로 상한을 못박아야
+   가변 offset write 가 통과한다. 단 조건 분기 `break` 로 막으면 루프가 1회도 안 돌 수 있다
+   (실제로 "풀패스가 안 나오던" 원인이 이거였다).
+2. **stack 회피** — 조립은 `io_ctx` 가 아니라 **per-cpu scratch map** 에서 하고,
+   emit 시점에 `fsio_event.filename`(FPATH_LEN=192)으로 직접 넣는다.
+   `io_ctx.filename`(FNAME_LEN=64)은 그대로 둔다 — 512B 한계 때문.
+
+**마운트포인트는 userspace 가 붙인다.** dentry walk 는 파일시스템 경계에서 멈춘다
+(마운트된 fs 의 루트 dentry 는 `d_parent` 가 자기 자신). 경계를 넘으려면 `struct mount`
+를 타야 하는데 이중 루프 + `container_of` 라 verifier 부담이 크다. `fsio_event` 에 이미
+`dev` 가 실려 있으므로 userspace 가 `/proc/self/mountinfo` 를 한 번 읽어
+`dev → mountpoint` 를 붙인다:
+
+```
+BPF:  /sub/dir/x.bin   +   dev→/data   =   /data/sub/dir/x.bin
+```
+
+`dev` 가 0 인 FS row(`ext4_writepages` 등 tracepoint 인자에 `s_dev` 가 없는 경우)는
+같은 fs 이름의 마운트로 fallback 한다. 못 찾으면 접두어 없이 그대로 둔다 —
+틀린 경로를 만드느니 짧은 게 낫다.
+
+한계: 트레이싱 중 마운트가 바뀌면 어긋난다. 같은 dev 에 bind mount 가 여러 개면 첫 번째를 쓴다.
+
+### 5.2 UFS complete 손실 — `bpf_prog_active` 재진입 차단
+
+**증상**: send 는 다 잡히는데 complete 가 적게 잡혔다. ftrace 로 같은 tracepoint 를
+동시에 받아 대조해 "커널이 안 찍음" 이 아니라 "우리가 못 받음" 임을 먼저 확정했다.
+
+원인은 두 겹이었고, 진입 카운터(`diag_inc`)를 훅 첫 줄에 두어 갈랐다 —
+"호출조차 안 됨"(A) 과 "호출은 됐는데 중간 return"(B) 의 구분이 결정적이었다.
+
+| 조치 | complete 손실 |
+|---|---|
+| (기준) legacy `tracepoint/`, send·complete 한 프로그램 | 377 |
+| `ufshcd_command`/`upiu` 를 `tp_btf` 로 전환 | 178 |
+| **send 와 complete 를 별도 프로그램으로 분리** | **0** |
+| IRQ 핸들러 경량화 | 0 (유지) |
+
+가드가 **프로그램 단위**라, 하나가 둘 다 처리하면 send 처리 중 들어온 complete 가
+스킵된다. 그래서 분리가 결정타였다. IRQ 문맥인 complete 핸들러는 짧게 유지한다:
+`struct X tmp = {}` 로 0 을 밀고 곧바로 memcpy 로 덮는 패턴 금지, 무거운 stash 금지.
+⚠ ringbuf 는 재사용되므로 대입 안 하는 필드는 반드시 0 을 넣어야 이전 레코드 값이 안 샌다.
+
 ## 6. Android GKI 제약 vs eBPF
 
-> eBPF 자체(verifier/CO-RE/maps/ringbuf/attach)의 기초는 [eBPF 동작 원리](/fsiotrace/bpf/) 참조.
+> eBPF 자체(verifier/CO-RE/maps/ringbuf/attach)의 기초는 [BPF.md](/fsiotrace/bpf/) 참조.
 
 GKI vendor module 은 `page→mapping->host` 같은 mm/fs 내부 struct 접근이 KMI
 위반. 우리 eBPF 는 vendor module 이 아니라 verifier 런타임 검사. BTF 에 해당
@@ -326,37 +381,44 @@ writeback path 는 task_ctx 가 비어 있을 가능성 큼 → BLK row 의 comm
 
 ## 7. 적용된 hook (실측)
 
-기본 ON, device 의 tracepoint 가용성에 따라 userspace 가 autoload 자동 ON/OFF:
+기본 ON, device 의 tracepoint 가용성에 따라 userspace 가 autoload 자동 ON/OFF.
+
+> **Type 규칙**: tracepoint 계열은 **전부 `tp_btf`** 다. `SEC("tracepoint/…")` 는 쓰지 않는다
+> (전역 `bpf_prog_active` 점유 — §5 폐기된 서술 참조). VFS 는 trampoline 부재로 kprobe 유지.
 
 | Hook | Type | 채우는 io_flags | 비고 |
 |---|---|---|---|
 | `vfs_read` (k/kret) | kprobe | READ, BUFFERED/DIRECT_IO, O_* | entry_op = OP_VFS_READ. kret 에서 size 보정 후 task_ctx drop |
-| `vfs_write` (k/kret) | kprobe | WRITE, BUFFERED/DIRECT_IO, O_* | entry_op = OP_VFS_WRITE. `--wb-inode` 시 inode_ctx mirror. kret 에서 drop |
+| `vfs_write` (k/kret) | kprobe | WRITE, BUFFERED/DIRECT_IO, O_* | entry_op = OP_VFS_WRITE. inode_ctx mirror(항상 ON). kret 에서 drop |
 | `vfs_fsync_range` | kprobe | FLUSH, FSYNC_TRIGGERED, SYNC_PATH | entry_op = OP_VFS_FSYNC. kret 없어 emit 직후 drop |
-| `f2fs_gc_begin/end` | tracepoint | GC (begin set / end clear) | fs="f2fs" 강제 |
-| `f2fs_issue_discard` | tracepoint | DISCARD | fs="f2fs" 강제 |
-| `f2fs_write_checkpoint` | tracepoint | CHECKPOINT, METADATA | fs="f2fs" 강제 |
+| `f2fs_gc_begin/end` | tp_btf | GC (begin set / end clear) | fs="f2fs" 강제 |
+| `f2fs_issue_discard` | tp_btf | DISCARD | fs="f2fs" 강제 |
+| `f2fs_write_checkpoint` | tp_btf | CHECKPOINT, METADATA | fs="f2fs" 강제 |
 | `f2fs_submit_page_write` | tp_btf | DATA/METADATA + F2FS_{DATA,NODE,META}_WRITE + HOT/WARM/COLD | fio->ino, page→inode→i_dentry→d_name 으로 filename. writeback 시 inode_ctx fallback |
 | `f2fs_submit_folio_write` | tp_btf | 동일 | v6.13+ folio alias (양쪽 SEC 선언) |
 | `f2fs_submit_write_bio` | tp_btf | DATA/META/NODE 거친 분류 (emit 안 함, enrich 만) | sb/type/bio 인자 |
 | `f2fs_readpage` / `f2fs_readpages` | tp_btf | READ, DATA, (readpages 는 REQ_RAHEAD) | page/inode→i_ino |
 | `f2fs_submit_read_bio` | tp_btf | READ, DATA/METADATA | bio 단위 read |
-| `f2fs_dataread_start` | tracepoint (offset 직접읽기) | READ, DATA | format offset 직접 읽기(@16 offset, @24 bytes, @48 ino) + partbuf `__data_loc` 디코드로 경로. **device tracefs format 종속** |
+| `f2fs_dataread_start` | tp_btf | READ, DATA | **하드코딩 offset 읽기 폐기.** raw tracepoint 인자(inode/offset/bytes/pathname)를 타입째 받는다 — tracefs format 종속이 사라졌다 |
 | `f2fs_dataread_end` | tp_btf | READ, DATA | inode/offset/bytes |
-| `ext4_mark_inode_dirty` | tracepoint (`___local` struct) | INODE, METADATA | fs="ext4" 강제 |
-| `ext4_da_write_begin/end` | tracepoint (`___local` struct) | WRITE, DATA | pos/len(또는 copied) |
-| `ext4_sync_file_enter/exit` | tracepoint (`___local` struct) | FLUSH, FSYNC_TRIGGERED, (enter 는 SYNC_PATH) | |
-| `ext4_discard_blocks` | tracepoint | DISCARD | fs="ext4" 강제 |
+| `ext4_mark_inode_dirty` | tp_btf | INODE, METADATA | fs="ext4" 강제 |
+| `ext4_da_write_begin/end` | tp_btf | WRITE, DATA | pos/len(또는 copied) |
+| `ext4_sync_file_enter/exit` | tp_btf | FLUSH, FSYNC_TRIGGERED, (enter 는 SYNC_PATH) | |
+| `ext4_discard_blocks` | tp_btf | DISCARD | fs="ext4" 강제 |
 | `ext4_read_folio` | tp_btf | READ, DATA | inode→i_ino |
-| `jbd2_commit_logging` / `start_commit` / `end_commit` / `run_stats` | tracepoint | JOURNAL, METADATA | fs="ext4" 강제 |
-| `block_rq_issue` | tp_btf | READ/WRITE/DISCARD/FLUSH/TRIM + SAW_BLK | dev=`rq->part->bd_dev`(파티션). rq_ctx 에 stash. **rwbs 미emit (§5 revert)** |
-| `block_rq_complete` | tp_btf | SAW_BLK | rq_ctx 정리 |
+| `ext4_writepages` | tp_btf | WRITE, DATA | writeback BLK row 의 syscall 복원 보강원. tracepoint 인자에 `s_dev` 가 없어 dev=0 → 경로는 fs 이름 fallback (§5.1) |
+| `jbd2_commit_logging` / `start_commit` / `end_commit` / `run_stats` | tp_btf | JOURNAL, METADATA | fs="ext4" 강제 |
+| `block_rq_issue` | tp_btf | READ/WRITE/DISCARD/FLUSH/TRIM + SAW_BLK | dev=`rq->part->bd_dev`(파티션). rq_ctx 에 stash. `cmd_flags` raw 를 event 에 실어 userspace 가 rwbs 합성 |
+| `block_rq_complete` | tp_btf | SAW_BLK | rq_ctx 정리. `cmd_flags` 동일하게 emit |
 | `scsi_dispatch_cmd_start` | tp_btf | (직접 emit 안 함) | rq → ufs_tag_ctx 옮김. lun=`scsi_device->lun` |
-| `ufshcd_command` | tracepoint (legacy, `___local` struct) | SAW_UFS, READ(0x28/0x88)/WRITE(0x2A/0x8A)/DISCARD(0x42)/FLUSH(0x35/0x91) | enum str_t 로 send/complete 구분. lun=UPIU hdr[2] 로 확정 |
-| `ufshcd_upiu` | tracepoint (`___local` struct) | (Cmd 면 stash, 그 외 row) | Cmd UPIU(0x01)는 upiu_hdr_ctx stash; Query/TM/NOP 등은 OP_UFS_UPIU row |
-| `ufshcd_uic_command` | tracepoint (`___local` struct) | (UIC row) | link-layer DME (hibern8 등), extra 에 cmd/arg 4-tuple |
-| `ufshcd_exception_event` | tracepoint (`___local` struct) | (exception row) | bkops/over-temp 등 status |
+| `ufshcd_command` (send) | tp_btf | SAW_UFS, READ(0x28/0x88)/WRITE(0x2A/0x8A)/DISCARD(0x42)/FLUSH(0x35/0x91) | **send 전용 프로그램.** lun=UPIU hdr[2] 로 확정 |
+| `ufshcd_command` (complete) | tp_btf | 동일 | **complete 전용 프로그램** — 같은 tracepoint 에 별도 SEC. 분리가 손실 178→0 의 결정타(§5.2). IRQ 문맥이라 핸들러 경량 유지 |
+| `ufshcd_upiu` | tp_btf | (Cmd 면 stash, 그 외 row) | Cmd UPIU(0x01)는 upiu_hdr_ctx stash; Query/TM/NOP 등은 OP_UFS_UPIU row |
+| `ufshcd_uic_command` | tp_btf | (UIC row) | link-layer DME (hibern8 등), extra 에 cmd/arg 4-tuple |
+| `ufshcd_exception_event` | tp_btf | (exception row) | bkops/over-temp 등 status |
+| `scsi_dispatch_cmd_done` / `_error` / `_timeout` | tp_btf | (직접 emit 안 함) | SCSI 완료로 in-flight 정리 |
 | `ufshcd_send_command` | kprobe | (직접 emit 안 함) | hba 저장 (vendor fallback, 현재 hba→lrb deref 비활성) |
+| `ufshcd_compl_one_cqe` | kprobe | (직접 emit 안 함) | complete 총량 계측 — tp_btf complete 진입수와 대조해 손실 판정(§5.2) |
 
 device 에 없는 hook 은 userspace 가 시작 시 `autoload_off`. attach 실패는 경고만.
 
@@ -385,19 +447,44 @@ noise 발생. 해결:
 | `-x, --decode` | 줄 끝에 18번째 컬럼으로 비트 이름 풀이 `[WRITE\|O_SYNC\|...]` 추가 (17컬럼 TSV 뒤라 파서 호환) |
 | `--only=LAYER` | print 필터 (vfs/fs/blk/ufs, 콤마 다중). BPF 는 다 동작 |
 | `--no-vfs / --no-fs / --no-blk / --no-ufs` | layer 단위 BPF 끄기 (cross-layer 정보 손실) |
-| `--wb-inode` | writeback inode_ctx fallback (실험) |
-| `--rb-size=MB` | ringbuf 크기 (기본 8MB, 2의 거듭제곱). 종료 시 `diag[9] ringbuf_reserve DROP` 값이 크면 ↑ |
+| `--rb-size=MB` | ringbuf 크기 (**기본 256MB**, 2의 거듭제곱). `diag[9] ringbuf_reserve DROP` 이 크면 ↑. 커널이 미리 할당하므로 메모리/RLIMIT_MEMLOCK 부족으로 load 실패하면 ↓ |
 | `--poll-ms=MS` | ring_buffer 폴링 주기 (기본 50ms). 짧을수록 burst 흡수 ↑, CPU ↑ |
 | `-v` | libbpf verbose + verifier log + diag dump |
 
-`-v` 로 종료 시 stderr 에 cross-layer pairing 진단 카운터 출력:
+`-v` 로 종료 시 stderr 에 cross-layer pairing 진단 카운터 출력.
+
+슬롯은 **`src/fsiotrace.h` 의 `enum fsio_diag` 가 정본**이고 BPF/userspace 가 같이 쓴다.
+예전엔 BPF 는 `diag_inc(13)` 같은 매직넘버, userspace 는 `labels[]` **배열 순서**로만
+의미가 정해져 있어 한쪽에 슬롯을 끼워 넣으면 이후 라벨이 조용히 한 칸씩 밀렸다
+(실제로 슬롯 충돌을 여러 번 겪었다). 새 슬롯은 반드시 `DIAG__MAX` 앞에 추가한다.
+
 ```
 diag[0] scsi_dispatch_cmd_start calls = N
 diag[1]   rq_ctx hits = N
 diag[2] ufshcd_command calls = N
 diag[3]   ufs_tag_ctx hits = N
 diag[4] ufshcd_send_command kprobe calls = N
+...
+diag[9] ** ringbuf_reserve DROP (이벤트 유실) = N
 ```
+
+**읽는 법** (자주 쓰는 것):
+
+| 카운터 | 정상값 | 0 이 아니면 |
+|---|---|---|
+| `ringbuf_reserve DROP` | 0 | 이벤트 유실 — `--rb-size` ↑ 또는 `--poll-ms` ↓ |
+| `미완결 tag` / `send 없는 complete` | 0 | send↔complete 짝이 안 맞음. 단 **트레이서가 IO 도중 시작/종료하면 그만큼 어긋난다** — 측정 창부터 의심할 것 |
+| `upiu_hdr miss` | complete 수만큼은 정상 | complete 는 Response UPIU 를 stash 하지 않으므로 miss 가 정상. **send 쪽 miss 만 문제** |
+| `path walk 실패` | 0 | dentry walk 자체가 실패 |
+| `풀패스 적용된 row` | walk 성공수와 비슷 | walk 는 성공인데 이게 0 이면 inode 대조에서 걸러지는 것 |
+
+**complete 누락을 판정하는 법** (§5.2 에서 실제로 쓴 방법):
+
+| 관계 | 결론 |
+|---|---|
+| `COMP_ENTRY` == `COMPL_KPROBE` | 호출은 다 됐다 → 중간 return 문제. `COMP_BAIL` 로 추적 |
+| `COMP_ENTRY` < `COMPL_KPROBE` | **호출 자체가 누락**. 그 차이가 곧 손실량 |
+| `COMP_REENTRY` > 0 | 위 누락의 원인이 complete 끼리의 재진입임을 확증 |
 
 ## 10. 출력 예
 
@@ -437,8 +524,8 @@ ts=12345.999100  L=FS   pid=11    tid=11    cpu=0  comm=kworker/u8:1
 > **요약**: tracer 는 raw 이벤트만 찍는다(설계 원칙 §2). 짝짓기·지연 계산 같은 분석은
 > 일부러 바깥 도구(Rust 분석기 / awk·python)에 맡긴다 — tracer 를 단순·가볍게 유지하려고.
 
-tracer 는 raw event 만 emit. 다음 분석은 host 도구 (별도 Rust 분석기
-[Trace Analysis](/guide/trace-analysis/), 또는 awk/python 스크립트):
+tracer 는 raw event 만 emit. 다음 분석은 host 도구 (별도 Rust 분석기,
+또는 awk/python 스크립트):
 
 - BLK Q→C pairing → latency
 - UFS send→complete pairing (tag)
@@ -448,23 +535,27 @@ tracer 는 raw event 만 emit. 다음 분석은 host 도구 (별도 Rust 분석�
 
 ## 12. 현재 한계
 
-> **요약**: 지금 못 하거나 환경에 묶인 것들 — 풀패스 불가(마지막 컴포넌트만), UFS lun 은
-> UPIU 의존, dataread offset 은 device 커널 format 종속. 새 hook 추가/디버깅 전에 훑어둘 것.
+> **요약**: 지금 못 하거나 환경에 묶인 것들 — 풀패스는 마운트 상태에 의존, UFS lun 은
+> UPIU 의존, vendor hook/MCQ 는 QEMU 로 재현 불가. 새 hook 추가/디버깅 전에 훑어둘 것.
 
-- 풀패스 BPF 안에서 구성 불가 (이 device verifier). `name` 은 항상 dentry 마지막
-  component (≤64B). `bpf_d_path()` / manual d_parent walk 모두 거부돼 revert 됨.
-  풀패스 필요 시 host 에서 inode → `debugfs ncheck` 또는 `/proc/<pid>/fd` 로 후처리.
+- 풀패스는 **동작한다**(§5.1). 다만 완성의 마지막 조각인 마운트포인트를 userspace 가
+  `/proc/self/mountinfo` 에서 붙이므로 **마운트 상태에 의존**한다: 트레이싱 중 마운트가
+  바뀌면 어긋나고, 같은 dev 에 bind mount 가 여럿이면 첫 번째를 쓴다. tmpfs/overlayfs
+  처럼 s_dev 가 anon 인 가상 fs 는 못 찾을 수 있고, 그때는 접두어 없이 마운트 기준
+  상대경로로 나온다(틀린 경로를 만드느니 짧은 게 낫다).
+  `bpf_d_path()` 자체는 여전히 못 쓴다(allowlist + trampoline 부재).
 - UFS row 의 `lun` 은 UPIU hdr[2] 로 확정 (SCSI lun 재매핑 회피). Cmd UPIU 가
   ufshcd_command 직전 동기 stash 되므로 데이터 IO 는 거의 항상 hit. UPIU(또는
   `ufs_tag_ctx`) miss 시에만 UFS row 의 comm/filename/io_flags 가 빔 (드뭄).
   `hba->lrb[tag]` fallback 은 verifier instruction limit 로 비활성.
-- `f2fs_dataread_start` 의 offset 은 **device tracefs format 종속** (CO-RE -606 로
-  struct relocation 불가 → 고정 offset 직접 읽기). 다른 커널/config 면
-  `cat /sys/kernel/tracing/events/f2fs/f2fs_dataread_start/format` 으로 재확인 필요.
-  경로 필드(partbuf)는 `__data_loc` 디스크립터 `(len<<16)|off` 라 디코드해서 읽음.
+- ~~`f2fs_dataread_start` 의 tracefs format offset 종속~~ → **해소됨**. `tp_btf` 로
+  전환해 타입 붙은 인자를 그대로 받으므로 고정 offset 추정과 `__data_loc` 디코드가
+  모두 사라졌다.
 - block_rq_issue 의 dev 와 VFS row 의 dev 가 dm-* 일 때 다를 수 있음 (DM 통과).
 - `f2fs_submit_page_write` 등 6.13+ 에서 folio 이름으로 바뀐 hook 은 양쪽 SEC
   선언으로 자동 대응.
+- **QEMU 테스트베드로 재현 안 되는 것**: 삼성 vendor hook(`android_vh_ufs_*`),
+  MCQ(legacy SDB 로 fallback), 실물 UFS 타이밍. 이 셋은 실기기에서만 확인 가능.
 
 ## 13. task_ctx 라이프사이클
 
@@ -507,7 +598,7 @@ cross-layer 전파의 출발점인 `task_ctx` (key=`pid_tgid` 64bit, 스레드 �
 ## 14. writeback 경로
 
 > **요약**: buffered write 의 까다로운 점 — 실제 디스크 IO 를 낸 게 원래 앱이 아니라 한참 뒤의
-> kworker 라 task_ctx 가 비어 있다. 그래서 inode 로 원 task 정보를 되살린다(`--wb-inode`).
+> kworker 라 task_ctx 가 비어 있다. 그래서 inode 로 원 task 정보를 되살린다(항상 ON).
 
 buffered write 는 `vfs_write` 가 page cache 에만 쓰고 리턴하며, 실제 block IO 는
 한참 뒤 **writeback kworker**(원래 task 와 다른 pid_tgid)가 수행한다. 그래서
@@ -515,7 +606,7 @@ kworker 의 `task_ctx` 에는 VFS 정보가 없다(IO_SAW_VFS 안 붙음). 보�
 
 1. **inode/filename 복원** — `f2fs_submit_page_write` 에서 `fio->ino`, 그리고
    `fio->page → mapping → host(inode) → i_dentry.first → dentry → d_name` 으로 복원.
-2. **원 task 정보 보강** (`--wb-inode` 시) — `vfs_write` 가 `inode_ctx[i_ino]` 에 원
+2. **원 task 정보 보강** (항상 ON) — `vfs_write` 가 `inode_ctx[i_ino]` 에 원
    task 의 io_ctx 를 mirror 해 두고, `handle_f2fs_submit_write` 가 IO_SAW_VFS 없을 때
    그걸 lookup 해 pid/comm/filename/entry_op 와 io_flags(layer-hop 마커 제외)를 보강.
    `IO_WRITEBACK_KWORKER` 비트 set.
@@ -535,10 +626,10 @@ kworker 의 `task_ctx` 에는 VFS 정보가 없다(IO_SAW_VFS 안 붙음). 보�
 | f2fs page→folio 전환 (v6.6/6.12 `f2fs_submit_page_write` vs v6.13+ `f2fs_submit_folio_write`) | 양쪽 SEC 동시 선언, attach 자동 선택 |
 | enum 값 재배치 (`page_type` DATA/NODE/META) | `bpf_core_enum_value()` 로 target BTF 에서 lookup |
 | `struct request` 크기 vendor 차이 (scsi_cmnd→request) | `bpf_core_type_size(struct request)` (컴파일 상수 아님) |
-| tracepoint struct CO-RE relocation -606 (vendor BTF 에 base type 없음/layout 차이) | `___local` struct + `preserve_access_index`, 안 되면 **format offset 직접 읽기** (f2fs_dataread_start) |
+| tracepoint struct CO-RE relocation -606 (vendor BTF 에 base type 없음/layout 차이) | `tp_btf` 로 전환해 해소 — raw tracepoint 는 타입 붙은 인자를 그대로 받는다. `___local` struct 6개와 f2fs_dataread_start 의 하드코딩 offset 은 모두 제거됨 |
 | tracefs format offset 종속 (f2fs_dataread_start) | 고정 offset — 다른 커널 시 `events/.../format` 재확인 필수 |
-| `tp_btf` vendor BTF signature mismatch (ufshcd_command 등) | legacy `tracepoint/` + 자체 `___local` struct |
-| trampoline 미지원 (fentry/fexit/lsm -EACCES) | kprobe / tracepoint 만 사용 |
+| ~~`tp_btf` vendor BTF signature mismatch~~ | **폐기** — 전 훅 `tp_btf` 로 동작. legacy `tracepoint/` 는 전역 `bpf_prog_active` 점유로 오히려 해롭다(§5) |
+| trampoline 미지원 (fentry/fexit/lsm -EACCES) | kprobe / tp_btf 만 사용 |
 
 ### map max_entries 근거
 

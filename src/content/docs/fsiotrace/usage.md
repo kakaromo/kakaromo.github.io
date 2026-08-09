@@ -2,9 +2,8 @@
 title: fsiotrace 사용법
 description: 빌드된 fsiotrace 바이너리로 IO 를 추적·분석하는 방법 — 옵션, 출력 해석, host 후처리
 ---
-
 이 문서는 빌드된 `fsiotrace` 바이너리로 실제 IO를 추적하고
-분석하는 방법을 설명한다. 빌드는 [빌드 가이드](/fsiotrace/build/), 설계는 [설계 문서](/fsiotrace/design/).
+분석하는 방법을 설명한다. 빌드는 [`BUILD.md`](/fsiotrace/build/), 설계는 [`DESIGN.md`](/fsiotrace/design/).
 
 ## 1. 한눈에
 
@@ -27,8 +26,7 @@ less run.events
 | `-I HEX` | `io_flags & MASK` 인 이벤트만 emit |
 | `-x` | 줄 끝에 비트 이름 풀이 `[WRITE\|O_SYNC\|DATA]` 를 18번째 컬럼으로 추가 (17컬럼 뒤라 파서 호환) |
 | `--no-vfs` / `--no-fs` / `--no-blk` / `--no-ufs` | layer 단위 off |
-| `--wb-inode` | writeback inode 매핑 활성 (실험적) |
-| `--rb-size=MB` | ringbuf 크기 (기본 8MB). 고부하·QD 클 때 `diag[9]` drop 보이면 ↑ |
+| `--rb-size=MB` | ringbuf 크기 (**기본 256MB**). `diag[9]` drop 보이면 ↑. 커널이 미리 할당하므로 메모리/RLIMIT_MEMLOCK 부족으로 load 실패하면 ↓ (`--rb-size 32`) |
 | `--poll-ms=MS` | ring_buffer poll 주기 (기본 50ms). 짧을수록 burst 흡수 ↑ |
 | `-v` | libbpf verbose |
 
@@ -107,7 +105,7 @@ adb shell '
 
 ## 4. 출력 라인 읽기
 
-이벤트 한 줄 예 (가독성을 위한 의사표현. 실제 출력은 TAB 구분 17컬럼 TSV → [TSV 출력 형식](/fsiotrace/output-format/)):
+이벤트 한 줄 예 (가독성을 위한 의사표현. 실제 출력은 TAB 구분 17컬럼 TSV → `OUTPUT_FORMAT.md`):
 
 ```
 ts=12345678  L=VFS  pid=4521  tid=4521  cpu=3  comm=mysqld
@@ -146,7 +144,7 @@ manual d_parent walk)는 이 device verifier 가 거부해 제거됐다. 풀패�
 
 ## 5. io_flags 비트 (참고용)
 
-전체 정의는 `src/fsiotrace.h` 및 [설계 문서 §3 Record 구조](/fsiotrace/design/#3-record-구조). 자주 쓰는 것만:
+전체 정의는 `src/fsiotrace.h` 및 [`DESIGN.md §3`](/fsiotrace/design/#3-record-구조). 자주 쓰는 것만:
 
 | bit | 16진 | 이름 | 언제 켜지나 |
 |---|---|---|---|
@@ -171,7 +169,7 @@ bit 풀이는 `-x` 플래그를 켜면 줄 끝에 `[WRITE|O_SYNC|...]` 가 18번
 
 ## 6. 분석 (host 에서)
 
-출력은 **TAB 구분 17컬럼 TSV** (컬럼 정의는 [TSV 출력 형식](/fsiotrace/output-format/)). awk 는 `-F'\t'` 로
+출력은 **TAB 구분 17컬럼 TSV** (컬럼 정의는 `OUTPUT_FORMAT.md`). awk 는 `-F'\t'` 로
 컬럼 위치 기반 파싱한다. 주요 컬럼: `$2`=layer, `$3`=pid, `$6`=comm, `$7`=syscall,
 `$8`=action, `$12`=ino, `$15`=name, `$16`=io_flags, `$17`=extra.
 
@@ -225,12 +223,69 @@ $8=="block_rq_complete" { k=$10":"$11":"$14":"$13; if(k in q){print $1-q[k]; del
 ' run.events
 ```
 
-본격 분석은 별도 Rust 분석기([Trace Analysis](/guide/trace-analysis/))에서.
+본격 분석은 별도 도구(예: 옆 디렉토리 `/Users/songhyun/project/trace/`)에서.
 
 ## 7. 종료 / 시그널
 
-- SIGINT (Ctrl-C), SIGTERM 으로 깔끔 종료. 종료 시 이벤트 카운트를 stderr 로 보고.
+- **SIGINT(Ctrl-C) / SIGTERM / SIGHUP / SIGQUIT** 모두 깔끔 종료.
+  종료 시 이벤트 카운트를 stderr 로 보고한다.
+  장시간 수집에서 `SIGHUP`(adb/ssh 세션 끊김)을 안 받으면 버퍼가 통째로 날아가므로
+  넓게 받는다.
+- 종료 시 **detach 후 ringbuf 잔여 이벤트를 배수**한다 — 마지막 몇 건이 잘리지 않는다.
 - `-d SEC` / `-m N` 으로 자동 종료 가능.
+
+### `adb shell … > trace.log` 에서 Ctrl+C 가 안 먹을 때
+
+**증상**: Windows 에서 `adb shell fsiotrace > trace.log` 로 돌리고 Ctrl+C 를 눌러도
+device 쪽 프로세스가 안 죽거나, 죽어도 로그 끝이 잘린다.
+
+**원인**: 리다이렉트하면 adb 가 PTY 를 할당하지 않는다(실측: 게스트에서 `tty -s` 실패).
+PTY 가 없으면 Ctrl+C 가 만드는 터미널 시그널이 device 쪽 프로세스 그룹에 전달될 경로가
+없다. 즉 SIGINT 를 아무리 잘 처리해도 **애초에 오지 않는다.**
+
+**대응**(이미 구현됨): adb 가 죽으면 stdout 파이프가 닫히므로 write 가 `EPIPE` 를 낸다.
+이걸 종료 신호로 삼아 정상 종료 경로로 빠진다. `SIGPIPE` 는 기본 동작이 즉사(버퍼 유실)라
+`SIG_IGN` 으로 막고 `errno` 로 감지한다. 부모(adb shell)가 죽어 고아가 되는 것도 함께 감시한다.
+
+→ 그래도 확실히 하려면 `-d SEC` 로 수집 시간을 못박는 쪽을 권장.
+
+## 7.5 기기 없이 검증 (QEMU 테스트베드)
+
+실기기 없이 **verifier 통과 · attach · 4개 레이어 이벤트 · ftrace 대조 · 풀패스 출력 ·
+f2fs 세분 플래그**까지 확인할 수 있다. 실제로 이 환경에서 verifier 거부 2건과
+동작 버그 여러 건을 잡았다.
+
+```sh
+bash scripts/qemu/run_qemu.sh      # VM 안에서 sh /bin/<test>.sh
+```
+
+- LU0 = ext4(`/data`), LU1 = f2fs(`/f2fs`) — f2fs 전용 경로도 검증 가능.
+- 셋업 절차·준비물은 [QEMU 테스트베드](/fsiotrace/qemu-testbed/).
+- **재현 안 되는 것**: 삼성 vendor hook(`android_vh_ufs_*`), MCQ(QEMU 가 legacy SDB 로
+  fallback), 실물 UFS 타이밍.
+
+> **컴파일만 통과한 걸 "동작한다" 고 판단하지 말 것.** verifier 거부와 런타임
+> 오동작은 컴파일로 안 잡힌다.
+
+### ftrace 를 정답지로 쓰기
+
+"커널이 안 찍음" 과 "우리가 못 받음" 은 같은 tracepoint 를 BPF 와 ftrace 로 동시에
+받아 대조하면 즉시 갈린다:
+
+```sh
+echo 1 > /sys/kernel/tracing/events/ufs/ufshcd_command/enable
+```
+
+측정할 때 반드시 지킬 것:
+
+- **ftrace 버퍼를 키운다.** 기본 7KB/cpu 라 고부하에선 ftrace 쪽이 먼저 넘쳐
+  "손실이 음수" 로 나온다. `echo 65536 > /sys/kernel/tracing/buffer_size_kb` 후
+  `per_cpu/*/stats` 의 `overrun` 이 0 인지 확인.
+- **측정 창을 맞춘다.** fsiotrace attach 완료 후 ftrace 를 켜고, ftrace 를 먼저 끈 다음
+  fsiotrace 를 종료한다. 안 맞추면 ±수 건이 흔들리는데 이건 유실이 아니라 창 오차다
+  (부호가 음수로 뒤집히면 확실).
+- **IO 를 끝내고 몇 초 쉰 뒤 종료한다.** 트레이서가 IO 한복판에서 끝나면 in-flight
+  만큼 send 가 많게 나오는 게 정상이다.
 
 ## 8. 트러블슈팅
 
@@ -275,10 +330,11 @@ production user build 면 sepolicy 작업이 별도로 필요. 본 프로젝트 
 ### 8.5 writeback 의 pid 가 다 `kworker`
 
 정상. dirty page 의 실제 디스크 IO 는 30초쯤 뒤 kworker 가 수행하므로
-원본 process 와 연결이 끊긴다. 자세한 건 [설계 문서 §4 cross-layer 전파](/fsiotrace/design/#4-cross-layer-정보-전파-전파-map-구조), [§5 verifier 제약](/fsiotrace/design/).
+원본 process 와 연결이 끊긴다. 자세한 건 [`DESIGN.md §4-4.4`](/fsiotrace/design/), [`DESIGN.md §5`](/fsiotrace/design/).
 원본 task 와 매칭하려면:
 - 동기 IO(O_SYNC/O_DIRECT/fsync) 로 테스트해서 SAW_VFS 가 켜진 BLK row 확인
-- 또는 `--wb-inode` 로 inode 매핑 fallback (실험적)
+- inode 매핑 fallback 은 **항상 켜져 있다** (`--wb-inode` 토글은 제거됨).
+  `vfs_write` 가 `inode_ctx` 에 mirror 해 둔 걸 FS hook 이 lookup 해 보강한다
 
 ## 9. 알려진 한계 (현재 버전)
 
@@ -288,9 +344,11 @@ production user build 면 sepolicy 작업이 별도로 필요. 본 프로젝트 
 - f2fs segment 세분 비트 (48-55): v6.6/6.12 는 `f2fs_submit_page_write`,
   v6.13+ upstream 은 `f2fs_submit_folio_write` 로 채움. 양쪽 SEC 동시 빌드, attach 자동
   선택. 두 이름 모두 없는 vendor 커널은 비트 미충전.
-- 풀패스 불가: 이 device verifier 가 `bpf_d_path()` 와 manual d_parent walk 를 모두
-  거부 → `name` 은 항상 dentry 마지막 컴포넌트(≤64B, FNAME_LEN). 풀패스는 호스트에서
-  `ino` → `debugfs -R "ncheck <ino>"` 또는 `/proc/<pid>/fd` 로 후처리.
+- 풀패스는 **동작한다**. `bpf_d_path()` 는 여전히 막혀 있지만(allowlist + trampoline 부재)
+  dentry 를 직접 walk 하고, 파일시스템 경계에서 멈추는 부분은 userspace 가
+  `/proc/self/mountinfo` 의 `dev → mountpoint` 를 앞에 붙여 완성한다
+  (`/data/user/0/pkg/files/x.db`). 한계: 트레이싱 중 마운트가 바뀌면 어긋나고,
+  마운트포인트를 못 찾으면 접두어 없이 마운트 기준 상대경로로 나온다.
 - pairing(Q↔C, send↔complete) 은 tracer 가 하지 않음 → 외부 후처리
 
 ## 10. 결과 공유 시

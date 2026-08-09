@@ -339,6 +339,7 @@ export default defineConfig({
             { label: '설계 (cross-layer · io_flags)', slug: 'fsiotrace/design' },
             { label: '사용법', slug: 'fsiotrace/usage' },
             { label: 'TSV 출력 형식', slug: 'fsiotrace/output-format' },
+            { label: 'QEMU 테스트베드', slug: 'fsiotrace/qemu-testbed' },
             { label: '빌드 (NDK + Bionic)', slug: 'fsiotrace/build' },
             { label: '폐쇄망 환경', slug: 'fsiotrace/offline' },
           ],
