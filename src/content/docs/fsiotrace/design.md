@@ -70,7 +70,7 @@ Android device 에서 IO 하나가 **VFS → FS(f2fs/ext4) → block → UFS(SCS
 
 ```
 ts  layer  pid  tid  cpu  comm  syscall  action  fs  dev  ino  size  sec  name
-io_flags  [decoded bits]  ufs={...}  req=0x...
+io_flags  [decoded bits]  ufs={...}
 ```
 
 각 컬럼 의미:
@@ -90,7 +90,7 @@ io_flags  [decoded bits]  ufs={...}  req=0x...
 | `name` | **풀패스** — BPF dentry walk + userspace 마운트포인트 결합 | 예: `/data/user/0/pkg/files/x.db`. 자세한 건 §5.1 |
 | `io_flags` | u64 bitmask | hex 출력. `-x` 로 비트 이름 풀이 |
 | `ufs={...}` | UFS row only | lun/tag/hwq/opcode/grp |
-| `req=` | BLK + UFS row | request 포인터, BLK↔UFS pairing key |
+| ~~`req=`~~ | — | ⚠ **미구현**. 코드에 이 출력이 없다(2026-08 확인). BLK↔UFS pairing 은 `ino`/`sec`/시간 인접도로 한다 |
 
 > `rwbs=` 는 BLK row 의 `extra` 에 **emit 된다**. 단 BPF 안에서 문자열을 합성하지 않는다 —
 > 과거 그 시도가 verifier 에 거부됐다(§5). 지금은 BPF 가 `rq->cmd_flags` **raw 를 그대로**
@@ -500,13 +500,12 @@ ts=12345.678920  L=BLK  pid=4521  tid=4521  cpu=3  comm=mysqld
    syscall=vfs_write  action=block_rq_issue  fs=ext4  dev=8:32  ino=983241
    size=16384  sec=8192000  name=ibdata1
    io=0x0000010000000102  [WRITE|O_SYNC|DATA|SAW_VFS|SAW_BLK]
-   req=0xffff8b1234567890
 
 ts=12345.678935  L=UFS  pid=4521  tid=4521  cpu=3  comm=mysqld
    syscall=vfs_write  action=ufshcd_command:send_req  fs=ext4  dev=8:32  ino=983241
    size=16384  sec=1024000  name=ibdata1
    io=0x0000080000000102  [WRITE|O_SYNC|DATA|SAW_VFS|SAW_UFS]
-   ufs={lun=0 tag=7 hwq=0 op=0x2a grp=0x1}  req=0xffff8b1234567890
+   ufs={lun=0 tag=7 hwq=0 op=0x2a grp=0x1}
 
 ts=12345.999100  L=FS   pid=11    tid=11    cpu=0  comm=kworker/u8:1
    syscall=-  action=f2fs_submit_page_write  fs=f2fs  dev=8:80  ino=42
@@ -515,7 +514,8 @@ ts=12345.999100  L=FS   pid=11    tid=11    cpu=0  comm=kworker/u8:1
 ```
 
 - VFS row 의 `name` 과 BLK row 의 `name` 이 같다 (task_ctx 흡수).
-- BLK row 와 UFS row 의 `req=` 가 같다 (같은 IO 임).
+- BLK row 와 UFS row 는 `ino` 와 `sec`(LBA)·시간 인접도로 잇는다.
+  (예전 이 문서엔 `req=` 로 잇는다고 적혀 있었으나 그 컬럼은 구현되지 않았다.)
 - writeback FS row (kworker) 는 `syscall=-`, comm=kworker, name 은 inode 의
   d_name 으로 복원.
 
@@ -529,7 +529,7 @@ tracer 는 raw event 만 emit. 다음 분석은 host 도구 (별도 Rust 분석�
 
 - BLK Q→C pairing → latency
 - UFS send→complete pairing (tag)
-- BLK row ↔ UFS row pairing → `req=` 값 같으면 동일 IO
+- BLK row ↔ UFS row pairing → `ino` + `sec`/시간 인접도 (`req=` 는 미구현)
 - VFS row ↔ BLK row pairing → 같은 pid+ts 인접도
 - writeback row 의 inode → host 의 `debugfs -R "ncheck <ino>"` 로 풀패스 복원
 
