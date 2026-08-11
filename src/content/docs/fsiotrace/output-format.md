@@ -64,6 +64,7 @@ $8 == "block_rq_issue" || $8 == "block_rq_complete"
 |---|---|---|
 | `block_rq_issue` | request 디스크 발급 | `rwbs=<문자열>` |
 | `block_rq_complete` | request 완료 | `rwbs=<문자열>` (자기 `cmd_flags` 로 독립 합성) |
+| `block_bio_queue` | **merge 전** bio (`--bio` 로 켤 때만) | `rwbs=<문자열>` (`bi_opf` 기준). merge 로 가려지는 파일을 보려면 이걸 본다 — §4.5 |
 
 > **BLK row 의 `extra`(col 17)는 `rwbs=<문자열>`.**
 > **합성은 전적으로 userspace 에서 한다.** BPF 는 `rq->cmd_flags` **raw u32** 를
@@ -155,6 +156,7 @@ lun=<u8>  tag=<u8>  hwq=<i32>  ufs_op=0x<u8>  grp=0x<u8>  txn=0x<u8>  flags=0x<u
 | `func` | UPIU hdr[5] | tm_function 또는 query_function (Cmd UPIU 에선 보통 0) |
 | `attr` | flags bit 0-1 | `Simple` / `Ordered` / `HoQ` / `ACA` |
 | `cp` | flags bit 2 | command priority flag, `0`/`1` |
+| `blk_sec` | 발급 시점의 `rq->__sector` | **BLK↔UFS 조인 키**(§4.5). 512B sector 단위 — UFS 의 `sec`(LBA)와 단위가 다르니 혼동 주의. `ufs_tag_ctx` miss 면 빠짐 |
 
 > **주의 1**: UPIU header 흡수 못 한 경우 (드물게) `txn/flags/func/attr/cp`
 > 키가 빠집니다. 그럼 extra 는 `lun=... grp=0x...` 까지만.
@@ -193,6 +195,91 @@ $2 == "UFS" && $8 ~ /ufshcd_command:/ {
     }
 }
 ```
+
+## 4.5 계층 조인 — "이 UFS 명령이 어느 파일의 것인가"
+
+> **요약**: `bio → rq → UFS` 를 잇는 키가 구간마다 다르다. sector 포함관계 →
+> `blk_sec` → `tag`. 아래 3개만 알면 UFS row 에 파일 목록을 붙일 수 있다.
+
+### 왜 조인이 필요한가 — merge
+
+커널은 인접 LBA 의 bio 를 **한 request 로 합친다**(순차 write 면 거의 항상).
+그 request 안에 서로 다른 파일의 bio 가 섞이면, `block_rq_issue` row 는 하나뿐이라
+**대표 파일 하나만 남고 나머지는 사라진다.**
+
+실측(fio numjobs=6 buffered write):
+
+| | 고유 파일 수 |
+|---|---|
+| `block_rq_issue` (merge 후) | **1** |
+| `block_bio_queue` (merge 전, `--bio`) | **7** |
+
+파일 단위로 다 보려면 `--bio` 를 켜야 한다(기본 OFF — 이벤트량이 크게 는다).
+
+### 조인 키 3개
+
+| 구간 | 키 | 비고 |
+|---|---|---|
+| `block_bio_queue` → `block_rq_issue` | **sector 포함관계**<br>`[bio.sec, bio.sec+bio.size/512)` ⊂ `[rq.sec, rq.sec+rq.size/512)` | merge 로 합쳐진 개별 파일을 복원 |
+| `block_rq_issue` → `ufshcd_command:send_req` | **`blk_sec`** (UFS `extra` 안) | ⚠ 아래 주의 |
+| `send_req` ↔ `complete_rsp` | **`tag`** (양쪽 `extra`) | UFS 사양상 같은 tag |
+
+> ⚠ **UFS 의 `sec`(col 14)로 BLK 과 잇지 말 것.** UFS 의 `sec` 는 **LBA**(장치
+> 논리블록)이고 BLK 은 512B sector 라 단위가 다르다. 4K 블록이면 8:1 이지만
+> **실측하면 비율이 7.41~8.63 으로 흩어진다** — 동시에 여러 IO 가 in-flight 라
+> 시간순 짝짓기가 성립하지 않기 때문이다. 그래서 발급 시점의 `rq->__sector` 를
+> 그대로 실은 **`blk_sec` 를 쓴다**(실측 일치율 99%).
+> `ufs_tag_ctx` miss 면 `blk_sec` 키가 아예 빠진다.
+
+### 조인 예 (awk)
+
+```awk
+# BLK sector → 파일명 테이블을 만들고, UFS row 에 붙인다
+$8 == "block_rq_issue"          { file[$14] = $15 }
+$8 ~ /ufshcd_command:send_req/  {
+    if (match($17, /blk_sec=[0-9]+/)) {
+        s = substr($17, RSTART+8, RLENGTH-8)
+        print $1, $17, (s in file ? file[s] : "(미상)")
+    }
+}
+```
+
+실제 출력:
+
+```
+tag=4   lba=112640  blk_sec=901120  /data/join/j.0.0
+tag=12  lba=114688  blk_sec=917504  /data/join/j.3.0
+```
+
+`lba` 는 제각각이지만 `blk_sec` 로는 정확히 이어진다.
+
+### ⚠ comm 은 계층마다 다르다 — 합치지 말 것
+
+같은 IO 라도 **어느 계층에서 보느냐에 따라 comm 이 다르다**(실측):
+
+```
+bio row : fio 24, jbd2/sda-8 1, (빈) 17
+rq  row : fio 23, kworker/3:1H 2, kworker/0:1H 2, kworker/2:1H 1
+```
+
+어느 게 "맞는" comm 인지는 **질문에 따라 다르다**:
+
+| 알고 싶은 것 | 봐야 할 comm |
+|---|---|
+| 누가 이 데이터를 만들었나 | bio/VFS row (`fio`) |
+| 실제로 디스크에 낸 게 누구인가 | rq row (`kworker`) |
+| 저널은 누가 냈나 | bio row (`jbd2/*`) |
+
+그래서 tracer 는 각 계층이 본 그대로 emit 하고 **하나로 합치지 않는다**.
+합치면 셋 중 하나를 골라야 하고, 그 선택이 코드에 박혀 나중에 다른 질문을 못 한다.
+분석기에서 관점을 골라 쓰는 것이 맞다 (DESIGN §2 "tracer 는 raw event 만 emit").
+
+### 파일을 못 찾는 row
+
+- `name` 이 `ino:N` — inode 는 얻었지만 dentry 가 없다. 파일시스템 내부
+  inode(저널 등)로 보인다. 계측상 anon/slab page 는 아니다(`[bio]` 카운터로 확인).
+- `name` 이 빈 값 — flush / discard / 메타데이터처럼 **애초에 파일이 없는 IO**.
+  실측 UFS row 의 약 40%가 여기 해당하며, 채울 값이 없는 게 정상이다.
 
 ## 5. io_flags 비트 (참고)
 

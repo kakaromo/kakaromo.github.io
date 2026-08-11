@@ -410,6 +410,7 @@ writeback path 는 task_ctx 가 비어 있을 가능성 큼 → BLK row 의 comm
 | `jbd2_commit_logging` / `start_commit` / `end_commit` / `run_stats` | tp_btf | JOURNAL, METADATA | fs="ext4" 강제 |
 | `block_rq_issue` | tp_btf | READ/WRITE/DISCARD/FLUSH/TRIM + SAW_BLK | dev=`rq->part->bd_dev`(파티션). rq_ctx 에 stash. `cmd_flags` raw 를 event 에 실어 userspace 가 rwbs 합성 |
 | `block_rq_complete` | tp_btf | SAW_BLK | rq_ctx 정리. `cmd_flags` 동일하게 emit |
+| `block_bio_queue` | tp_btf | READ/WRITE + SAW_BLK | **`--bio` 로만 활성(기본 OFF)**. merge *전* 이라 파일별로 다 보인다. `bio->bi_io_vec[bi_iter.bi_idx].bv_page → mapping → host` 로 inode/filename 복원. ⚠ mapping 하위 2비트는 플래그라 마스킹 필수 |
 | `scsi_dispatch_cmd_start` | tp_btf | (직접 emit 안 함) | rq → ufs_tag_ctx 옮김. lun=`scsi_device->lun` |
 | `ufshcd_command` (send) | tp_btf | SAW_UFS, READ(0x28/0x88)/WRITE(0x2A/0x8A)/DISCARD(0x42)/FLUSH(0x35/0x91) | **send 전용 프로그램.** lun=UPIU hdr[2] 로 확정 |
 | `ufshcd_command` (complete) | tp_btf | 동일 | **complete 전용 프로그램** — 같은 tracepoint 에 별도 SEC. 분리가 손실 178→0 의 결정타(§5.2). IRQ 문맥이라 핸들러 경량 유지 |
@@ -447,6 +448,7 @@ noise 발생. 해결:
 | `-x, --decode` | 줄 끝에 18번째 컬럼으로 비트 이름 풀이 `[WRITE\|O_SYNC\|...]` 추가 (17컬럼 TSV 뒤라 파서 호환) |
 | `--only=LAYER` | print 필터 (vfs/fs/blk/ufs, 콤마 다중). BPF 는 다 동작 |
 | `--no-vfs / --no-fs / --no-blk / --no-ufs` | layer 단위 BPF 끄기 (cross-layer 정보 손실) |
+| `--bio` | merge 전 bio 추적(`block_bio_queue`). 기본 OFF — 이벤트량이 크게 는다 |
 | `--rb-size=MB` | ringbuf 크기 (**기본 256MB**, 2의 거듭제곱). `diag[9] ringbuf_reserve DROP` 이 크면 ↑. 커널이 미리 할당하므로 메모리/RLIMIT_MEMLOCK 부족으로 load 실패하면 ↓ |
 | `--poll-ms=MS` | ring_buffer 폴링 주기 (기본 50ms). 짧을수록 burst 흡수 ↑, CPU ↑ |
 | `-v` | libbpf verbose + verifier log + diag dump |

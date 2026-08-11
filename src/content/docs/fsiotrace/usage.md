@@ -26,6 +26,7 @@ less run.events
 | `-I HEX` | `io_flags & MASK` 인 이벤트만 emit |
 | `-x` | 줄 끝에 비트 이름 풀이 `[WRITE\|O_SYNC\|DATA]` 를 18번째 컬럼으로 추가 (17컬럼 뒤라 파서 호환) |
 | `--no-vfs` / `--no-fs` / `--no-blk` / `--no-ufs` | layer 단위 off |
+| `--bio` | **merge 전** bio 추적(`block_bio_queue`). merge 로 가려진 파일을 보려면 필요. ⚠ 이벤트량 급증 — drop 나면 `--rb-size` ↑ |
 | `--rb-size=MB` | ringbuf 크기 (**기본 256MB**). `diag[9]` drop 보이면 ↑. 커널이 미리 할당하므로 메모리/RLIMIT_MEMLOCK 부족으로 load 실패하면 ↓ (`--rb-size 32`) |
 | `--poll-ms=MS` | ring_buffer poll 주기 (기본 50ms). 짧을수록 burst 흡수 ↑ |
 | `-v` | libbpf verbose |
@@ -110,13 +111,14 @@ adb shell '
 ```
 ts=12345678  L=VFS  pid=4521  tid=4521  cpu=3  comm=mysqld
 syscall=vfs_write  fs=ext4  dev=259:12  ino=983241
-size=16384  off=0  sec=0  name=ibdata1
+size=16384  off=0  sec=0  name=/data/ibdata1
 io=0x0000010000000102  [WRITE|O_SYNC|DATA|SAW_VFS]
 ```
 
-`name` 은 **항상 dentry 마지막 컴포넌트**(`ibdata1`)뿐이다. 풀패스(`bpf_d_path()` /
-manual d_parent walk)는 이 device verifier 가 거부해 제거됐다. 풀패스가 필요하면
-호스트에서 `ino` 로 `debugfs -R "ncheck <ino>"` 또는 `/proc/<pid>/fd` 로 복원.
+`name` 은 **풀패스**다(`/data/user/0/pkg/files/ibdata1`). `bpf_d_path()` 는 여전히
+막혀 있지만 dentry 를 직접 walk 하고, 파일시스템 경계는 userspace 가
+`/proc/self/mountinfo` 로 붙여 완성한다 — 자세한 건 [`DESIGN.md §5.1`](/fsiotrace/design/).
+UFS row 는 IRQ 경로라 BPF 가 풀패스를 안 붙이고 userspace 가 inode 로 후보정한다.
 
 ### 필드 의미
 
@@ -132,7 +134,7 @@ manual d_parent walk)는 이 device verifier 가 거부해 제거됐다. 풀패�
 | `size` | bytes (VFS = vfs_* 의 count/retval, BLK = `__data_len`, UFS = `transfer_len`) |
 | `off` | file offset (VFS only) |
 | `sec` | BLK 는 512B sector, UFS 는 LBA, VFS/FS 는 0 |
-| `name` | dentry 마지막 컴포넌트 (VFS/FS) |
+| `name` | **풀패스** (VFS/FS/BLK/UFS 전부) |
 | `io` | u64 비트마스크. 자세한 의미는 §5 |
 | `ufs={lun=… tag=… op=…}` | UFS row 의 추가 식별자 (extra 컬럼) |
 
@@ -176,7 +178,7 @@ bit 풀이는 `-x` 플래그를 켜면 줄 끝에 `[WRITE|O_SYNC|...]` 가 18번
 ### 6.1 특정 파일에 대한 모든 활동
 
 ```sh
-awk -F'\t' '$15=="ibdata1"' run.events
+awk -F'\t' '$15 ~ /ibdata1$/' run.events   # 풀패스라 끝부분 매칭
 ```
 
 ### 6.2 layer 별 카운트
@@ -260,7 +262,7 @@ bash scripts/qemu/run_qemu.sh      # VM 안에서 sh /bin/<test>.sh
 ```
 
 - LU0 = ext4(`/data`), LU1 = f2fs(`/f2fs`) — f2fs 전용 경로도 검증 가능.
-- 셋업 절차·준비물은 [QEMU 테스트베드](/fsiotrace/qemu-testbed/).
+- 셋업 절차·준비물은 [`scripts/qemu/README.md`](../scripts/qemu/README.md).
 - **재현 안 되는 것**: 삼성 vendor hook(`android_vh_ufs_*`), MCQ(QEMU 가 legacy SDB 로
   fallback), 실물 UFS 타이밍.
 
