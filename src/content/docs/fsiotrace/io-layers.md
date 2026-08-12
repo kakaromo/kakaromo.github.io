@@ -245,9 +245,9 @@ sequenceDiagram
     loop 페이지마다
         VFS->>AOPS: ① write_begin(pos, len)
         AOPS->>PC: 페이지 확보(없으면 할당)
-        alt 부분 쓰기이고 캐시에 없음
+        alt 블록을 부분만 덮고 + 캐시에 없고 + 기존 블록
             AOPS->>Disk: 먼저 읽어온다 (RMW!)
-            Note over AOPS,Disk: ← 여기서 예상 못한 READ 발생
+            Note over AOPS,Disk: ← 예상 못한 READ.<br/>동기라 write() 가 여기서 멈춘다 (§2.2)
         end
         AOPS-->>VFS: 페이지 포인터
 
@@ -272,27 +272,142 @@ sequenceDiagram
 
 **직관에 반하는 부분이라 따로 짚는다.** "쓰기만 했는데 왜 읽기가 보이지?"
 
-페이지는 4KB 단위인데 앱이 100바이트만 쓰면, **나머지 3996 바이트는 원래 디스크 내용이어야
-한다.** 그래서 캐시에 없으면 디스크에서 먼저 읽어와야 한다. 이걸
-**RMW(Read-Modify-Write)** 라고 한다.
+#### 왜 필요한가 — 디스크는 부분 수정을 못 한다
+
+디스크는 **블록 단위로만** 읽고 쓴다. 바이트 하나만 바꿀 방법이 없다. 그래서 블록의
+일부만 수정하려면 이렇게 해야 한다.
+
+```mermaid
+flowchart LR
+    A["① Read<br/>블록 전체를<br/>메모리로"] --> B["② Modify<br/>메모리에서<br/>일부만 수정"] --> C["③ Write<br/>블록 전체를<br/>디스크로"]
+
+    style A fill:#ffcdd2,color:#000
+    style B fill:#fff3e0,color:#000
+    style C fill:#e1f5fe,color:#000
+```
+
+이 세 단계가 **RMW(Read-Modify-Write)** 다. 앱은 100바이트만 썼는데 디스크에는
+읽기 4KB + 쓰기 4KB 가 오간다.
+
+#### 단위는 페이지가 아니라 "블록"이다
+
+흔한 오해를 먼저 정리한다. 페이지 캐시는 4KB 단위지만, **RMW 판정은 파일시스템
+블록 단위(`s_blocksize`, 보통 4KB, 1KB·2KB 도 가능)로 이뤄진다.**
+
+ext4 는 페이지 안의 블록들을 `buffer_head` 로 하나씩 순회하며 **블록마다 따로**
+"읽어야 하나" 를 판정한다. 블록 크기가 1KB 라면 4KB 페이지 안에 4개의 독립 판정이 있다.
 
 ```mermaid
 flowchart TD
-    A["write(fd, buf, 100)<br/>오프셋 500 에 100바이트"] --> B{"페이지가<br/>캐시에 있나?"}
-    B -->|"있다"| C["그대로 덮어쓰기<br/>추가 IO 없음"]
-    B -->|"없다"| D{"페이지 전체를<br/>덮어쓰나?"}
-    D -->|"전체(4096B)"| E["읽을 필요 없음<br/>추가 IO 없음"]
-    D -->|"일부만"| F["디스크에서 먼저 읽기<br/>⚠ READ IO 발생"]
-    F --> G["읽은 페이지에<br/>100바이트 덮어쓰기"]
+    subgraph P["4KB 페이지 (blocksize=1KB 인 경우)"]
+        B0["블록0<br/>0~1023"]
+        B1["블록1<br/>1024~2047"]
+        B2["블록2<br/>2048~3071"]
+        B3["블록3<br/>3072~4095"]
+    end
+    W["write(): 오프셋 1500~2500 에 쓰기"]
+    W -.->|"건드림(일부)"| B1
+    W -.->|"건드림(일부)"| B2
+    W -.->|"안 건드림"| B0
+    W -.->|"안 건드림"| B3
 
-    style F fill:#ffcdd2,color:#000
-    style C fill:#c8e6c9,color:#000
-    style E fill:#c8e6c9,color:#000
+    B1 --> R1["⚠ 읽어야 함<br/>(경계가 걸침)"]
+    B2 --> R2["⚠ 읽어야 함<br/>(경계가 걸침)"]
+    B0 --> S1["건너뜀<br/>(범위 밖)"]
+    B3 --> S2["건너뜀<br/>(범위 밖)"]
+
+    style R1 fill:#ffcdd2,color:#000
+    style R2 fill:#ffcdd2,color:#000
+    style S1 fill:#e0e0e0,color:#000
+    style S2 fill:#e0e0e0,color:#000
 ```
 
-**실무 함의**: 랜덤 위치에 작은 크기로 쓰면 쓰기량의 몇 배가 읽기로 나간다. fsiotrace 에서
-write 워크로드인데 BLK 계층에 READ row 가 잔뜩 보이면 대개 이것이다. 4KB 정렬해서
-페이지 전체를 쓰면 사라진다.
+#### 실제 판정 조건 — 커널 코드 그대로
+
+`ext4_block_write_begin()` (`fs/ext4/inode.c:1090`) 의 조건문이 판정의 전부다.
+
+```c
+if (!buffer_uptodate(bh) && !buffer_delay(bh) &&
+    !buffer_unwritten(bh) &&
+    (block_start < from || block_end > to)) {
+        ext4_read_bh_lock(bh, 0, false);   // ← 여기서 READ 발생
+        wait[nr_wait++] = bh;
+}
+```
+
+네 조건이 **모두** 참이어야 읽는다. 하나라도 거짓이면 읽지 않는다.
+
+| 조건 | 뜻 | 거짓이면 왜 안 읽나 |
+|---|---|---|
+| `!buffer_uptodate(bh)` | 이 블록 내용이 메모리에 없다 | 이미 있으면 읽을 이유가 없다 |
+| `!buffer_delay(bh)` | delayed allocation 대기 중이 아니다 | 아직 디스크 위치가 없다 = 읽을 곳이 없다 |
+| `!buffer_unwritten(bh)` | 미기록 extent(`fallocate`)가 아니다 | 내용이 정의상 0 이다 |
+| `block_start < from \|\| block_end > to` | **쓰기 범위가 블록을 부분만 덮는다** | 블록 전체를 덮어쓰면 원본이 필요 없다 |
+
+마지막 조건이 핵심이다. 위 그림의 블록0·블록3 은 `block_end <= from` 이라 루프
+앞부분에서 `continue` 로 아예 건너뛴다.
+
+#### 읽지 않는 경우 — 새 블록은 0 으로 채운다
+
+파일 끝에 이어 쓰거나 hole 에 쓰면 **디스크에 원본이 없다.** 이때는 읽지 않고 0 으로
+채운다(`folio_zero_segments`). 같은 함수의 `buffer_new(bh)` 분기다.
+
+```mermaid
+flowchart TD
+    A["블록의 일부만 쓴다"] --> B{"새로 할당된<br/>블록인가?<br/>(buffer_new)"}
+    B -->|"예 — 파일 확장/hole"| C["원본이 없다<br/>→ 나머지를 0 으로 채움<br/>✅ READ 없음"]
+    B -->|"아니오 — 기존 데이터"| D{"이미 uptodate?"}
+    D -->|"예"| E["✅ READ 없음<br/>(캐시에 있음)"]
+    D -->|"아니오"| F["⚠ 디스크에서 읽기<br/>RMW 발생"]
+
+    style C fill:#c8e6c9,color:#000
+    style E fill:#c8e6c9,color:#000
+    style F fill:#ffcdd2,color:#000
+```
+
+#### 정리 — 언제 READ 가 생기나
+
+| 상황 | READ 발생? | 이유 |
+|---|---|---|
+| 4KB 정렬 + 4KB 크기 쓰기 | ❌ | 블록 전체를 덮어씀 |
+| 파일 끝에 append | ❌ | 새 블록 → 0 으로 채움 |
+| `fallocate` 영역에 쓰기 | ❌ | unwritten extent |
+| 이미 읽은 적 있는 위치 | ❌ | 캐시에 uptodate |
+| **기존 파일 중간에 비정렬 쓰기** | ✅ | **부분 덮어쓰기 + 원본 필요** |
+| **랜덤 위치에 작은 크기 쓰기** | ✅ | 대부분 비정렬 |
+
+#### 실무 함의
+
+**증상**: write 만 하는 워크로드인데 fsiotrace BLK/UFS 계층에 READ row 가 잔뜩 보인다.
+`ufs_op=0x28`(READ_10)이 write 워크로드에서 나온다.
+
+**비용**: 100바이트 쓰기가 디스크에서는 4KB 읽기 + 4KB 쓰기 = **80배 증폭**된다.
+게다가 읽기는 **동기**다 — `write_begin` 안에서 `wait_on_buffer()` 로 완료를 기다리므로
+(위 코드의 두 번째 루프), 앱의 `write()` 가 그만큼 늦어진다. "버퍼드 쓰기는 빠르다"는
+통념이 깨지는 지점이다.
+
+**해결**:
+- 쓰기를 **블록 크기에 정렬**하고 블록 단위로 쓴다 (보통 4KB)
+- 작은 쓰기가 불가피하면 앱에서 모아서(buffering) 한 번에 쓴다
+- 파일을 처음부터 순차로 채우면 새 블록이라 RMW 가 안 생긴다
+
+**f2fs 는 어떤가**: 로그 구조라 제자리 갱신이 없지만, **부분 블록 쓰기에서는 똑같이
+원본이 필요하다.** `f2fs_write_begin()` (`fs/f2fs/data.c:3855`) 이 정확히 같은 분기를 한다:
+
+```c
+if (blkaddr == NEW_ADDR) {                    // 새 블록 = 원본 없음
+    folio_zero_segment(folio, 0, folio_size(folio));   // 0 으로 채움
+    folio_mark_uptodate(folio);
+} else {                                      // 기존 블록 = 원본 필요
+    err = f2fs_submit_page_read(...);         // ⚠ READ 발생
+}
+```
+
+그리고 `len == PAGE_SIZE`(페이지 전체 덮어쓰기)면 읽기를 건너뛰는 최적화도 동일하게 있다
+(`data.c:3582`, `3791`).
+
+RMW 는 파일시스템 설계가 아니라 **"디스크는 블록 단위로만 읽고 쓴다"** 는 물리적 제약에서
+오는 것이라, 어느 파일시스템에서도 사라지지 않는다.
 
 ### 2.3 map_blocks — 파일 오프셋을 디스크 블록으로
 
@@ -672,7 +787,9 @@ gantt
 | `vfs_write` / `vfs_read` | `fs/read_write.c` |
 | ext4 a_ops | `fs/ext4/inode.c:3575` |
 | ext4 map_blocks | `fs/ext4/inode.c:596` |
+| **ext4 RMW 판정** | `fs/ext4/inode.c:1090` (`ext4_block_write_begin`) |
 | f2fs a_ops | `fs/f2fs/data.c:4307` |
 | f2fs map_blocks | `fs/f2fs/data.c:1594` |
+| **f2fs RMW 판정** | `fs/f2fs/data.c:3855` (`f2fs_write_begin`) |
 | page cache hit 판정 | `mm/filemap.c:2575` (`filemap_get_pages`) |
 | UFS 명령 전송 | `drivers/ufs/core/ufshcd.c` (`ufshcd_send_command`) |
