@@ -391,8 +391,36 @@ flowchart TD
 - 작은 쓰기가 불가피하면 앱에서 모아서(buffering) 한 번에 쓴다
 - 파일을 처음부터 순차로 채우면 새 블록이라 RMW 가 안 생긴다
 
-**f2fs 는 어떤가**: 로그 구조라 제자리 갱신이 없지만, **부분 블록 쓰기에서는 똑같이
-원본이 필요하다.** `f2fs_write_begin()` (`fs/f2fs/data.c:3855`) 이 정확히 같은 분기를 한다:
+#### f2fs 는 LFS 인데 왜 RMW 가 필요한가
+
+**가장 헷갈리는 부분이라 따로 다룬다.** "덮어쓰기를 안 하는데 왜 원본을 읽지?"
+
+핵심은 이것이다.
+
+> **LFS 는 "어디에 쓰는가"를 바꾼다. "얼마나 작게 쓸 수 있는가"는 안 바꾼다.**
+
+새 위치에 쓰더라도 **쓰기 단위는 여전히 블록(4KB)** 이다. 100바이트만 쓸 방법은 없다.
+그러면 나머지 3996 바이트에 무엇을 넣을 것인가? **원래 파일 내용이어야 한다.**
+
+```mermaid
+flowchart TD
+    A["앱: 오프셋 1500 에 100B 쓰기"] --> B["옛 블록 LBA 5000<br/>AAAA BBBB CCCC DDDD"]
+    B --> C{"새 위치에 쓸 4KB 를<br/>어떻게 채우나?"}
+    C --> D["원본을 안 읽으면<br/>❓❓❓ XXXX ❓❓❓ ❓❓❓<br/>= 파일이 깨진다"]
+    C --> E["원본을 읽으면<br/>AAAA XXXX CCCC DDDD<br/>✅ 올바름"]
+    E --> F["새 LBA 9000 에 4KB 쓰기"]
+
+    style D fill:#ffcdd2,color:#000
+    style E fill:#c8e6c9,color:#000
+```
+
+오히려 **f2fs 가 더 곤란하다.** ext4 는 제자리라 "안 건드린 부분은 디스크에 그대로 있다"는
+여지가 개념적으로라도 있지만, f2fs 는 **새 위치에 쓰므로 안 채우면 그 3996 바이트가
+확정적으로 쓰레기값**이 된다.
+
+#### 실제 코드 — ext4 와 같은 분기
+
+`f2fs_write_begin()` (`fs/f2fs/data.c:3855`):
 
 ```c
 if (blkaddr == NEW_ADDR) {                    // 새 블록 = 원본 없음
@@ -403,8 +431,82 @@ if (blkaddr == NEW_ADDR) {                    // 새 블록 = 원본 없음
 }
 ```
 
-그리고 `len == PAGE_SIZE`(페이지 전체 덮어쓰기)면 읽기를 건너뛰는 최적화도 동일하게 있다
-(`data.c:3582`, `3791`).
+`NEW_ADDR` 은 f2fs 특유의 값으로 "블록이 예약됐지만 아직 실제 위치가 없음"을 뜻한다.
+ext4 의 `buffer_new` 와 같은 역할이다.
+
+읽기를 건너뛰는 최적화도 동일하게 있다(`data.c:3846`):
+
+```c
+if (len == folio_size(folio) || folio_test_uptodate(folio))
+    return 0;                    // 블록 전체를 덮어쓰면 원본 불필요
+```
+
+f2fs 만의 것도 하나 있다(`data.c:3849`) — **파일 끝을 넘어서 쓰면** 그 뒤는 원래 아무것도
+없으므로 0 으로 채우고 끝낸다:
+
+```c
+if (!(pos & (PAGE_SIZE - 1)) && (pos + len) >= i_size_read(inode) && ...) {
+    folio_zero_segment(folio, len, folio_size(folio));
+    return 0;
+}
+```
+
+#### LFS 가 실제로 없애는 것
+
+| | ext4 (in-place) | f2fs (LFS) |
+|---|---|---|
+| 부분 블록 쓰기 시 원본 읽기 | 필요 | **똑같이 필요** |
+| 쓰기 **위치** | 랜덤 (원래 자리) | **순차** (로그 끝) |
+| 플래시 GC 부담 | 높음 | 낮음 |
+| 매핑 갱신 | 대개 불필요 | 필요 (node 갱신) |
+
+**읽기 증폭은 그대로고, 쓰기 패턴만 순차로 바뀐다.** 플래시에서 순차 쓰기가 유리하니 그것만
+으로도 큰 이득이지만, RMW 는 별개 문제다.
+
+RMW 를 정말 없애려면 쓰기 단위가 바이트여야 하는데, 저장장치가 블록 단위로만 읽고 쓰므로
+불가능하다. 굳이 하려면 "쓴 내용만 기록하고 읽을 때 재구성"하는 방식(DB 의 WAL 에 가깝다)이
+있지만 읽기가 느려져 파일시스템에서는 쓰지 않는다.
+
+#### f2fs 는 조회가 한 번 더 있다
+
+ext4 는 extent tree 가 **inode 안에** 있어 대개 바로 찾지만, f2fs 는 매핑이 **별도 node
+블록**에 있어 두 단계를 거친다.
+
+```mermaid
+flowchart LR
+    subgraph E["ext4"]
+        E1["inode"] -->|"extent tree<br/>(inode 안)"| E2["데이터 블록"]
+    end
+    subgraph F["f2fs"]
+        F1["inode"] --> F2["NAT<br/>(Node Address Table)"] --> F3["node 블록"] --> F4["데이터 블록"]
+    end
+
+    style F2 fill:#fff3e0,color:#000
+    style F3 fill:#fff3e0,color:#000
+```
+
+**왜 간접층이 있나**: LFS 는 데이터가 이동할 때마다 매핑이 바뀐다. 매핑이 inode 안에 있으면
+데이터 하나 쓸 때마다 inode 도 새로 써야 하고, inode 도 log 구조라 또 새 위치로 가고…
+연쇄가 위로 전파된다(**wandering tree** 문제). NAT 라는 간접층이 이 연쇄를 끊는다 — node 가
+어디로 이동하든 NAT 항목만 고치면 되고 inode 는 안 건드린다.
+
+**RMW 때의 실제 IO**:
+
+| 단계 | 하는 일 | 디스크 IO |
+|---|---|---|
+| ⓪ | extent 캐시 조회 | 없음 (메모리) |
+| ① | 캐시 미스면 `f2fs_get_dnode_of_data()` | **NAT + node 블록 읽기** ← 메타 |
+| ② | node 에서 `data_blkaddr` 획득 | — |
+| ③ | `blkaddr != NEW_ADDR` 이면 그 위치를 읽기 | **데이터 블록 읽기** ← RMW 의 R |
+
+**①이 ext4 대비 추가되는 부분**이다. fsiotrace 에서 f2fs write 워크로드에 **파일명이 안
+붙는 메타 IO 가 더 많이 보이는 이유**가 이것이다(②의 데이터 읽기에는 파일명이 붙는다).
+
+다만 `f2fs_lookup_read_extent_cache_block()` 이 먼저 메모리 캐시를 보므로, 연속 접근이면
+①을 건너뛴다. f2fs 도 extent 캐시를 쓴다 — ext4 처럼 디스크 구조가 아니라 **메모리 전용**
+캐시라는 점만 다르다.
+
+---
 
 RMW 는 파일시스템 설계가 아니라 **"디스크는 블록 단위로만 읽고 쓴다"** 는 물리적 제약에서
 오는 것이라, 어느 파일시스템에서도 사라지지 않는다.
@@ -440,9 +542,9 @@ flowchart LR
 
 호출 시점이 **write 방식에 따라 다르다.** 이게 핵심이다.
 
-| 방식 | map_blocks 시점 | 이유 |
+| 방식 | 실제 주소 확정 시점 | 이유 |
 |---|---|---|
-| **delayed allocation** (ext4 기본, f2fs) | **writeback 때** | 모아서 할당하면 연속 배치가 쉬워 단편화가 준다 |
+| **delayed allocation** (ext4 기본) | **writeback 때** | 모아서 할당하면 연속 배치가 쉬워 단편화가 준다 |
 | `data=journal`, DIO | **write_begin 때** | 즉시 디스크 위치가 필요 |
 
 **delayed allocation 이 기본**이라는 건, `write()` 시점엔 디스크 위치가 **아직 안 정해졌다**는
@@ -465,6 +567,88 @@ flowchart TD
     style G fill:#e8f5e9,color:#000
 ```
 
+#### ⚠ f2fs 의 buffered write 는 `map_blocks` 를 안 거친다
+
+위 그림은 **ext4 기준**이다. f2fs 도 "쓰기 시점엔 주소 미정, writeback 때 확정" 이라는 큰
+그림은 같지만, **경로가 다르다.**
+
+`f2fs_map_blocks()` 는 buffered write 의 writeback 경로에 쓰이지 않는다. 주 용도는 따로 있다:
+
+- DIO(direct IO)
+- `fiemap` (파일의 블록 배치 조회)
+- 미리 할당(preallocation)
+
+buffered write 의 writeback 은 이 경로로 간다:
+
+```mermaid
+flowchart TD
+    A["f2fs_write_data_pages()<br/>(a_ops->writepages)"] --> B["f2fs_write_single_data_page()"]
+    B --> C["f2fs_do_write_data_page()<br/>data.c:2760"]
+    C --> D["f2fs_get_dnode_of_data()<br/>옛 주소를 일단 가져온다"]
+    D --> E{"need_inplace_update()"}
+    E -->|"IPU"| F["f2fs_inplace_write_data()<br/>new_blkaddr = old_blkaddr<br/>= 옛 자리에 그대로"]
+    E -->|"OPU (기본)"| G["f2fs_outplace_write_data()<br/>새 주소 할당 + node 갱신"]
+
+    style C fill:#fff3e0,color:#000
+    style F fill:#e1f5fe,color:#000
+    style G fill:#f3e5f5,color:#000
+```
+
+**주소를 "가져오는" 것과 "결정하는" 것이 분리돼 있다**는 게 요점이다.
+`f2fs_do_write_data_page()` 는 먼저 `fio->old_blkaddr` 에 옛 주소를 담아두고, 그 다음에
+IPU 로 갈지 OPU 로 갈지 정한다. 옛 주소는 어느 쪽이든 필요하다 — IPU 면 **쓸 자리**로,
+OPU 면 **무효화할 자리**로.
+
+IPU 가 확실하면 node 조회 자체를 건너뛰는 최적화도 있다(`data.c:2778`). IPU 는 매핑이
+안 바뀌므로 node 를 갱신할 필요가 없기 때문이다. 반대로 **OPU 는 매핑이 바뀌므로 반드시
+dnode 를 잡아야 한다.**
+
+#### f2fs 는 항상 새 위치에 쓰지 않는다 — IPU
+
+f2fs 를 "LFS 니까 무조건 새 위치" 로 알기 쉬운데, **실제로는 조건에 따라 제자리 갱신
+(IPU, In-Place Update)을 한다.** `f2fs_inplace_write_data()` 의 첫 줄이 그 증거다:
+
+```c
+// fs/f2fs/segment.c:4184
+fio->new_blkaddr = fio->old_blkaddr;   // 옛 주소를 그대로 쓴다
+```
+
+IPU 판정 조건(`check_inplace_update_policy`, `data.c:2653`)에 **쓰기 크기는 없다.**
+파일시스템 상태와 파일 속성이 기준이다:
+
+| 조건 | 언제 IPU 로 가나 |
+|---|---|
+| `IPU_UTIL` | **디스크 사용률**이 임계치(`min_ipu_util`) 초과 |
+| `IPU_SSR` | 여유 세그먼트 부족으로 SSR 필요 |
+| `IPU_ASYNC` | 비동기 rewrite (`REQ_SYNC` 아님) |
+| `IPU_FSYNC` | fdatasync 중 |
+| `IPU_FORCE` | 마운트 옵션으로 강제 |
+| pinned / cold file | 파일 속성 |
+
+> **흔한 오해: "4KB 미만이면 IPU 아닌가?"** — 아니다. 위 조건 어디에도 크기 비교가 없다.
+> RMW 와 IPU 는 **층위가 다르다**:
+>
+> | | RMW | IPU |
+> |---|---|---|
+> | **언제** | `write()` 시점 (write_begin) | **writeback** 시점 |
+> | **무엇을 정하나** | 원본을 읽어올까? | 어디에 쓸까? |
+> | **기준** | 블록을 부분만 덮나 (**크기 영향 있음**) | 사용률·파일속성 (**크기 무관**) |
+>
+> 100바이트 쓰기여도 여유가 넉넉하면 OPU 로 가고, 4KB 를 꽉 채워 써도 사용률이 높으면
+> IPU 로 간다. **RMW 는 이미 끝난 뒤에** IPU 판정이 일어나므로, 어느 쪽으로 가든
+> write_begin 에서 읽어온 것은 되돌릴 수 없다.
+
+**왜 있나**: 디스크가 차면 새 위치에 쓰려고 빈 세그먼트를 만드는 데 GC 가 필요하고, GC
+자체가 IO 다. 그래서 사용률이 높아지면 **LFS 원칙을 부분적으로 포기하고** 제자리 갱신으로
+전환해 GC 부담을 피한다.
+
+`mode=lfs` 로 마운트하면 이 타협 없이 **항상 OPU** 다(`f2fs_should_update_outplace()` 에서
+`f2fs_lfs_mode(sbi)` → `return true`). 존(zoned) 장치처럼 제자리 갱신이 물리적으로 불가능한
+경우에 쓴다.
+
+> **fsiotrace 로 보면**: f2fs 파티션인데 같은 LBA 에 반복해서 쓰이는 게 보이면 IPU 다.
+> LFS 라고 다 순차 쓰기일 거라 단정하면 안 된다.
+
 ### 2.4 ext4 vs f2fs — 같은 3단계, 다른 철학
 
 ```mermaid
@@ -472,7 +656,7 @@ flowchart TD
     subgraph E4["ext4 — 제자리 갱신 (in-place update)"]
         A1["파일 블록 100 수정"] --> A2["같은 LBA 5000 에 덮어쓰기"]
     end
-    subgraph F2["f2fs — 이동 기록 (log-structured)"]
+    subgraph F2["f2fs — 이동 기록 (log-structured), OPU 인 경우"]
         B1["파일 블록 100 수정"] --> B2["새 LBA 9000 에 쓰기"]
         B2 --> B3["매핑 갱신: 100 → 9000"]
         B3 --> B4["옛 LBA 5000 은 무효 처리<br/>→ 나중에 GC 가 회수"]
@@ -485,10 +669,12 @@ flowchart TD
 
 | 항목 | ext4 | f2fs |
 |---|---|---|
-| 갱신 방식 | 제자리(in-place) | 새 위치에 기록(append) |
+| 갱신 방식 | 제자리(in-place) | 새 위치에 기록(OPU) — **단 IPU 예외 있음**(§2.3) |
 | 매핑 자료구조 | extent tree (inode 안) | NAT(노드 주소 테이블) + SIT |
+| 매핑 조회 | 대개 1단계 | **2단계** (NAT → node) |
 | 일관성 보장 | jbd2 저널 | checkpoint + 로그 |
-| 블록 할당 시점 | delayed allocation | delayed allocation |
+| 블록 할당 시점 | delayed allocation | writeback 때 확정 (경로는 다름) |
+| **부분 블록 쓰기 시 RMW** | 필요 | **똑같이 필요** |
 | 랜덤 write 특성 | 제자리라 단편화 적음 | 순차로 바뀌어 **플래시에 유리** |
 | 대가 | 저널 이중 쓰기 | **GC 필요** (유효 블록 이동) |
 
@@ -763,14 +949,17 @@ gantt
 
 ---
 
-## 8. 요약 — 세 문장으로
+## 8. 요약 — 네 문장으로
 
 1. **VFS 는 함수 포인터(`f_op`, `i_op`, `a_ops`)로 파일시스템에 연결된다.** 그래서 VFS 코드는
    ext4 든 f2fs 든 몰라도 된다. 연결은 `open()` 때 `inode->i_fop` → `file->f_op` 복사로 이뤄진다.
-2. **write 는 `write_begin` → 복사 → `write_end` 3단계로 캐시에만 쓰고 끝난다.** 디스크 블록
-   할당(`map_blocks`)은 delayed allocation 때문에 **writeback 때로 미뤄지고**, 그 writeback 은
-   앱이 아니라 `kworker` 가 수 초 뒤에 실행한다.
-3. **read 의 hit 은 "캐시에 있고 + uptodate 인" 두 조건을 다 만족해야 한다.** miss 면
+2. **write 는 `write_begin` → 복사 → `write_end` 3단계로 캐시에만 쓰고 끝난다.** 디스크 주소
+   확정은 **writeback 때로 미뤄지고**(ext4 는 `map_blocks`, f2fs 는 `do_write_data_page`),
+   그 writeback 은 앱이 아니라 `kworker` 가 수 초 뒤에 실행한다.
+3. **블록을 부분만 덮어쓰면 원본을 먼저 읽어야 한다(RMW).** 저장장치가 블록 단위로만
+   읽고 쓰기 때문이며, **LFS 인 f2fs 에서도 사라지지 않는다.** 이 읽기는 동기라
+   `write()` 자체가 느려진다.
+4. **read 의 hit 은 "캐시에 있고 + uptodate 인" 두 조건을 다 만족해야 한다.** miss 면
    readahead 가 요청보다 훨씬 크게 당겨오므로, VFS 요청 수와 디스크 IO 수는 원래 다르다.
 
 ## 9. 더 읽기
@@ -789,7 +978,10 @@ gantt
 | ext4 map_blocks | `fs/ext4/inode.c:596` |
 | **ext4 RMW 판정** | `fs/ext4/inode.c:1090` (`ext4_block_write_begin`) |
 | f2fs a_ops | `fs/f2fs/data.c:4307` |
-| f2fs map_blocks | `fs/f2fs/data.c:1594` |
+| f2fs map_blocks (DIO·fiemap 용) | `fs/f2fs/data.c:1594` |
 | **f2fs RMW 판정** | `fs/f2fs/data.c:3855` (`f2fs_write_begin`) |
+| **f2fs IPU/OPU 결정** | `fs/f2fs/data.c:2760` (`f2fs_do_write_data_page`) |
+| **f2fs IPU 정책** | `fs/f2fs/data.c:2653` (`check_inplace_update_policy`) |
+| **f2fs 제자리 쓰기** | `fs/f2fs/segment.c:4178` (`f2fs_inplace_write_data`) |
 | page cache hit 판정 | `mm/filemap.c:2575` (`filemap_get_pages`) |
 | UFS 명령 전송 | `drivers/ufs/core/ufshcd.c` (`ufshcd_send_command`) |
