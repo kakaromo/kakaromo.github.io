@@ -335,6 +335,7 @@ export default defineConfig({
           label: 'fsiotrace (eBPF Tracer)',
           items: [
             { label: '개요', slug: 'fsiotrace/overview' },
+            { label: 'IO 4계층 완전 해부', slug: 'fsiotrace/io-layers' },
             { label: 'eBPF 동작 원리', slug: 'fsiotrace/bpf' },
             { label: '설계 (cross-layer · io_flags)', slug: 'fsiotrace/design' },
             { label: '사용법', slug: 'fsiotrace/usage' },
