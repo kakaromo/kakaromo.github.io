@@ -3,11 +3,19 @@ title: IO 4계층 완전 해부 (VFS · FS · Block · UFS)
 description: 커널을 몰라도 읽을 수 있는 IO 경로 해설. VFS 의 file/inode operations 가 어떻게 파일시스템에 연결되는지, ext4/f2fs 의 write_begin→map_blocks→write_end 와 writeback, read 의 page cache hit 판정까지 그림과 표로 설명한다.
 ---
 
-> **최종 수정**: 2026-08-13 · **대상 커널**: GKI 6.6 / 6.12 (Android)
+> **최종 수정**: 2026-08-14 · **대상 커널**: GKI 6.6 / 6.12 (Android)
 > · **읽는 사람**: 커널 내부를 몰라도 IO 흐름을 이해하고 싶은 사람.
 > · **왜 이 문서인가**: fsiotrace 는 IO 를 4개 층으로 나눠 찍는다. 그 층이 실제로
 > 커널 어디에 있고 무슨 일을 하는지 알아야 출력을 해석할 수 있다.
 > 도구 사용법은 [사용법](/fsiotrace/usage/), 출력 컬럼은 [TSV 출력 형식](/fsiotrace/output-format/).
+
+> **용어 표기 원칙**
+> 코드·로그·검색에서 그대로 마주치는 말은 **원어를 쓴다** — `write_begin`,
+> `writeback`, `readahead`, `page cache`, `in-place` / `IPU` / `OPU`,
+> `log-structured`, `checkpoint`, `journal`, `extent`, `dirty`.
+> 억지로 번역하면 오히려 검색이 안 되고 뜻도 흐려진다("선반입", "이동 기록" 처럼).
+> 대신 **처음 나올 때 괄호로 뜻을 한 번** 붙이고, 서술문에서는 자연스러운 우리말을
+> 쓴다(예: "원래 자리에 덮어쓴다").
 
 ## 0. 한눈에 — 파일 한 번 쓰면 무슨 일이 일어나나
 
@@ -414,7 +422,7 @@ flowchart TD
     style E fill:#c8e6c9,color:#000
 ```
 
-오히려 **f2fs 가 더 곤란하다.** ext4 는 제자리라 "안 건드린 부분은 디스크에 그대로 있다"는
+오히려 **f2fs 가 더 곤란하다.** ext4 는 in-place 라 "안 건드린 부분은 디스크에 그대로 있다"는
 여지가 개념적으로라도 있지만, f2fs 는 **새 위치에 쓰므로 안 채우면 그 3996 바이트가
 확정적으로 쓰레기값**이 된다.
 
@@ -485,9 +493,9 @@ flowchart LR
     style F3 fill:#fff3e0,color:#000
 ```
 
-**왜 간접층이 있나**: LFS 는 데이터가 이동할 때마다 매핑이 바뀐다. 매핑이 inode 안에 있으면
+**왜 간접 계층을 두나**: LFS 는 데이터가 이동할 때마다 매핑이 바뀐다. 매핑이 inode 안에 있으면
 데이터 하나 쓸 때마다 inode 도 새로 써야 하고, inode 도 log 구조라 또 새 위치로 가고…
-연쇄가 위로 전파된다(**wandering tree** 문제). NAT 라는 간접층이 이 연쇄를 끊는다 — node 가
+연쇄가 위로 전파된다(**wandering tree** 문제). NAT 라는 간접 계층(indirection)이 이 연쇄를 끊는다 — node 가
 어디로 이동하든 NAT 항목만 고치면 되고 inode 는 안 건드린다.
 
 **RMW 때의 실제 IO**:
@@ -605,8 +613,8 @@ dnode 를 잡아야 한다.**
 
 #### f2fs 는 항상 새 위치에 쓰지 않는다 — IPU
 
-f2fs 를 "LFS 니까 무조건 새 위치" 로 알기 쉬운데, **실제로는 조건에 따라 제자리 갱신
-(IPU, In-Place Update)을 한다.** `f2fs_inplace_write_data()` 의 첫 줄이 그 증거다:
+f2fs 를 "LFS 니까 무조건 새 위치" 로 알기 쉬운데, **실제로는 조건에 따라 IPU(In-Place Update,
+원래 자리에 덮어쓰기)를 한다.** `f2fs_inplace_write_data()` 의 첫 줄이 그 증거다:
 
 ```c
 // fs/f2fs/segment.c:4184
@@ -639,11 +647,11 @@ IPU 판정 조건(`check_inplace_update_policy`, `data.c:2653`)에 **쓰기 크�
 > write_begin 에서 읽어온 것은 되돌릴 수 없다.
 
 **왜 있나**: 디스크가 차면 새 위치에 쓰려고 빈 세그먼트를 만드는 데 GC 가 필요하고, GC
-자체가 IO 다. 그래서 사용률이 높아지면 **LFS 원칙을 부분적으로 포기하고** 제자리 갱신으로
+자체가 IO 다. 그래서 사용률이 높아지면 **LFS 원칙을 부분적으로 포기하고** IPU 로
 전환해 GC 부담을 피한다.
 
 `mode=lfs` 로 마운트하면 이 타협 없이 **항상 OPU** 다(`f2fs_should_update_outplace()` 에서
-`f2fs_lfs_mode(sbi)` → `return true`). 존(zoned) 장치처럼 제자리 갱신이 물리적으로 불가능한
+`f2fs_lfs_mode(sbi)` → `return true`). 존(zoned) 장치처럼 덮어쓰기가 물리적으로 불가능한
 경우에 쓴다.
 
 > **fsiotrace 로 보면**: f2fs 파티션인데 같은 LBA 에 반복해서 쓰이는 게 보이면 IPU 다.
@@ -653,10 +661,10 @@ IPU 판정 조건(`check_inplace_update_policy`, `data.c:2653`)에 **쓰기 크�
 
 ```mermaid
 flowchart TD
-    subgraph E4["ext4 — 제자리 갱신 (in-place update)"]
+    subgraph E4["ext4 — in-place update (원래 자리에 덮어쓰기)"]
         A1["파일 블록 100 수정"] --> A2["같은 LBA 5000 에 덮어쓰기"]
     end
-    subgraph F2["f2fs — 이동 기록 (log-structured), OPU 인 경우"]
+    subgraph F2["f2fs — log-structured, OPU 인 경우"]
         B1["파일 블록 100 수정"] --> B2["새 LBA 9000 에 쓰기"]
         B2 --> B3["매핑 갱신: 100 → 9000"]
         B3 --> B4["옛 LBA 5000 은 무효 처리<br/>→ 나중에 GC 가 회수"]
@@ -669,13 +677,13 @@ flowchart TD
 
 | 항목 | ext4 | f2fs |
 |---|---|---|
-| 갱신 방식 | 제자리(in-place) | 새 위치에 기록(OPU) — **단 IPU 예외 있음**(§2.3) |
+| 갱신 방식 | **in-place** (원래 자리에 덮어쓰기) | 새 위치에 기록(OPU) — **단 IPU 예외 있음**(§2.3) |
 | 매핑 자료구조 | extent tree (inode 안) | NAT(노드 주소 테이블) + SIT |
 | 매핑 조회 | 대개 1단계 | **2단계** (NAT → node) |
 | 일관성 보장 | jbd2 저널 | checkpoint + 로그 |
 | 블록 할당 시점 | delayed allocation | writeback 때 확정 (경로는 다름) |
 | **부분 블록 쓰기 시 RMW** | 필요 | **똑같이 필요** |
-| 랜덤 write 특성 | 제자리라 단편화 적음 | 순차로 바뀌어 **플래시에 유리** |
+| 랜덤 write 특성 | in-place 라 단편화 적음 | 순차로 바뀌어 **플래시에 유리** |
 | 대가 | **저널 이중 쓰기** → §2.6 | **GC 필요** (유효 블록 이동) → §2.5 |
 
 f2fs 는 데이터를 성격별로 다른 영역(hot/warm/cold)에 나눠 쓴다. fsiotrace 의 f2fs 세분
@@ -832,7 +840,7 @@ GC IO 는 **앱이 낸 게 아니라 파일시스템이 스스로 낸 것**이�
 
 #### ext4 에는 왜 GC 가 없나
 
-ext4 는 제자리 갱신이라 **옛 블록이 곧 새 블록**이다. 무효 블록이 안 생기니 회수할 것도
+ext4 는 in-place 라 **옛 블록이 곧 새 블록**이다. 무효 블록이 안 생기니 회수할 것도
 없다. 대신 다른 대가를 치른다:
 
 | | ext4 | f2fs |
@@ -873,16 +881,16 @@ flowchart TD
 
 어느 쪽이든 **"전부 반영" 또는 "전혀 반영 안 됨"** 둘 중 하나만 남는다. 이게 원자성이다.
 
-> **용어: "제자리"(in-place)**
-> 이 문서에서 **제자리 = 그 블록이 원래 있던 디스크 주소**를 뜻한다. 저널 영역
+> **용어: "원래 자리"**
+> 아래에서 **원래 자리 = 그 블록이 본래 놓여 있는 디스크 주소**를 뜻한다. 저널 영역
 > (디스크의 별도 구역)과 대비되는 말이다.
 >
-> 그래서 **"저널에 먼저 쓰고 나중에 제자리"** 는 같은 내용을 **두 번** 쓴다는
+> 그래서 **"저널에 먼저 쓰고 나중에 원래 자리로"** 는 같은 내용을 **두 번** 쓴다는
 > 뜻이다 — 먼저 저널 영역에, 나중에 원래 자리에. 이게 저널링의 이중 쓰기다.
 >
 > ⚠ 헷갈리기 쉬운 지점: `data=ordered`(기본)에서 **이 이중 쓰기를 겪는 건
-> 메타데이터뿐이다.** 데이터는 저널을 타지 않고 제자리로 한 번만 간다.
-> 아래 시퀀스에서 ①(데이터)과 ④(메타)의 목적지가 똑같이 "제자리" 인 이유가
+> 메타데이터뿐이다.** 데이터는 저널을 타지 않고 원래 자리로 한 번만 간다.
+> 아래 시퀀스에서 ①(데이터)과 ④(메타)의 목적지가 똑같이 "원래 자리" 인 이유가
 > 이것 — 같은 곳으로 가지만 데이터는 한 번, 메타는 저널을 거쳐 두 번째다.
 
 #### 세 가지 모드 — 무엇을 저널에 넣느냐
@@ -893,11 +901,11 @@ flowchart TD
 ```mermaid
 flowchart TD
     subgraph J["data=journal — 데이터도 저널에"]
-        J1["데이터 + 메타 모두<br/>저널에 먼저 쓰기"] --> J2["나중에 제자리로"]
+        J1["데이터 + 메타 모두<br/>저널에 먼저 쓰기"] --> J2["나중에 원래 자리로"]
         J2 --> J3["⚠ 모든 것을 2번 쓴다"]
     end
     subgraph O["data=ordered — 기본"]
-        O1["데이터를 제자리에 먼저"] --> O2["완료 후 메타만 저널에"]
+        O1["데이터를 원래 자리에 먼저"] --> O2["완료 후 메타만 저널에"]
         O2 --> O3["✅ 데이터는 1번,<br/>메타만 2번"]
     end
     subgraph W["data=writeback — 순서 없음"]
@@ -932,7 +940,7 @@ list_for_each_entry(jinode, &commit_transaction->t_inode_list, i_list) {
 크래시가 나면, 그 4KB 자리에는 **이전에 삭제된 다른 파일의 내용**이 남아 있다. 남의 데이터가
 보이는 보안 문제다. `writeback` 모드가 빠른 대신 감수하는 위험이 이것이다.
 
-#### 커밋 절차 — 트랜잭션의 일생
+#### 커밋 절차 — 트랜잭션이 만들어져 반영되기까지
 
 jbd2 는 여러 변경을 **하나의 트랜잭션으로 묶어** 한꺼번에 커밋한다. 기본 간격은 **5초**
 (`JBD2_DEFAULT_MAX_COMMIT_AGE`, `include/linux/jbd2.h:48`).
@@ -942,33 +950,33 @@ sequenceDiagram
     participant App as 앱/FS
     participant T as 실행 중 트랜잭션
     participant JD as 저널 영역
-    participant D as 제자리(디스크)
+    participant D as 원래 자리(디스크)
 
     App->>T: 변경 등록 (여러 개 누적)
     Note over T: T_RUNNING — 5초간 모음
 
     Note over T,D: 커밋 시작
     T->>T: T_LOCKED — 새 변경 차단
-    T->>D: (ordered) 데이터를 제자리에 먼저 ①
+    T->>D: (ordered) 데이터를 원래 자리에 먼저 ①
     D-->>T: 완료 대기
     T->>JD: 메타데이터 블록들을 저널에 ②
     T->>JD: commit block ③<br/>REQ_PREFLUSH + REQ_FUA
     Note over JD: ★ 여기가 원자성의 경계
     JD-->>T: 완료
     Note over T,D: 이후 여유 있을 때
-    T->>D: 메타데이터를 제자리에 ④ (checkpoint)
+    T->>D: 메타데이터를 원래 자리에 ④ (checkpoint)
     T->>JD: 저널 공간 회수
 ```
 
 | 단계 | 상태 | 하는 일 |
 |---|---|---|
 | ① | `T_RUNNING`→`T_LOCKED` | 변경 누적 → 새 진입 차단 |
-| ② | `T_FLUSH` | (ordered) **데이터**를 제자리에 — 저널 안 탐, 이걸로 끝 |
+| ② | `T_FLUSH` | (ordered) **데이터**를 원래 자리에 — 저널 안 탐, 이걸로 끝 |
 | ③ | `T_COMMIT` | **메타데이터**를 **저널에** 기록 ← 메타의 1번째 쓰기 |
 | ④ | `T_COMMIT_JFLUSH` | **commit block** — 이게 쓰이면 트랜잭션 확정 |
-| ⑤ | checkpoint | **메타데이터**를 **제자리에** 반영 ← 메타의 2번째 쓰기, 저널 회수 |
+| ⑤ | checkpoint | **메타데이터**를 **원래 자리에** 반영 ← 메타의 2번째 쓰기, 저널 회수 |
 
-②와 ⑤ 둘 다 목적지가 "제자리" 지만 **대상이 다르다** — ②는 데이터(한 번으로 끝),
+②와 ⑤ 둘 다 목적지가 "원래 자리" 지만 **대상이 다르다** — ②는 데이터(한 번으로 끝),
 ⑤는 메타데이터(저널을 거쳐 온 두 번째). 여기가 이중 쓰기의 실체다.
 
 **commit block 이 원자성의 경계다.** 이게 디스크에 안전히 안착하기 전에 전원이 나가면
@@ -981,7 +989,7 @@ if (journal->j_flags & JBD2_BARRIER &&
         write_flags |= REQ_PREFLUSH | REQ_FUA;
 ```
 
-- `REQ_PREFLUSH` — 앞서 보낸 것들을 **먼저 다 굽고** 나서 이걸 쓰라
+- `REQ_PREFLUSH` — 앞서 보낸 것들을 앞선 쓰기를 **먼저 다 매체에 내리고** 나서 이걸 쓰라
 - `REQ_FUA` — 이 블록은 장치 캐시에 두지 말고 **매체에 직접** 써라
 
 UFS 계층에서 `SYNCHRONIZE_CACHE`(0x35) 가 보이면 대개 이 배리어다.
@@ -997,22 +1005,22 @@ UFS 계층에서 `SYNCHRONIZE_CACHE`(0x35) 가 보이면 대개 이 배리어다
 - `fsync()` 를 부르면 그 자리에서 즉시 커밋이 일어난다
 
 > **쓰기 증폭 계산**: `data=ordered` 에서 4KB 데이터 한 번 쓰면 실제로는
-> **데이터** 4KB(제자리, 한 번) + **메타**를 저널에 + commit block + 나중에 **메타**를
-> 제자리에. 즉 데이터는 1회, 메타는 2회 쓰인다. 작은 파일을 많이 만들수록
+> **데이터** 4KB(원래 자리, 한 번) + **메타**를 저널에 + commit block + 나중에 **메타**를
+> 원래 자리에. 즉 데이터는 1회, 메타는 2회 쓰인다. 작은 파일을 많이 만들수록
 > **메타 비중이 커져** 증폭이 심해진다.
 
 #### f2fs 와의 비교 — 같은 문제, 다른 해법
 
 | | ext4 (jbd2 저널) | f2fs (checkpoint + LFS) |
 |---|---|---|
-| 일관성 방식 | **메타를** 저널에 먼저 → 나중에 제자리 | 데이터·메타 모두 **새 위치**에 쓴다 |
-| **데이터** 경로 | 제자리로 **한 번**(`ordered` 기준, 저널 안 탐) | 새 위치(OPU) — 단 IPU 예외(§2.3) |
-| **메타** 쓰기 증폭 | **2배** (저널 + 제자리) | checkpoint 시점에만 |
+| 일관성 방식 | **메타를** 저널에 먼저 → 나중에 원래 자리로 | 데이터·메타 모두 **새 위치**에 쓴다 |
+| **데이터** 경로 | 원래 자리로 **한 번**(`ordered` 기준, 저널 안 탐) | 새 위치(OPU) — 단 IPU 예외(§2.3) |
+| **메타** 쓰기 증폭 | **2배** (저널 + 원래 자리) | checkpoint 시점에만 |
 | 크래시 복구 | 저널 replay | 마지막 checkpoint 로 롤백 + roll-forward |
 | 대가 | **메타 이중 쓰기** | **GC** (§2.5) |
 
-**둘은 같은 문제를 반대 방향으로 푼다.** ext4 는 "제자리를 고치되, 고치기 전에 저널에
-적어 둔다", f2fs 는 "제자리를 아예 안 고치니 되돌릴 것도 없다 — 대신 버려진 옛 공간을
+**둘은 같은 문제를 반대 방향으로 푼다.** ext4 는 "원래 자리를 고치되, 고치기 전에 저널에
+적어 둔다", f2fs 는 "원래 자리를 아예 안 고치니 되돌릴 것도 없다 — 대신 버려진 옛 공간을
 GC 로 회수한다".
 
 ### 2.7 fsync — ext4 와 f2fs 는 어떻게 다른가
@@ -1423,7 +1431,7 @@ readahead 는 **순차 읽기를 감지하면 창(window)을 키우고, 랜덤�
 |---|---|---|
 | 순차 읽기 | 창을 키움 (최대 128KB 등) | 첫 read 만 miss, 나머지 hit |
 | 랜덤 읽기 | 창을 줄이거나 끔 | 매번 miss → 매번 디스크 IO |
-| `posix_fadvise(RANDOM)` | 명시적으로 끔 | 불필요한 선반입 방지 |
+| `posix_fadvise(RANDOM)` | 명시적으로 끔 | 불필요한 readahead 방지 |
 
 **fsiotrace 에서 보이는 모습**: 앱이 4KB 씩 순차로 100번 읽으면 VFS row 는 100개인데
 BLK row 는 몇 개뿐이다. readahead 가 크게 묶어서 가져왔기 때문이다. **VFS 요청 수와
@@ -1590,7 +1598,7 @@ gantt
 | **f2fs RMW 판정** | `fs/f2fs/data.c:3855` (`f2fs_write_begin`) |
 | **f2fs IPU/OPU 결정** | `fs/f2fs/data.c:2760` (`f2fs_do_write_data_page`) |
 | **f2fs IPU 정책** | `fs/f2fs/data.c:2653` (`check_inplace_update_policy`) |
-| **f2fs 제자리 쓰기** | `fs/f2fs/segment.c:4178` (`f2fs_inplace_write_data`) |
+| **f2fs IPU 쓰기** | `fs/f2fs/segment.c:4178` (`f2fs_inplace_write_data`) |
 | **f2fs GC 스레드** | `fs/f2fs/gc.c:221` (`gc_thread_func` 기동) |
 | **f2fs GC victim 비용** | `fs/f2fs/gc.c:392` (`get_gc_cost`), `364` (`get_cb_cost`) |
 | **f2fs GC 정책 선택** | `fs/f2fs/gc.c:246` (`select_gc_type`) |
