@@ -676,11 +676,174 @@ flowchart TD
 | 블록 할당 시점 | delayed allocation | writeback 때 확정 (경로는 다름) |
 | **부분 블록 쓰기 시 RMW** | 필요 | **똑같이 필요** |
 | 랜덤 write 특성 | 제자리라 단편화 적음 | 순차로 바뀌어 **플래시에 유리** |
-| 대가 | 저널 이중 쓰기 | **GC 필요** (유효 블록 이동) |
+| 대가 | 저널 이중 쓰기 | **GC 필요** (유효 블록 이동) → §2.5 |
 
 f2fs 는 데이터를 성격별로 다른 영역(hot/warm/cold)에 나눠 쓴다. fsiotrace 의 f2fs 세분
 플래그가 이걸 보여준다. GC 가 도는 IO 는 앱이 낸 게 아니라 파일시스템이 스스로 낸 것이라,
 `comm` 이 앱 이름이 아니다.
+
+### 2.5 f2fs GC — 왜 필요하고 어떻게 도는가
+
+#### 왜 필요한가
+
+f2fs 는 새 위치에 쓰고(OPU) 옛 블록을 **무효(invalid)** 로 표시한다. 무효 블록은 공간을
+차지하지만 쓸 수는 없다. 그대로 두면 디스크가 무효 블록으로 가득 차서 **쓸 곳이 없어진다.**
+
+```mermaid
+flowchart TD
+    subgraph S1["세그먼트 A (2MB)"]
+        V1["유효"] --- I1["무효"] --- V2["유효"] --- I2["무효"]
+    end
+    subgraph S2["세그먼트 B"]
+        I3["무효"] --- I4["무효"] --- V3["유효"] --- I5["무효"]
+    end
+    S1 --> GC["GC: 유효 블록만<br/>다른 곳으로 옮긴다"]
+    S2 --> GC
+    GC --> S3["세그먼트 A, B 를<br/>통째로 비운다<br/>→ 새 쓰기에 사용 가능"]
+
+    style I1 fill:#e0e0e0,color:#000
+    style I2 fill:#e0e0e0,color:#000
+    style I3 fill:#e0e0e0,color:#000
+    style I4 fill:#e0e0e0,color:#000
+    style I5 fill:#e0e0e0,color:#000
+    style S3 fill:#c8e6c9,color:#000
+```
+
+**핵심**: f2fs 는 **세그먼트(기본 2MB) 단위로만** 공간을 회수한다. 세그먼트 안에 유효
+블록이 하나라도 있으면 못 비운다. 그래서 그 유효 블록을 다른 곳으로 옮겨야(migration)
+하고, **그 이동 자체가 읽기 + 쓰기 IO** 다. 이게 GC 비용이다.
+
+#### 두 가지 GC — BG 와 FG
+
+```mermaid
+flowchart TD
+    A{"GC 트리거"} --> B["BG_GC (배경)<br/>gc_thread 가 주기적으로"]
+    A --> C["FG_GC (전경)<br/>f2fs_balance_fs()<br/>= 공간이 급해서"]
+
+    B --> B1["victim 선정: Cost-Benefit<br/>(기본)"]
+    C --> C1["victim 선정: Greedy"]
+
+    B1 --> B2["유효 블록을 dirty 표시만<br/>→ 일반 writeback 에 맡김<br/>= 앱을 안 막는다"]
+    C1 --> C2["유효 블록을 즉시 동기 쓰기<br/>REQ_SYNC<br/>= ⚠ 앱이 멈춘다"]
+
+    style B2 fill:#c8e6c9,color:#000
+    style C2 fill:#ffcdd2,color:#000
+```
+
+이 차이가 **성능 체감의 핵심**이다. 소스로 확인하면(`fs/f2fs/gc.c:1499`, `move_data_page`):
+
+```c
+if (gc_type == BG_GC) {
+    folio_mark_dirty(folio);              // dirty 만 찍고 끝 — 나중에 writeback
+    set_page_private_gcing(&folio->page);
+} else {                                   // FG_GC
+    struct f2fs_io_info fio = {
+        .op_flags = REQ_SYNC,              // ⚠ 동기 쓰기
+        .temp = COLD,
+        .io_type = FS_GC_DATA_IO,
+        ...
+    };
+    // 여기서 바로 써버린다
+}
+```
+
+| | BG_GC | FG_GC |
+|---|---|---|
+| 언제 | gc_thread 가 주기적으로 | 공간 부족으로 **급할 때** |
+| 누가 유발 | 커널 스레드 | **앱의 write() 가 유발** |
+| 데이터 이동 | dirty 표시 → writeback 위임 | **즉시 동기 쓰기** |
+| 앱 영향 | 거의 없음 | **write() 가 멈춘다** |
+| victim 정책 | Cost-Benefit (기본) | Greedy |
+
+**FG_GC 가 앱 지연의 주범이다.** `f2fs_balance_fs()` 가 "여유 섹션이 부족하다"고 판단하면
+앱의 write 경로 한복판에서 GC 를 돌린다. 앞서 §2.3 에서 본 `f2fs_write_begin()` 의
+`need_balance` 분기가 바로 그 지점이다.
+
+#### victim 선정 — 어느 세그먼트를 비울까
+
+`get_gc_cost()` (`fs/f2fs/gc.c:392`) 가 비용을 계산하고 **가장 싼 것**을 고른다.
+
+**Greedy** — 유효 블록이 가장 적은 세그먼트:
+
+```c
+if (p->gc_mode == GC_GREEDY)
+    return get_valid_blocks(sbi, segno, true);   // 유효 블록 수 = 비용
+```
+
+옮길 게 적으니 **당장 가장 싸다.** 급할 때(FG_GC) 쓴다.
+
+**Cost-Benefit** — 유효 블록 수 + **나이(age)** 를 함께 본다(`get_cb_cost()`, `gc.c:364`):
+
+```c
+return UINT_MAX - ((100 * (100 - u) * age) / (100 + u));
+//                              ↑ u = 사용률   ↑ age = 오래됨 정도
+```
+
+오래 안 바뀐(age 큰) 세그먼트를 선호한다. **왜?** 최근에 쓰인 데이터는 곧 또 바뀔 가능성이
+높아서, 지금 옮겨봐야 금방 다시 무효가 된다. 오래된 데이터를 옮겨야 **한 번 옮기고 오래
+간다.** 장기적으로 총 이동량이 줄어든다.
+
+| 정책 | 기준 | 언제 | 장단점 |
+|---|---|---|---|
+| **Greedy** | 유효 블록 수만 | FG_GC (급할 때) | 당장 싸지만, 옮긴 게 금방 또 무효될 수 있음 |
+| **Cost-Benefit** | 유효 블록 수 + 나이 | BG_GC (기본) | 장기적으로 총 이동량 감소 |
+| **ATGC** | 나이 기반 확장 | `atgc` 옵션 | 더 정교한 age 활용 |
+
+#### 전체 흐름
+
+```mermaid
+sequenceDiagram
+    participant App as 앱
+    participant BAL as f2fs_balance_fs()
+    participant GC as GC
+    participant Disk as 디스크
+
+    Note over App,Disk: 여유 있을 때 — BG_GC
+    GC->>GC: gc_thread 주기적 기상
+    GC->>GC: victim 선정 (Cost-Benefit)
+    GC->>Disk: 유효 블록 읽기
+    GC->>GC: dirty 표시만 (앱 영향 없음)
+    Note over GC,Disk: 나중에 일반 writeback 이 씀
+
+    Note over App,Disk: 공간 부족 — FG_GC ⚠
+    App->>BAL: write() → 여유 섹션 확인
+    BAL->>GC: 부족! GC 즉시 실행
+    GC->>Disk: 유효 블록 읽기
+    GC->>Disk: 즉시 동기 쓰기 (REQ_SYNC)
+    Disk-->>GC: 완료 대기
+    GC-->>BAL: 세그먼트 확보
+    BAL-->>App: 이제야 write() 진행 ⏳
+```
+
+#### fsiotrace 에서 GC 를 알아보는 법
+
+GC IO 는 **앱이 낸 게 아니라 파일시스템이 스스로 낸 것**이라 특징이 있다:
+
+- `comm` 이 앱 이름이 아니다 — BG_GC 는 `f2fs_gc-<major>:<minor>` 커널 스레드
+  (`gc.c:222`, 예: `f2fs_gc-254:61`)
+- **FG_GC 는 앱 comm 으로 나온다** — 앱의 write 경로에서 실행되기 때문. 앱이 안 낸 IO 가
+  앱 이름으로 찍히는 셈이라 오해하기 쉽다
+- 읽기와 쓰기가 **쌍으로** 나타난다 (유효 블록을 읽어서 다시 씀)
+- 앱이 요청한 적 없는 LBA 에 접근한다
+
+> **성능 조사 시**: write 지연이 튀는데 앱 IO 량은 그대로라면 FG_GC 를 의심한다.
+> `/sys/fs/f2fs/<dev>/` 의 `gc_urgent`, 그리고 `/proc/fs/f2fs/<dev>/status` 의 GC 통계
+> (`GC calls`, `BG_GC`)로 대조할 수 있다.
+
+#### ext4 에는 왜 GC 가 없나
+
+ext4 는 제자리 갱신이라 **옛 블록이 곧 새 블록**이다. 무효 블록이 안 생기니 회수할 것도
+없다. 대신 다른 대가를 치른다:
+
+| | ext4 | f2fs |
+|---|---|---|
+| 무효 블록 | 안 생김 | 생김 → **GC 필요** |
+| 대신 치르는 비용 | 저널 이중 쓰기, 랜덤 쓰기 | GC 이동 IO |
+| 공간 부족 시 | 단편화 (성능 저하) | **FG_GC (지연 급증)** |
+
+플래시 저장장치 안에도 **FTL 의 GC** 가 따로 있다는 점도 알아둘 만하다. f2fs 의 순차 쓰기는
+그 FTL GC 부담을 줄이려는 것이라, **파일시스템 GC 를 감수하고 장치 GC 를 줄이는** 트레이드
+오프다.
 
 ---
 
@@ -983,5 +1146,9 @@ gantt
 | **f2fs IPU/OPU 결정** | `fs/f2fs/data.c:2760` (`f2fs_do_write_data_page`) |
 | **f2fs IPU 정책** | `fs/f2fs/data.c:2653` (`check_inplace_update_policy`) |
 | **f2fs 제자리 쓰기** | `fs/f2fs/segment.c:4178` (`f2fs_inplace_write_data`) |
+| **f2fs GC 스레드** | `fs/f2fs/gc.c:221` (`gc_thread_func` 기동) |
+| **f2fs GC victim 비용** | `fs/f2fs/gc.c:392` (`get_gc_cost`), `364` (`get_cb_cost`) |
+| **f2fs GC 정책 선택** | `fs/f2fs/gc.c:246` (`select_gc_type`) |
+| **f2fs GC 데이터 이동** | `fs/f2fs/gc.c:1475` (`move_data_page` — BG/FG 분기) |
 | page cache hit 판정 | `mm/filemap.c:2575` (`filemap_get_pages`) |
 | UFS 명령 전송 | `drivers/ufs/core/ufshcd.c` (`ufshcd_send_command`) |
