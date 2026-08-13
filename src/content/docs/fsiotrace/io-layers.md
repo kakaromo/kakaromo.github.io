@@ -997,6 +997,138 @@ UFS 계층에서 `SYNCHRONIZE_CACHE`(0x35) 가 보이면 대개 이 배리어다
 **둘은 같은 문제를 반대 방향으로 푼다.** ext4 는 "제자리를 고치되 안전장치(저널)를 둔다",
 f2fs 는 "제자리를 안 고치니 안전장치가 덜 필요하다 — 대신 옛 공간을 GC 로 회수한다".
 
+### 2.7 fsync — ext4 와 f2fs 는 어떻게 다른가
+
+같은 `fsync()` 인데 두 파일시스템이 하는 일이 꽤 다르다. **f2fs 에는 ext4 에 없는 최적화가
+있다.**
+
+#### 공통 목표
+
+fsync 는 세 가지를 보장해야 한다.
+
+1. 데이터가 디스크에 도달
+2. **그 데이터를 찾아갈 수 있는 메타데이터**도 도달
+3. 장치 캐시가 아니라 **매체에** 안착 (FLUSH)
+
+2번이 어려운 지점이다. 데이터만 써봐야 inode 가 그 위치를 모르면 재부팅 후 못 찾는다.
+
+#### ext4 — 트랜잭션 커밋을 기다린다
+
+```mermaid
+sequenceDiagram
+    participant App as 앱
+    participant E as ext4_sync_file
+    participant J as jbd2
+    participant D as 디스크
+
+    App->>E: fsync(fd)
+    E->>D: ① file_write_and_wait_range()<br/>데이터 페이지 전송 + 완료 대기
+    D-->>E: 데이터 완료
+    E->>J: ② ext4_fsync_journal()<br/>이 inode 가 속한 트랜잭션 커밋 요청
+    J->>D: 메타데이터를 저널에 + commit block
+    D-->>J: 커밋 완료
+    J-->>E: 완료
+    E->>D: ③ blkdev_issue_flush()<br/>장치 캐시 배출
+    D-->>E: FLUSH 완료
+    E-->>App: 리턴
+```
+
+`ext4_sync_file()` (`fs/ext4/fsync.c:129`) 의 구조가 그대로 이 순서다:
+
+```c
+ret = file_write_and_wait_range(file, start, end);   // ① 데이터
+...
+ret = ext4_fsync_journal(inode, datasync, &needs_barrier);  // ② 저널 커밋
+issue_flush:
+if (needs_barrier) {
+    err = blkdev_issue_flush(inode->i_sb->s_bdev);   // ③ FLUSH
+}
+```
+
+**핵심**: ext4 의 fsync 는 **jbd2 트랜잭션 커밋에 올라탄다.** 내 파일 하나만 fsync 해도
+그 트랜잭션에 묶인 **다른 파일의 메타데이터까지 함께** 커밋된다. 그래서 관계없는 IO 가
+같이 나가는 것처럼 보인다.
+
+#### f2fs — 가능하면 checkpoint 를 피한다
+
+f2fs 에서 **checkpoint 는 매우 비싸다.** 파일시스템 전체의 일관성 지점을 만드는 작업이라
+NAT/SIT/모든 dirty node 를 다 내려보내야 한다. 파일 하나 fsync 하자고 이걸 매번 하면
+성능이 무너진다.
+
+그래서 f2fs 는 **roll-forward recovery** 라는 우회로를 쓴다.
+
+```mermaid
+flowchart TD
+    A["fsync(fd)"] --> B["need_do_checkpoint()<br/>file.c:201"]
+    B --> C{"checkpoint 가<br/>꼭 필요한가?"}
+    C -->|"필요 (cp_reason != 0)"| D["f2fs_sync_fs()<br/>= 전체 checkpoint<br/>⚠ 비싸다"]
+    C -->|"불필요 (대부분)"| E["node 페이지만 기록<br/>+ fsync 마크"]
+    E --> F["f2fs_issue_flush()"]
+    F --> G["✅ 빠른 fsync"]
+    D --> H["느린 fsync"]
+
+    style G fill:#c8e6c9,color:#000
+    style D fill:#ffcdd2,color:#000
+```
+
+**roll-forward 의 아이디어**: checkpoint 를 안 만들고, 대신 fsync 된 node 블록에 **표시**를
+남긴다. 재부팅하면 마지막 checkpoint 부터 시작해서 그 표시된 node 들을 **앞으로 훑으며
+(roll forward)** 복구한다. checkpoint 는 가끔만 만들고, 그 사이는 node chain 으로 메운다.
+
+**언제 checkpoint 가 강제되나** (`need_do_checkpoint()`, `fs/f2fs/file.c:201`):
+
+| `cp_reason` | 조건 |
+|---|---|
+| `CP_NON_REGULAR` | 일반 파일이 아님 (디렉토리 등) |
+| `CP_HARDLINK` | `i_nlink != 1` — 하드링크가 있음 |
+| `CP_WRONG_PINO` | 부모 inode 번호가 불확실 |
+| `CP_NO_SPC_ROLL` | roll-forward 할 **공간이 부족** |
+| `CP_NODE_NEED_CP` | 부모 node 가 아직 checkpoint 안 됨 |
+| `CP_COMPRESSED` | 압축 파일 |
+| `CP_RECOVER_DIR` | `fsync_mode=strict` 이고 디렉토리 복구 필요 |
+
+**대부분의 일반 파일 쓰기는 여기에 안 걸린다** → checkpoint 없이 빠르게 끝난다.
+
+#### 비교
+
+| | ext4 | f2fs |
+|---|---|---|
+| 메타 보장 방식 | jbd2 **트랜잭션 커밋** | **node 블록 + fsync 마크** |
+| 다른 파일 영향 | 같은 트랜잭션이면 **함께 커밋** | 해당 inode 의 node 만 |
+| 전체 동기화 | 저널 커밋 (비교적 가벼움) | **checkpoint (비쌈)** — 피하려 함 |
+| 복구 방식 | 저널 replay | **roll-forward** (마지막 CP + node chain) |
+| 최악의 경우 | 큰 트랜잭션 커밋 대기 | checkpoint 강제 (위 표 조건) |
+
+#### 튜닝 — `fsync_mode`
+
+f2fs 는 fsync 강도를 옵션으로 조절할 수 있다.
+
+| `fsync_mode` | 동작 (`f2fs.h:1477`) |
+|---|---|
+| `posix` (기본) | POSIX 준수. 필요할 때만 checkpoint |
+| `strict` | 커널 주석 그대로 *"fsync behaves in line with ext4"* — 디렉토리 항목까지 보장(`CP_RECOVER_DIR` 조건이 이 모드에서만 켜진다) → checkpoint 더 자주 |
+| `nobarrier` | posix 기반이되 FLUSH 생략 → **빠르지만 전원 손실에 취약** |
+
+Android 에서 `nobarrier` 를 쓰는 경우가 있는데, 장치가 자체 전원 보호(PLP)를 갖췄다는
+전제가 필요하다.
+
+#### fsiotrace 에서 보이는 차이
+
+**ext4 fsync**:
+- `jbd2/<dev>-<ino>` 스레드의 저널 쓰기가 **함께** 나타난다
+- 내가 만지지 않은 파일의 메타데이터 IO 가 섞여 보인다 (같은 트랜잭션)
+- 끝에 `SYNCHRONIZE_CACHE`(0x35)
+
+**f2fs fsync**:
+- 앱 comm 그대로, node 블록 쓰기가 보인다
+- checkpoint 가 안 걸리면 **IO 량이 훨씬 적다**
+- checkpoint 가 걸리면 갑자기 NAT/SIT 등 대량 메타 IO 가 터진다 → **지연 급증**
+- 끝에 `SYNCHRONIZE_CACHE`(0x35)
+
+> **성능 조사 시**: f2fs 에서 fsync 지연이 간헐적으로 크게 튀면 checkpoint 가 걸린
+> 경우다. `/sys/kernel/debug/f2fs/status` 의 `CP calls` 나 `cp_reason` 통계로 확인한다.
+> 하드링크 있는 파일, 디렉토리 fsync 가 흔한 원인이다.
+
 ---
 
 ## 3. writeback — dirty 페이지는 언제 디스크로 가나
@@ -1058,6 +1190,10 @@ sequenceDiagram
 
 fsync 는 **데이터 + 메타데이터 + FLUSH** 세 가지를 모두 보장한다. UFS 계층에서
 `SYNCHRONIZE_CACHE`(opcode 0x35) 가 보이면 이것이다.
+
+> 여기까지는 두 파일시스템 공통이다. **ext4 와 f2fs 가 이 셋을 각각 어떻게 달성하는지**는
+> 상당히 다르다 — ext4 는 jbd2 트랜잭션 커밋에 올라타고, f2fs 는 checkpoint 를 피하려
+> roll-forward 를 쓴다. [§2.7](#27-fsync--ext4-와-f2fs-는-어떻게-다른가) 참고.
 
 ---
 
@@ -1307,5 +1443,9 @@ gantt
 | **jbd2 commit block 배리어** | `fs/jbd2/commit.c:154` (`REQ_PREFLUSH \| REQ_FUA`) |
 | **jbd2 커밋 간격(5초)** | `include/linux/jbd2.h:48` (`JBD2_DEFAULT_MAX_COMMIT_AGE`) |
 | **ext4 저널 모드 플래그** | `fs/ext4/ext4.h:1206` |
+| **ext4 fsync** | `fs/ext4/fsync.c:129` (`ext4_sync_file`) |
+| **f2fs fsync** | `fs/f2fs/file.c:353` (`f2fs_do_sync_file`) |
+| **f2fs checkpoint 강제 조건** | `fs/f2fs/file.c:201` (`need_do_checkpoint`) |
+| **f2fs fsync_mode** | `fs/f2fs/f2fs.h:1477` |
 | page cache hit 판정 | `mm/filemap.c:2575` (`filemap_get_pages`) |
 | UFS 명령 전송 | `drivers/ufs/core/ufshcd.c` (`ufshcd_send_command`) |
