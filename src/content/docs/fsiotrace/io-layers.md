@@ -676,7 +676,7 @@ flowchart TD
 | 블록 할당 시점 | delayed allocation | writeback 때 확정 (경로는 다름) |
 | **부분 블록 쓰기 시 RMW** | 필요 | **똑같이 필요** |
 | 랜덤 write 특성 | 제자리라 단편화 적음 | 순차로 바뀌어 **플래시에 유리** |
-| 대가 | 저널 이중 쓰기 | **GC 필요** (유효 블록 이동) → §2.5 |
+| 대가 | **저널 이중 쓰기** → §2.6 | **GC 필요** (유효 블록 이동) → §2.5 |
 
 f2fs 는 데이터를 성격별로 다른 영역(hot/warm/cold)에 나눠 쓴다. fsiotrace 의 f2fs 세분
 플래그가 이걸 보여준다. GC 가 도는 IO 는 앱이 낸 게 아니라 파일시스템이 스스로 낸 것이라,
@@ -844,6 +844,158 @@ ext4 는 제자리 갱신이라 **옛 블록이 곧 새 블록**이다. 무효 �
 플래시 저장장치 안에도 **FTL 의 GC** 가 따로 있다는 점도 알아둘 만하다. f2fs 의 순차 쓰기는
 그 FTL GC 부담을 줄이려는 것이라, **파일시스템 GC 를 감수하고 장치 GC 를 줄이는** 트레이드
 오프다.
+
+### 2.6 ext4 저널링 (jbd2) — 왜 두 번 쓰는가
+
+#### 해결하려는 문제 — 중간에 전원이 나가면
+
+파일 하나를 쓰려면 디스크의 **여러 곳**을 고쳐야 한다. 데이터 블록, inode(크기·시각),
+블록 비트맵… 이걸 순서대로 쓰는 도중 전원이 나가면 **일부만 반영된 상태**가 된다.
+
+```mermaid
+flowchart TD
+    A["파일 확장: 3곳을 고쳐야 함"] --> B["① 데이터 블록 쓰기 ✅"]
+    B --> C["② 비트맵 갱신 ✅"]
+    C --> D["⚡ 전원 차단"]
+    D --> E["③ inode 크기 갱신 ❌"]
+    E --> F["결과: 비트맵은 '사용 중' 인데<br/>inode 는 그 블록을 모름<br/>= 영구 누수, fsck 필요"]
+
+    style D fill:#ffcdd2,color:#000
+    style F fill:#ffcdd2,color:#000
+```
+
+**저널링의 아이디어**: 실제 위치를 고치기 **전에**, "무엇을 고칠 것인지"를 별도 영역
+(저널)에 먼저 적어 둔다. 그리고 그 기록이 **완결됐다는 표시**까지 안전하게 쓴 뒤에야 실제
+위치를 고친다.
+
+- 저널 기록 중에 전원이 나가면 → 완결 표시가 없으니 **통째로 무시**(원래 상태 유지)
+- 실제 반영 중에 전원이 나가면 → 저널에 다 있으니 **재부팅 때 다시 반영**(replay)
+
+어느 쪽이든 **"전부 반영" 또는 "전혀 반영 안 됨"** 둘 중 하나만 남는다. 이게 원자성이다.
+
+#### 세 가지 모드 — 무엇을 저널에 넣느냐
+
+여기가 핵심이고, 사람들이 가장 헷갈리는 부분이다. **저널에 메타데이터만 넣느냐,
+데이터까지 넣느냐**의 차이다.
+
+```mermaid
+flowchart TD
+    subgraph J["data=journal — 데이터도 저널에"]
+        J1["데이터 + 메타 모두<br/>저널에 먼저 쓰기"] --> J2["나중에 제자리로"]
+        J2 --> J3["⚠ 모든 것을 2번 쓴다"]
+    end
+    subgraph O["data=ordered — 기본"]
+        O1["데이터를 제자리에 먼저"] --> O2["완료 후 메타만 저널에"]
+        O2 --> O3["✅ 데이터는 1번,<br/>메타만 2번"]
+    end
+    subgraph W["data=writeback — 순서 없음"]
+        W1["메타만 저널에.<br/>데이터 순서는 보장 안 함"] --> W2["⚡ 크래시 시 새 파일에<br/>옛 쓰레기 데이터가 보일 수 있음"]
+    end
+
+    style J3 fill:#ffe0b2,color:#000
+    style O3 fill:#c8e6c9,color:#000
+    style W2 fill:#ffcdd2,color:#000
+```
+
+| 모드 | 저널에 들어가는 것 | 쓰기 증폭 | 크래시 후 데이터 | 속도 |
+|---|---|---|---|---|
+| `data=journal` | **데이터 + 메타** | 데이터도 2배 | 가장 안전 | 느림 |
+| **`data=ordered`** (기본) | 메타만 (**단 데이터를 먼저 씀**) | 메타만 2배 | 안전 | 보통 |
+| `data=writeback` | 메타만 (순서 보장 없음) | 메타만 2배 | ⚠ 옛 데이터 노출 가능 | 빠름 |
+
+**`ordered` 의 "순서"가 무슨 뜻인가**: 메타데이터를 커밋하기 **전에** 그 트랜잭션에 딸린
+데이터를 먼저 디스크에 내려보낸다. 소스가 그대로 보여준다
+(`fs/jbd2/commit.c:211`, `journal_submit_data_buffers`):
+
+```c
+list_for_each_entry(jinode, &commit_transaction->t_inode_list, i_list) {
+    if (!(jinode->i_flags & JI_WRITE_DATA))
+        continue;
+    // 커밋 전에 이 inode 의 데이터 버퍼를 먼저 submit
+    err = journal->j_submit_inode_data_buffers(jinode);
+}
+```
+
+**왜 이 순서가 중요한가**: 메타(inode 크기 = 4KB)가 먼저 반영되고 데이터가 안 갔는데
+크래시가 나면, 그 4KB 자리에는 **이전에 삭제된 다른 파일의 내용**이 남아 있다. 남의 데이터가
+보이는 보안 문제다. `writeback` 모드가 빠른 대신 감수하는 위험이 이것이다.
+
+#### 커밋 절차 — 트랜잭션의 일생
+
+jbd2 는 여러 변경을 **하나의 트랜잭션으로 묶어** 한꺼번에 커밋한다. 기본 간격은 **5초**
+(`JBD2_DEFAULT_MAX_COMMIT_AGE`, `include/linux/jbd2.h:48`).
+
+```mermaid
+sequenceDiagram
+    participant App as 앱/FS
+    participant T as 실행 중 트랜잭션
+    participant JD as 저널 영역
+    participant D as 제자리(디스크)
+
+    App->>T: 변경 등록 (여러 개 누적)
+    Note over T: T_RUNNING — 5초간 모음
+
+    Note over T,D: 커밋 시작
+    T->>T: T_LOCKED — 새 변경 차단
+    T->>D: (ordered) 데이터를 제자리에 먼저 ①
+    D-->>T: 완료 대기
+    T->>JD: 메타데이터 블록들을 저널에 ②
+    T->>JD: commit block ③<br/>REQ_PREFLUSH + REQ_FUA
+    Note over JD: ★ 여기가 원자성의 경계
+    JD-->>T: 완료
+    Note over T,D: 이후 여유 있을 때
+    T->>D: 메타데이터를 제자리에 ④ (checkpoint)
+    T->>JD: 저널 공간 회수
+```
+
+| 단계 | 상태 | 하는 일 |
+|---|---|---|
+| ① | `T_RUNNING`→`T_LOCKED` | 변경 누적 → 새 진입 차단 |
+| ② | `T_FLUSH` | (ordered) 데이터 먼저 제자리에 |
+| ③ | `T_COMMIT` | 메타데이터를 **저널에** 기록 |
+| ④ | `T_COMMIT_JFLUSH` | **commit block** — 이게 쓰이면 트랜잭션 확정 |
+| ⑤ | checkpoint | 메타데이터를 **제자리에** 반영, 저널 회수 |
+
+**commit block 이 원자성의 경계다.** 이게 디스크에 안전히 안착하기 전에 전원이 나가면
+트랜잭션 전체가 무효, 안착한 뒤면 전체가 유효다. 그래서 여기에만 배리어를 건다
+(`fs/jbd2/commit.c:154`):
+
+```c
+if (journal->j_flags & JBD2_BARRIER &&
+    !jbd2_has_feature_async_commit(journal))
+        write_flags |= REQ_PREFLUSH | REQ_FUA;
+```
+
+- `REQ_PREFLUSH` — 앞서 보낸 것들을 **먼저 다 굽고** 나서 이걸 쓰라
+- `REQ_FUA` — 이 블록은 장치 캐시에 두지 말고 **매체에 직접** 써라
+
+UFS 계층에서 `SYNCHRONIZE_CACHE`(0x35) 가 보이면 대개 이 배리어다.
+
+#### fsiotrace 에서 저널 IO 를 알아보는 법
+
+- **`jbd2/<dev>-<ino>`** 커널 스레드가 커밋을 수행한다 → `comm` 이 이것이면 저널 IO.
+  내부 저널이면 이름 뒤에 **저널 inode 번호**가 붙는다(`journal.c:1698`, `"%pg-%lu"`).
+  ext4 의 저널 inode 는 보통 8번이라 `jbd2/sda1-8` 처럼 보인다
+- 저널은 디스크의 **연속된 특정 영역**이라 LBA 가 좁은 범위에 반복해서 몰린다
+- **파일명이 안 붙는다** — 저널 블록은 특정 파일의 데이터가 아니다
+- 5초 주기로 규칙적인 쓰기 묶음이 보인다
+- `fsync()` 를 부르면 그 자리에서 즉시 커밋이 일어난다
+
+> **쓰기 증폭 계산**: `data=ordered` 에서 4KB 데이터 한 번 쓰면 실제로는
+> 데이터 4KB + 저널의 메타 블록들 + commit block + 나중에 제자리 메타까지 나간다.
+> 작은 파일을 많이 만들수록 **메타 비중이 커져** 증폭이 심해진다.
+
+#### f2fs 와의 비교 — 같은 문제, 다른 해법
+
+| | ext4 (jbd2 저널) | f2fs (checkpoint + LFS) |
+|---|---|---|
+| 일관성 방식 | 저널에 먼저 쓰고 나중에 제자리 | **애초에 제자리를 안 건드림** |
+| 메타 쓰기 증폭 | 2배 (저널 + 제자리) | checkpoint 시점에만 |
+| 크래시 복구 | 저널 replay | 마지막 checkpoint 로 롤백 |
+| 대가 | **이중 쓰기** | **GC** (§2.5) |
+
+**둘은 같은 문제를 반대 방향으로 푼다.** ext4 는 "제자리를 고치되 안전장치(저널)를 둔다",
+f2fs 는 "제자리를 안 고치니 안전장치가 덜 필요하다 — 대신 옛 공간을 GC 로 회수한다".
 
 ---
 
@@ -1150,5 +1302,10 @@ gantt
 | **f2fs GC victim 비용** | `fs/f2fs/gc.c:392` (`get_gc_cost`), `364` (`get_cb_cost`) |
 | **f2fs GC 정책 선택** | `fs/f2fs/gc.c:246` (`select_gc_type`) |
 | **f2fs GC 데이터 이동** | `fs/f2fs/gc.c:1475` (`move_data_page` — BG/FG 분기) |
+| **jbd2 커밋 절차** | `fs/jbd2/commit.c:348` (`jbd2_journal_commit_transaction`) |
+| **jbd2 ordered 데이터 우선** | `fs/jbd2/commit.c:211` (`journal_submit_data_buffers`) |
+| **jbd2 commit block 배리어** | `fs/jbd2/commit.c:154` (`REQ_PREFLUSH \| REQ_FUA`) |
+| **jbd2 커밋 간격(5초)** | `include/linux/jbd2.h:48` (`JBD2_DEFAULT_MAX_COMMIT_AGE`) |
+| **ext4 저널 모드 플래그** | `fs/ext4/ext4.h:1206` |
 | page cache hit 판정 | `mm/filemap.c:2575` (`filemap_get_pages`) |
 | UFS 명령 전송 | `drivers/ufs/core/ufshcd.c` (`ufshcd_send_command`) |
