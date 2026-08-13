@@ -1157,7 +1157,7 @@ flowchart TD
 
 | 트리거 | 누가 실행 | fsiotrace 의 comm | 지연 |
 |---|---|---|---|
-| ① 주기적 | `kworker` (flusher) | `kworker/u16:3` 등 | ~5초 |
+| ① 주기적 | `kworker` (flusher) | `kworker/u16:3` 등 | 아래 참고 |
 | ② 양 초과 | `kworker` | `kworker` | 즉시~ |
 | ③ `fsync()` | **앱 자신** | 앱 이름 | 없음(동기) |
 | ④ 메모리 압박 | `kswapd` / 앱 | 다양 | 즉시 |
@@ -1166,7 +1166,146 @@ flowchart TD
 "누가 이 IO 를 냈는지" 를 알려면 원래 앱을 되찾아야 하는데, fsiotrace 가 `inode_ctx` 로
 그걸 복원한다([설계 문서](/fsiotrace/design/) 참고).
 
-### 3.2 fsync 는 무엇이 다른가
+#### 5초? 30초? — 두 값은 다른 것이다
+
+흔히 "5초 후 디스크에 쓰인다"고 하는데 부정확하다. **두 개의 독립된 값**이 있다
+(`mm/page-writeback.c:104`, `111`):
+
+```c
+/* The interval between `kupdate'-style writebacks */
+unsigned int dirty_writeback_interval = 5 * 100;   /* 5초 — 깨어나는 주기 */
+
+/* The longest time for which data is allowed to remain dirty */
+unsigned int dirty_expire_interval = 30 * 100;     /* 30초 — dirty 허용 시간 */
+```
+
+```mermaid
+flowchart LR
+    A["페이지가<br/>dirty 됨"] --> B["flusher 가 5초마다 깨어남<br/>dirty_writeback_interval"]
+    B --> C{"이 페이지가<br/>30초 이상<br/>dirty 였나?<br/>dirty_expire_interval"}
+    C -->|"아니오"| D["아직 안 씀<br/>→ 다음 기회에"]
+    C -->|"예"| E["디스크로 전송"]
+    D -.->|"5초 후 다시 확인"| B
+
+    style E fill:#e8f5e9,color:#000
+```
+
+- **5초** = flusher 스레드가 **일어나서 확인하는 주기**
+- **30초** = 페이지가 dirty 상태로 **버틸 수 있는 최대 시간**
+
+그래서 방금 쓴 페이지는 5초 뒤에 바로 안 나간다. **최대 30초까지 메모리에만 있을 수
+있다.** 다만 ②(양 초과)나 ③(fsync)이 먼저 걸리면 그 전에 나간다.
+
+| 파라미터 | 기본값 | 위치 |
+|---|---|---|
+| `dirty_writeback_centisecs` | 500 (5초) | flusher 기상 주기 |
+| `dirty_expire_centisecs` | 3000 (30초) | dirty 최대 유지 시간 |
+| `dirty_background_ratio` | 10% | 이 비율 넘으면 **배경** writeback 시작 |
+| `dirty_ratio` | 20% | 이 비율 넘으면 **앱을 멈춰서** 강제 writeback |
+
+전부 `/proc/sys/vm/` 에서 조절 가능하다.
+
+#### ⚠ dirty_ratio 초과 — 앱이 강제로 멈춘다
+
+가장 아픈 지점이다. dirty 페이지가 `dirty_ratio`(20%)를 넘으면 커널은
+`balance_dirty_pages()` 에서 **쓰기를 시도한 앱 자신을 재운다.**
+
+```mermaid
+flowchart TD
+    A["앱이 계속 write()"] --> B{"dirty 비율"}
+    B -->|"< 10%"| C["✅ 즉시 리턴<br/>writeback 없음"]
+    B -->|"10~20%"| D["배경 writeback 시작<br/>앱은 여전히 즉시 리턴"]
+    B -->|"> 20%"| E["⚠ balance_dirty_pages()<br/>앱을 sleep 시킴<br/>= write() 가 멈춘다"]
+
+    style C fill:#c8e6c9,color:#000
+    style D fill:#fff3e0,color:#000
+    style E fill:#ffcdd2,color:#000
+```
+
+**증상**: 평소 빠르던 `write()` 가 갑자기 수백 ms 씩 걸린다. 앱 코드는 그대로인데
+"가끔 느려진다"는 전형적인 원인이다. 저장장치가 느릴수록 이 구간에 빨리 도달한다.
+
+**fsiotrace 에서**: VFS write row 의 간격이 갑자기 벌어지고, 동시에 BLK 계층에 대량
+writeback IO 가 보인다. 앱 comm 그대로 나오므로 앱이 자발적으로 느려진 것처럼 보이지만
+실제로는 커널이 재운 것이다.
+
+#### WB_SYNC_NONE vs WB_SYNC_ALL
+
+writeback 은 **기다리느냐 마느냐**로 두 종류다 (`include/linux/writeback.h:34`):
+
+| 모드 | 뜻 | 쓰이는 곳 |
+|---|---|---|
+| `WB_SYNC_NONE` | 제출만 하고 **안 기다림** | 주기적/배경 writeback |
+| `WB_SYNC_ALL` | 완료까지 **기다림** | `fsync()`, `sync()` |
+
+같은 `writepages()` 를 부르지만 이 플래그에 따라 동작이 다르다. `for_kupdate`,
+`for_background`, `for_sync` 같은 플래그도 함께 전달되어 파일시스템이 판단에 쓴다.
+
+### 3.2 ext4 와 f2fs 의 writeback 은 어떻게 다른가
+
+트리거는 공통(VFS/MM 계층)이지만, **실제로 무엇을 쓰느냐**는 파일시스템마다 다르다.
+
+#### ext4 — delayed allocation 이 여기서 풀린다
+
+앞서 §2.3 에서 본 것처럼, ext4 는 `write()` 시점에 블록을 **예약만** 하고 실제 할당을
+미룬다. 그 미뤄둔 일이 writeback 에서 한꺼번에 처리된다.
+
+```mermaid
+flowchart TD
+    A["ext4_writepages()"] --> B["dirty 페이지들을 모은다"]
+    B --> C["ext4_map_blocks()<br/>← 여기서 실제 블록 할당"]
+    C --> D["연속된 블록에 배치<br/>= 단편화 감소"]
+    D --> E["submit_bio()"]
+    E --> F["메타 변경은 jbd2<br/>트랜잭션에 등록"]
+    F --> G["5초 후 저널 커밋(§2.6)"]
+
+    style C fill:#fff3e0,color:#000
+    style G fill:#e1f5fe,color:#000
+```
+
+**포인트**: 데이터 writeback 과 **저널 커밋이 별개 타이밍**이다. 데이터가 나간 뒤에도
+메타데이터는 트랜잭션에 남아 있다가 나중에 커밋된다. 그래서 fsiotrace 에서 데이터 IO 와
+`jbd2/*` 저널 IO 가 **시간차를 두고** 보인다.
+
+#### f2fs — writeback 이 곧 OPU/IPU 결정 지점
+
+f2fs 는 §2.3 에서 본 대로 writeback 에서 `f2fs_do_write_data_page()` 가 돌며 **어디에 쓸지**
+를 정한다.
+
+```mermaid
+flowchart TD
+    A["f2fs_write_data_pages()"] --> B{"f2fs_balance_fs()<br/>여유 섹션 충분?"}
+    B -->|"부족"| C["⚠ FG_GC 발동 (§2.5)<br/>writeback 이 GC 를 유발"]
+    B -->|"충분"| D["f2fs_do_write_data_page()"]
+    C --> D
+    D --> E{"IPU or OPU?"}
+    E -->|"IPU"| F["옛 자리에 그대로"]
+    E -->|"OPU"| G["새 자리 + node 갱신"]
+    G --> H["node 블록도 써야 함<br/>= 메타 IO 추가"]
+
+    style C fill:#ffcdd2,color:#000
+    style H fill:#fff3e0,color:#000
+```
+
+**f2fs 만의 특징**:
+- **writeback 이 GC 를 유발할 수 있다** — 쓸 공간이 부족하면 `f2fs_balance_fs()` 가
+  FG_GC 를 돌린다. writeback 중에 갑자기 대량 IO 가 터지는 원인
+- **OPU 면 node 블록도 써야 한다** — 매핑이 바뀌므로. 데이터 1개 쓰는데 메타가 따라온다
+- **hot/warm/cold 로 나눠 쓴다** — 성격이 다른 데이터를 다른 로그에 배치해 GC 효율을 높인다
+
+#### 비교
+
+| | ext4 | f2fs |
+|---|---|---|
+| writeback 에서 하는 일 | **블록 할당**(delayed alloc 해소) | **IPU/OPU 결정** + 배치 |
+| 메타 처리 | jbd2 트랜잭션 → 나중에 커밋 | node 블록을 즉시 함께 씀 |
+| 추가 IO 유발 | 저널 (시간차) | **GC 가능** (즉시) |
+| 최악의 경우 | 큰 트랜잭션 커밋 | **FG_GC 로 지연 급증** |
+
+> **fsiotrace 로 구분하기**: writeback 구간에서 `jbd2/*` comm 이 보이면 ext4 저널,
+> `f2fs_gc-*` 가 보이거나 앱 comm 으로 대량 IO 가 나오면 f2fs 의 GC 다.
+
+### 3.3 fsync 는 무엇이 다른가
 
 ```mermaid
 sequenceDiagram
